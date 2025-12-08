@@ -909,43 +909,59 @@ def fetch_training_data_by_race_id(race_id):
                     if not horse_name:
                         continue
                     
-                    # Mesafe sürelerini parse et
+                    # Mesafe sürelerini parse et (sütunlar 2-12)
                     times = {}
-                    distance_cells_start = 2  # Mesafe süreleri 2. hücreden başlıyor
-                    distances = ['2200m', '2000m', '1800m', '1600m', '1400m', '1200m', '1000m', '800m', '600m', '400m', '200m']
+                    distance_cols = [
+                        (2, '2200m'), (3, '2000m'), (4, '1800m'), (5, '1600m'),
+                        (6, '1400m'), (7, '1200m'), (8, '1000m'), (9, '800m'),
+                        (10, '600m'), (11, '400m'), (12, '200m')
+                    ]
                     
-                    for idx, dist in enumerate(distances):
-                        cell_idx = distance_cells_start + idx
-                        if cell_idx < len(cells):
-                            time_val = cells[cell_idx].text.strip()
+                    for col_idx, dist in distance_cols:
+                        if col_idx < len(cells):
+                            time_val = cells[col_idx].text.strip()
                             if time_val and time_val != '-':
                                 times[dist] = time_val
                     
-                    # Son hücrelerden idman bilgileri
-                    # Tipik yapı: ... İdman Tarihi | Pist Durumu | Pist Türü | Hipodrom | İdman Jokeyi | ...
+                    # Sabit sütun indeksleri (HTML yapısına göre):
+                    # 13: İdman Tarihi (span içinde)
+                    # 14: Pist (Kum/Çim/Sentetik)
+                    # 15: Pist Durumu (boş olabilir)
+                    # 16: İdman Türü (Galop vb.)
+                    # 17: İdman Hipodromu (Bursa, Ankara vb.)
+                    # 18: İdman Jokeyi
+                    
                     training_date = ''
-                    hippodrome = ''
                     track_condition = ''
+                    hippodrome = ''
                     training_jockey = ''
                     
-                    # Hücreleri tersten ara (son hücreler genellikle idman bilgileri)
-                    for i, cell in enumerate(cells):
-                        cell_text = cell.text.strip()
-                        # Tarih formatı: dd.MM.yyyy
-                        if len(cell_text) == 10 and '.' in cell_text and cell_text[2] == '.' and cell_text[5] == '.':
-                            training_date = cell_text
-                        # Hipodrom isimleri
-                        elif cell_text in ['Bursa', 'Ankara', 'İstanbul', 'İzmir', 'Adana', 'Elazığ', 'Diyarbakır', 'Şanlıurfa', 'Kocaeli']:
-                            hippodrome = cell_text
-                        # Pist durumu
-                        elif cell_text in ['Kum', 'Çim', 'Sentetik']:
-                            track_condition = cell_text
+                    # İdman Tarihi (index 13) - <span> içinde olabilir
+                    if len(cells) > 13:
+                        date_cell = cells[13]
+                        span = date_cell.find('span')
+                        if span:
+                            training_date = span.text.strip()
+                        else:
+                            training_date = date_cell.text.strip()
+                        # Tarih formatını düzelt: d.MM.yyyy -> dd.MM.yyyy
+                        if training_date and '.' in training_date:
+                            parts = training_date.split('.')
+                            if len(parts) == 3:
+                                # Gün ve ay'ı 2 haneli yap
+                                training_date = f"{parts[0].zfill(2)}.{parts[1].zfill(2)}.{parts[2]}"
                     
-                    # Son hücre genellikle jokey
-                    if len(cells) > 1:
-                        last_cell_text = cells[-2].text.strip() if len(cells) >= 2 else ''
-                        if last_cell_text and len(last_cell_text) > 3 and not last_cell_text.isdigit():
-                            training_jockey = last_cell_text
+                    # Pist (index 14)
+                    if len(cells) > 14:
+                        track_condition = cells[14].text.strip()
+                    
+                    # Hipodrom (index 17)
+                    if len(cells) > 17:
+                        hippodrome = cells[17].text.strip()
+                    
+                    # Jokey (index 18)
+                    if len(cells) > 18:
+                        training_jockey = cells[18].text.strip()
                     
                     training_data = {
                         'horseName': horse_name,
