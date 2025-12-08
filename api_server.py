@@ -838,92 +838,138 @@ def calculate_seconds(degree_str):
 
 # ============== TRAINING DATA FUNCTIONS ==============
 
-def fetch_training_data_by_name(horse_name):
+def fetch_training_data_by_race_id(race_id):
     """
-    At adına göre TJK idman istatistiklerini çeker.
-    Returns: dict with training info or None
+    Koşu ID'sine göre TJK'dan tüm atların idman verilerini çeker.
+    KTip=5 parametresi İdman Bilgileri sekmesini getirir.
+    Returns: dict mapping horse name to training info
     """
     try:
-        if not horse_name:
-            return None
+        if not race_id:
+            return {}
             
-        # TJK İdman İstatistikleri endpoint'i
-        url = "https://www.tjk.org/TR/YarisSever/Query/Data/IdmanIstatistikleri"
+        # Doğru TJK İdman Bilgileri endpoint'i (KTip=5)
+        url = f"https://www.tjk.org/TR/YarisSever/Info/Karsilastirma/Karsilastirma"
         
         params = {
-            'QueryParameter_AtAdi': horse_name.strip(),
-            'QueryParameter_Hipodrom': '-1',  # Tüm hipodromlar
-            'Sort': 'AtAdi'
+            'KosuKodu': str(race_id),
+            'Era': 'today',
+            'KTip': '5'  # İdman Bilgileri sekmesi
         }
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
             'Accept': 'text/html, */*; q=0.01',
             'X-Requested-With': 'XMLHttpRequest',
-            'Referer': 'https://www.tjk.org/TR/YarisSever/Query/Page/IdmanIstatistikleri'
+            'Referer': 'https://www.tjk.org/TR/YarisSever/Info/Page/GunlukYarisProgrami',
+            'sec-ch-ua': '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"'
         }
         
-        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         if response.status_code != 200:
-            print(f"[TRAINING] {horse_name} için idman verisi alınamadı: {response.status_code}")
-            return None
+            print(f"[TRAINING] Koşu {race_id} için idman verisi alınamadı: {response.status_code}")
+            return {}
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # Tablo gövdesini bul
-        tbody = soup.find('tbody', id='tbody0') or soup.find('tbody')
+        table = soup.find('table')
+        if not table:
+            print(f"[TRAINING] Koşu {race_id} için idman tablosu bulunamadı")
+            return {}
+            
+        tbody = table.find('tbody')
         if not tbody:
-            print(f"[TRAINING] {horse_name} için idman tablosu bulunamadı")
-            return None
+            tbody = table  # tbody yoksa table'ı kullan
             
         rows = tbody.find_all('tr')
         if not rows:
-            return None
+            print(f"[TRAINING] Koşu {race_id} için idman satırı bulunamadı")
+            return {}
+        
+        training_map = {}
             
-        # İlk (en son) idman kaydını al
         for row in rows:
             cells = row.find_all('td')
-            if len(cells) >= 15:
+            if len(cells) >= 10:
                 try:
-                    # Tablo yapısı: At Adı, Irk, Cins, Yaş, 1400m, 1200m, 1000m, 800m, 600m, 400m, 200m, 
-                    #               Durum, İ.Tarihi, İ.Hip, P.Dur, Pist, İ.Türü, İ.Jokeyi
+                    # Tablo yapısı: At No, At Adı, mesafe süreleri..., İdman Tarihi, Pist, Hipodrom, İdman Jokeyi
+                    horse_name = ''
+                    
+                    # At adını bul (genellikle link içinde)
+                    name_cell = cells[1] if len(cells) > 1 else cells[0]
+                    name_link = name_cell.find('a')
+                    if name_link:
+                        horse_name = name_link.text.strip()
+                    else:
+                        horse_name = name_cell.text.strip()
+                    
+                    if not horse_name:
+                        continue
+                    
+                    # Mesafe sürelerini parse et
+                    times = {}
+                    distance_cells_start = 2  # Mesafe süreleri 2. hücreden başlıyor
+                    distances = ['2200m', '2000m', '1800m', '1600m', '1400m', '1200m', '1000m', '800m', '600m', '400m', '200m']
+                    
+                    for idx, dist in enumerate(distances):
+                        cell_idx = distance_cells_start + idx
+                        if cell_idx < len(cells):
+                            time_val = cells[cell_idx].text.strip()
+                            if time_val and time_val != '-':
+                                times[dist] = time_val
+                    
+                    # Son hücrelerden idman bilgileri
+                    # Tipik yapı: ... İdman Tarihi | Pist Durumu | Pist Türü | Hipodrom | İdman Jokeyi | ...
+                    training_date = ''
+                    hippodrome = ''
+                    track_condition = ''
+                    training_jockey = ''
+                    
+                    # Hücreleri tersten ara (son hücreler genellikle idman bilgileri)
+                    for i, cell in enumerate(cells):
+                        cell_text = cell.text.strip()
+                        # Tarih formatı: dd.MM.yyyy
+                        if len(cell_text) == 10 and '.' in cell_text and cell_text[2] == '.' and cell_text[5] == '.':
+                            training_date = cell_text
+                        # Hipodrom isimleri
+                        elif cell_text in ['Bursa', 'Ankara', 'İstanbul', 'İzmir', 'Adana', 'Elazığ', 'Diyarbakır', 'Şanlıurfa', 'Kocaeli']:
+                            hippodrome = cell_text
+                        # Pist durumu
+                        elif cell_text in ['Kum', 'Çim', 'Sentetik']:
+                            track_condition = cell_text
+                    
+                    # Son hücre genellikle jokey
+                    if len(cells) > 1:
+                        last_cell_text = cells[-2].text.strip() if len(cells) >= 2 else ''
+                        if last_cell_text and len(last_cell_text) > 3 and not last_cell_text.isdigit():
+                            training_jockey = last_cell_text
+                    
                     training_data = {
-                        'horseName': cells[0].text.strip() if len(cells) > 0 else '',
-                        'breed': cells[1].text.strip() if len(cells) > 1 else '',
-                        'gender': cells[2].text.strip() if len(cells) > 2 else '',
-                        'age': cells[3].text.strip() if len(cells) > 3 else '',
-                        'times': {
-                            '1400m': cells[4].text.strip() if len(cells) > 4 else '',
-                            '1200m': cells[5].text.strip() if len(cells) > 5 else '',
-                            '1000m': cells[6].text.strip() if len(cells) > 6 else '',
-                            '800m': cells[7].text.strip() if len(cells) > 7 else '',
-                            '600m': cells[8].text.strip() if len(cells) > 8 else '',
-                            '400m': cells[9].text.strip() if len(cells) > 9 else '',
-                            '200m': cells[10].text.strip() if len(cells) > 10 else '',
-                        },
-                        'status': cells[11].text.strip() if len(cells) > 11 else '',
-                        'trainingDate': cells[12].text.strip() if len(cells) > 12 else '',
-                        'hippodrome': cells[13].text.strip() if len(cells) > 13 else '',
-                        'trackCondition': cells[14].text.strip() if len(cells) > 14 else '',
-                        'trackType': cells[15].text.strip() if len(cells) > 15 else '',
-                        'trainingType': cells[16].text.strip() if len(cells) > 16 else '',
-                        'trainingJockey': cells[17].text.strip() if len(cells) > 17 else '',
+                        'horseName': horse_name,
+                        'times': times,
+                        'trainingDate': training_date,
+                        'hippodrome': hippodrome,
+                        'trackCondition': track_condition,
+                        'trainingJockey': training_jockey,
                     }
                     
-                    # Atın adı uyuşuyor mu kontrol et (case-insensitive)
-                    if horse_name.strip().upper() in training_data['horseName'].upper():
-                        print(f"[TRAINING] {horse_name} için idman verisi bulundu: {training_data['trainingDate']}")
-                        return training_data
+                    # Horse name'i uppercase key olarak kullan (eşleştirme için)
+                    training_map[horse_name.upper()] = training_data
+                    print(f"[TRAINING] {horse_name}: Tarih={training_date}, Süre={(list(times.values())[0] if times else 'yok')}")
                         
                 except Exception as e:
-                    print(f"[TRAINING] Parse hatası: {e}")
+                    print(f"[TRAINING] Satır parse hatası: {e}")
                     continue
         
-        return None
+        print(f"[TRAINING] Koşu {race_id} için {len(training_map)} at idman verisi bulundu")
+        return training_map
         
     except Exception as e:
-        print(f"[TRAINING ERROR] {horse_name}: {e}")
-        return None
+        print(f"[TRAINING ERROR] Koşu {race_id}: {e}")
+        return {}
 
 def parse_training_time(time_str):
     """
@@ -1423,27 +1469,22 @@ def analyze_race():
         horses = data.get('horses', [])
         target_distance = data.get('targetDistance', '')
         target_track = data.get('targetTrack', '')
+        race_id = data.get('raceId', '')  # YENİ: Koşu ID'si
         
         if not horses:
             return jsonify({'success': False, 'error': 'At listesi boş'}), 400
         
-        print(f"[ANALYZE] {len(horses)} at için analiz başlatıldı. Mesafe: {target_distance}, Pist: {target_track}")
+        print(f"[ANALYZE] {len(horses)} at için analiz başlatıldı. Mesafe: {target_distance}, Pist: {target_track}, RaceId: {race_id}")
             
-        # 1. Paralel İdman Veri Madenciliği
-        print(f"[ANALYZE] İdman verileri çekiliyor...")
+        # 1. İdman Verilerini Koşu ID'sine Göre Çek (Tek İstek)
         training_data_map = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            training_futures = {executor.submit(fetch_training_data_by_name, horse.get('name', '')): horse for horse in horses}
-            for future in concurrent.futures.as_completed(training_futures):
-                horse = training_futures[future]
-                horse_name = horse.get('name', '')
-                try:
-                    training_data_map[horse_name] = future.result()
-                except Exception as e:
-                    print(f"[TRAINING ERROR] {horse_name}: {e}")
-                    training_data_map[horse_name] = None
+        if race_id:
+            print(f"[ANALYZE] Koşu {race_id} için idman verileri çekiliyor...")
+            training_data_map = fetch_training_data_by_race_id(race_id)
+        else:
+            print(f"[ANALYZE] RaceId belirtilmedi, idman verileri çekilemeyecek")
         
-        print(f"[ANALYZE] {len([v for v in training_data_map.values() if v])} at için idman verisi bulundu")
+        print(f"[ANALYZE] {len(training_data_map)} at için idman verisi bulundu")
         
         # 2. Paralel Yarış Geçmişi ve Analiz
         analyzed_horses = []
@@ -1456,8 +1497,8 @@ def analyze_race():
                 horse_data = future.result()
                 horse_name = original_horse.get('name', '')
                 
-                # İdman verisini al
-                training_data = training_data_map.get(horse_name)
+                # İdman verisini al (case-insensitive eşleştirme)
+                training_data = training_data_map.get(horse_name.upper())
                 training_fitness, training_label, days_since, training_best_time = calculate_training_fitness(training_data)
                 
                 if horse_data and horse_data.get('races'):
