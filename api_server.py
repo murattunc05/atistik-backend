@@ -1527,10 +1527,19 @@ def analyze_race():
                 horse_name_normalized = normalize_name(horse_name)
                 training_data = None
                 
+                # Debug: İlk at için key'leri göster
+                if len(analyzed_horses) == 0:
+                    print(f"[DEBUG] Training map keys: {list(training_data_map.keys())}")
+                    print(f"[DEBUG] Aranan at (raw): '{horse_name}'")
+                    print(f"[DEBUG] Aranan at (norm): '{horse_name_normalized}'")
+                    for key in training_data_map.keys():
+                        print(f"[DEBUG] Map key (raw): '{key}' -> (norm): '{normalize_name(key)}'")
+                
                 # Eşleşen anahtarı bul
                 for key, value in training_data_map.items():
                     if normalize_name(key) == horse_name_normalized:
                         training_data = value
+                        print(f"[DEBUG] EŞLEŞME BULUNDU: '{horse_name}' == '{key}'")
                         break
                 
                 print(f"[DEBUG] At: {horse_name}, Training data: {'VAR' if training_data else 'YOK'}")
