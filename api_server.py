@@ -1499,6 +1499,7 @@ def analyze_race():
                 
                 # İdman verisini al (case-insensitive eşleştirme)
                 training_data = training_data_map.get(horse_name.upper())
+                print(f"[DEBUG] At: {horse_name}, Training data: {'VAR' if training_data else 'YOK'}, Keys: {list(training_data_map.keys())[:3]}...")
                 training_fitness, training_label, days_since, training_best_time = calculate_training_fitness(training_data)
                 
                 if horse_data and horse_data.get('races'):
