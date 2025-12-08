@@ -836,6 +836,236 @@ def calculate_seconds(degree_str):
     except:
         return None
 
+# ============== TRAINING DATA FUNCTIONS ==============
+
+def fetch_training_data_by_name(horse_name):
+    """
+    At adına göre TJK idman istatistiklerini çeker.
+    Returns: dict with training info or None
+    """
+    try:
+        if not horse_name:
+            return None
+            
+        # TJK İdman İstatistikleri endpoint'i
+        url = "https://www.tjk.org/TR/YarisSever/Query/Data/IdmanIstatistikleri"
+        
+        params = {
+            'QueryParameter_AtAdi': horse_name.strip(),
+            'QueryParameter_Hipodrom': '-1',  # Tüm hipodromlar
+            'Sort': 'AtAdi'
+        }
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html, */*; q=0.01',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': 'https://www.tjk.org/TR/YarisSever/Query/Page/IdmanIstatistikleri'
+        }
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        if response.status_code != 200:
+            print(f"[TRAINING] {horse_name} için idman verisi alınamadı: {response.status_code}")
+            return None
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Tablo gövdesini bul
+        tbody = soup.find('tbody', id='tbody0') or soup.find('tbody')
+        if not tbody:
+            print(f"[TRAINING] {horse_name} için idman tablosu bulunamadı")
+            return None
+            
+        rows = tbody.find_all('tr')
+        if not rows:
+            return None
+            
+        # İlk (en son) idman kaydını al
+        for row in rows:
+            cells = row.find_all('td')
+            if len(cells) >= 15:
+                try:
+                    # Tablo yapısı: At Adı, Irk, Cins, Yaş, 1400m, 1200m, 1000m, 800m, 600m, 400m, 200m, 
+                    #               Durum, İ.Tarihi, İ.Hip, P.Dur, Pist, İ.Türü, İ.Jokeyi
+                    training_data = {
+                        'horseName': cells[0].text.strip() if len(cells) > 0 else '',
+                        'breed': cells[1].text.strip() if len(cells) > 1 else '',
+                        'gender': cells[2].text.strip() if len(cells) > 2 else '',
+                        'age': cells[3].text.strip() if len(cells) > 3 else '',
+                        'times': {
+                            '1400m': cells[4].text.strip() if len(cells) > 4 else '',
+                            '1200m': cells[5].text.strip() if len(cells) > 5 else '',
+                            '1000m': cells[6].text.strip() if len(cells) > 6 else '',
+                            '800m': cells[7].text.strip() if len(cells) > 7 else '',
+                            '600m': cells[8].text.strip() if len(cells) > 8 else '',
+                            '400m': cells[9].text.strip() if len(cells) > 9 else '',
+                            '200m': cells[10].text.strip() if len(cells) > 10 else '',
+                        },
+                        'status': cells[11].text.strip() if len(cells) > 11 else '',
+                        'trainingDate': cells[12].text.strip() if len(cells) > 12 else '',
+                        'hippodrome': cells[13].text.strip() if len(cells) > 13 else '',
+                        'trackCondition': cells[14].text.strip() if len(cells) > 14 else '',
+                        'trackType': cells[15].text.strip() if len(cells) > 15 else '',
+                        'trainingType': cells[16].text.strip() if len(cells) > 16 else '',
+                        'trainingJockey': cells[17].text.strip() if len(cells) > 17 else '',
+                    }
+                    
+                    # Atın adı uyuşuyor mu kontrol et (case-insensitive)
+                    if horse_name.strip().upper() in training_data['horseName'].upper():
+                        print(f"[TRAINING] {horse_name} için idman verisi bulundu: {training_data['trainingDate']}")
+                        return training_data
+                        
+                except Exception as e:
+                    print(f"[TRAINING] Parse hatası: {e}")
+                    continue
+        
+        return None
+        
+    except Exception as e:
+        print(f"[TRAINING ERROR] {horse_name}: {e}")
+        return None
+
+def parse_training_time(time_str):
+    """
+    İdman süresini (örn: '0.24.50' veya '24.50') saniyeye çevirir.
+    """
+    try:
+        if not time_str or time_str == '-' or time_str.strip() == '':
+            return None
+            
+        time_str = time_str.strip()
+        parts = time_str.split('.')
+        
+        if len(parts) == 3:
+            # Format: dakika.saniye.salise (örn: 0.24.50)
+            minutes = int(parts[0])
+            seconds = int(parts[1])
+            centiseconds = int(parts[2])
+            return minutes * 60 + seconds + centiseconds / 100
+        elif len(parts) == 2:
+            # Format: saniye.salise (örn: 24.50)
+            seconds = int(parts[0])
+            centiseconds = int(parts[1])
+            return seconds + centiseconds / 100
+        
+        return None
+    except:
+        return None
+
+def calculate_training_fitness(training_data, race_date_str=None):
+    """
+    İdman verilerinden fitness skoru hesaplar.
+    
+    Faktörler:
+    1. İdman zamanlaması: Yarıştan 2-5 gün önce ideal
+    2. İdman süreleri: Hızlı süreler = yüksek skor
+    
+    Returns: (score: 0-100, label: str, days_since: int or None, best_time: str or None)
+    """
+    if not training_data:
+        return 50.0, "Bilinmiyor", None, None
+        
+    from datetime import datetime, timedelta
+    
+    score = 50.0  # Başlangıç skoru
+    days_since_training = None
+    best_time_str = None
+    
+    # 1. İdman tarihi analizi
+    training_date_str = training_data.get('trainingDate', '')
+    if training_date_str:
+        try:
+            # TJK tarih formatı: dd.MM.yyyy
+            training_date = datetime.strptime(training_date_str, '%d.%m.%Y')
+            
+            # Yarış tarihi verilmediyse bugünü kullan
+            if race_date_str:
+                try:
+                    race_date = datetime.strptime(race_date_str, '%d.%m.%Y')
+                except:
+                    race_date = datetime.now()
+            else:
+                race_date = datetime.now()
+            
+            days_since_training = (race_date - training_date).days
+            
+            # İdeal zamanlama: 2-5 gün önce
+            if 2 <= days_since_training <= 5:
+                score += 25  # Mükemmel zamanlama
+            elif 1 <= days_since_training <= 7:
+                score += 15  # İyi zamanlama
+            elif days_since_training <= 10:
+                score += 5   # Kabul edilebilir
+            elif days_since_training > 14:
+                score -= 10  # Çok eski idman
+                
+        except Exception as e:
+            print(f"[TRAINING] Tarih parse hatası: {e}")
+    
+    # 2. İdman süreleri analizi
+    times = training_data.get('times', {})
+    valid_times = []
+    
+    for distance, time_str in times.items():
+        seconds = parse_training_time(time_str)
+        if seconds:
+            valid_times.append((distance, seconds, time_str))
+    
+    if valid_times:
+        # En hızlı süreyi bul (mesafeye göre normalize edilmiş)
+        # 200m için ~12s, 400m için ~24s, 600m için ~38s ideal
+        ideal_speeds = {
+            '200m': 12.0,
+            '400m': 24.0,
+            '600m': 37.0,
+            '800m': 50.0,
+            '1000m': 63.0,
+            '1200m': 77.0,
+            '1400m': 91.0
+        }
+        
+        speed_scores = []
+        for distance, seconds, time_str in valid_times:
+            ideal = ideal_speeds.get(distance)
+            if ideal:
+                # İdeal süreye yakınlık (düşük = iyi)
+                ratio = seconds / ideal
+                if ratio <= 1.0:
+                    speed_score = 100  # İdealden hızlı
+                elif ratio <= 1.05:
+                    speed_score = 90
+                elif ratio <= 1.10:
+                    speed_score = 75
+                elif ratio <= 1.15:
+                    speed_score = 60
+                else:
+                    speed_score = 40
+                speed_scores.append(speed_score)
+        
+        if speed_scores:
+            avg_speed_score = sum(speed_scores) / len(speed_scores)
+            score += (avg_speed_score - 50) * 0.5  # -25 ile +25 arası
+            
+        # En iyi süreyi kaydet (gösterim için)
+        best_time_str = valid_times[0][2] if valid_times else None
+    
+    # Skoru 0-100 arasında sınırla
+    score = max(0, min(100, score))
+    
+    # Etiket belirle
+    if score >= 80:
+        label = "Çok İyi Form"
+    elif score >= 65:
+        label = "İyi Form"
+    elif score >= 50:
+        label = "Normal"
+    elif score >= 35:
+        label = "Orta"
+    else:
+        label = "Zayıf Form"
+    
+    return round(score, 1), label, days_since_training, best_time_str
+
 # ============== ADVANCED ANALYSIS FUNCTIONS ==============
 
 def calculate_early_speed(races):
@@ -1115,14 +1345,16 @@ def calculate_distance_suitability(races, target_distance):
 def calculate_ai_score(metrics):
     """
     Tüm metriklerin ağırlıklı birleşimi - Nihai AI Skoru (0-100)
+    İdman fitness skoru da dahil edildi.
     """
     weights = {
-        'early_speed': 0.15,
-        'late_kick': 0.20,
-        'form_trend': 0.20,
-        'consistency': 0.15,
-        'track_suit': 0.15,
-        'distance_suit': 0.15
+        'early_speed': 0.12,
+        'late_kick': 0.18,
+        'form_trend': 0.18,
+        'consistency': 0.12,
+        'track_suit': 0.13,
+        'distance_suit': 0.12,
+        'training_fitness': 0.15
     }
     
     weighted_sum = 0
@@ -1131,7 +1363,7 @@ def calculate_ai_score(metrics):
     for key, weight in weights.items():
         value = metrics.get(key, 50)
         if key == 'consistency':
-            value = value * 10  # 0-10 -> 0-100 dönüşümü
+            value = value * 10
         weighted_sum += value * weight
         weight_total += weight
     
@@ -1197,7 +1429,23 @@ def analyze_race():
         
         print(f"[ANALYZE] {len(horses)} at için analiz başlatıldı. Mesafe: {target_distance}, Pist: {target_track}")
             
-        # 1. Paralel Veri Madenciliği
+        # 1. Paralel İdman Veri Madenciliği
+        print(f"[ANALYZE] İdman verileri çekiliyor...")
+        training_data_map = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            training_futures = {executor.submit(fetch_training_data_by_name, horse.get('name', '')): horse for horse in horses}
+            for future in concurrent.futures.as_completed(training_futures):
+                horse = training_futures[future]
+                horse_name = horse.get('name', '')
+                try:
+                    training_data_map[horse_name] = future.result()
+                except Exception as e:
+                    print(f"[TRAINING ERROR] {horse_name}: {e}")
+                    training_data_map[horse_name] = None
+        
+        print(f"[ANALYZE] {len([v for v in training_data_map.values() if v])} at için idman verisi bulundu")
+        
+        # 2. Paralel Yarış Geçmişi ve Analiz
         analyzed_horses = []
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -1206,6 +1454,11 @@ def analyze_race():
             for future in concurrent.futures.as_completed(future_to_horse):
                 original_horse = future_to_horse[future]
                 horse_data = future.result()
+                horse_name = original_horse.get('name', '')
+                
+                # İdman verisini al
+                training_data = training_data_map.get(horse_name)
+                training_fitness, training_label, days_since, training_best_time = calculate_training_fitness(training_data)
                 
                 if horse_data and horse_data.get('races'):
                     races = horse_data['races']
@@ -1218,7 +1471,7 @@ def analyze_race():
                     track_suit, track_label = calculate_track_suitability(races, target_track)
                     distance_suit, distance_label = calculate_distance_suitability(races, target_distance)
                     
-                    # 3. AI Score hesaplama
+                    # 3. AI Score hesaplama - İdman verisi dahil
                     metrics = {
                         'early_speed': early_speed,
                         'late_kick': late_kick,
@@ -1226,7 +1479,8 @@ def analyze_race():
                         'form_trend_value': trend_value,
                         'consistency': consistency,
                         'track_suit': track_suit,
-                        'distance_suit': distance_suit
+                        'distance_suit': distance_suit,
+                        'training_fitness': training_fitness  # İdman fitness skoru
                     }
                     
                     ai_score = calculate_ai_score(metrics)
@@ -1318,9 +1572,8 @@ def analyze_race():
                     except Exception as e:
                         print(f"[DEBUG] Kilo parse hatası: {e}")
                     
-                    # 4. En İyi Derece - Şu an TJK verisinde derece sütunu doğru çekilemiyor
-                    # cells[12] sıralama pozisyonu döndürüyor, gerçek süre değil
-                    best_time = None  # Gelecek versiyonda düzeltilecek
+                    # 4. En İyi Derece - İdman süresinden alınıyor
+                    best_time = training_best_time  # İdman verisinden
                     
                     analyzed_horses.append({
                         'name': horse_data['name'],
@@ -1343,7 +1596,19 @@ def analyze_race():
                         'jockeyChanged': jockey_changed,
                         'weightChange': weight_change,
                         'bestTime': best_time,
-                        'raceCount': len(races)
+                        'raceCount': len(races),
+                        # === İDMAN BİLGİLERİ ===
+                        'trainingInfo': {
+                            'hasData': training_data is not None,
+                            'fitnessScore': training_fitness,
+                            'fitnessLabel': training_label,
+                            'daysSinceTraining': days_since,
+                            'trainingDate': training_data.get('trainingDate', '') if training_data else None,
+                            'hippodrome': training_data.get('hippodrome', '') if training_data else None,
+                            'trackCondition': training_data.get('trackCondition', '') if training_data else None,
+                            'trainingJockey': training_data.get('trainingJockey', '') if training_data else None,
+                            'times': training_data.get('times', {}) if training_data else {},
+                        } if training_data else None
                     })
                 else:
                     # Veri çekilemediyse
