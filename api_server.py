@@ -1517,12 +1517,22 @@ def analyze_race():
                 import unicodedata
                 import re
                 
-                def normalize_name(name):
-                    """Türkçe karakterleri normalize et - BÜYÜK HARFE çevir"""
+                def clean_horse_name(name):
+                    """At ismini temizle - newline, boşluk, yarış no kaldır"""
                     if not name:
                         return ""
-                    # Whitespace temizle
-                    name = re.sub(r'\s+', ' ', name.strip())
+                    # Newline ve fazla boşlukları tek boşluğa çevir
+                    name = re.sub(r'[\n\r\t]+', ' ', name)
+                    name = re.sub(r'\s+', ' ', name).strip()
+                    # Sondaki (X) yarış numarasını kaldır
+                    name = re.sub(r'\s*\(\d+\)\s*$', '', name).strip()
+                    return name
+                
+                def normalize_name(name):
+                    """Türkçe karakterleri normalize et - BÜYÜK HARFE çevir"""
+                    name = clean_horse_name(name)
+                    if not name:
+                        return ""
                     # Unicode normalize et
                     normalized = unicodedata.normalize('NFKC', name)
                     # Türkçe karakterleri standartlaştır
@@ -1538,26 +1548,25 @@ def analyze_race():
                         normalized = normalized.replace(tr_char, en_char)
                     return normalized.upper()
                 
+                horse_name_clean = clean_horse_name(horse_name)
                 horse_name_normalized = normalize_name(horse_name)
                 training_data = None
                 
                 # Debug: İlk at için karşılaştırma göster
                 if len(analyzed_horses) == 0:
-                    print(f"[DEBUG] Training map keys (normalized):")
-                    for key in training_data_map.keys():
-                        print(f"  '{key}' -> '{normalize_name(key)}'")
-                    print(f"[DEBUG] Aranan: '{horse_name}' -> '{horse_name_normalized}'")
-                    print(f"[DEBUG] Aranan HEX: {horse_name.encode('utf-8').hex()}")
+                    print(f"[DEBUG] Aranan (temiz): '{horse_name_clean}' -> '{horse_name_normalized}'")
                 
                 # Eşleşen anahtarı bul
                 for key, value in training_data_map.items():
                     key_normalized = normalize_name(key)
                     if key_normalized == horse_name_normalized:
                         training_data = value
-                        print(f"[DEBUG] EŞLEŞME: '{horse_name}' == '{key}'")
                         break
                 
-                print(f"[DEBUG] At: {horse_name}, Training: {'VAR' if training_data else 'YOK'}")
+                if training_data:
+                    print(f"[DEBUG] EŞLEŞME: {horse_name_clean} -> Training VAR")
+                else:
+                    print(f"[DEBUG] At: {horse_name_clean}, Training: YOK")
                 training_fitness, training_label, days_since, training_best_time = calculate_training_fitness(training_data)
                 
                 if horse_data and horse_data.get('races'):
