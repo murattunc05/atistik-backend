@@ -1513,9 +1513,27 @@ def analyze_race():
                 horse_data = future.result()
                 horse_name = original_horse.get('name', '')
                 
-                # İdman verisini al (case-insensitive eşleştirme)
-                training_data = training_data_map.get(horse_name.upper())
-                print(f"[DEBUG] At: {horse_name}, Training data: {'VAR' if training_data else 'YOK'}, Keys: {list(training_data_map.keys())[:3]}...")
+                # İdman verisini al (Türkçe karakter uyumlu eşleştirme)
+                import unicodedata
+                def normalize_name(name):
+                    """Türkçe karakterleri normalize et ve küçük harfe çevir"""
+                    if not name:
+                        return ""
+                    # Unicode normalize et
+                    normalized = unicodedata.normalize('NFKC', name.strip())
+                    # Türkçe-uyumlu küçük harf (casefold daha iyi çalışır)
+                    return normalized.casefold()
+                
+                horse_name_normalized = normalize_name(horse_name)
+                training_data = None
+                
+                # Eşleşen anahtarı bul
+                for key, value in training_data_map.items():
+                    if normalize_name(key) == horse_name_normalized:
+                        training_data = value
+                        break
+                
+                print(f"[DEBUG] At: {horse_name}, Training data: {'VAR' if training_data else 'YOK'}")
                 training_fitness, training_label, days_since, training_best_time = calculate_training_fitness(training_data)
                 
                 if horse_data and horse_data.get('races'):
