@@ -1179,6 +1179,7 @@ def calculate_training_fitness(training_data, race_date_str=None):
     score = 50.0  # Başlangıç skoru
     days_since_training = None
     best_time_str = None
+    best_distance = None
     
     # 1. İdman tarihi analizi
     training_date_str = training_data.get('trainingDate', '')
