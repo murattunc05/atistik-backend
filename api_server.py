@@ -1277,6 +1277,108 @@ def calculate_training_fitness(training_data, race_date_str=None):
     
     return round(score, 1), label, days_since_training, best_time_str, best_distance
 
+def project_training_to_race_distance(training_data, target_distance, avg_race_degree=None):
+    """
+    FAZ 2.2: İdman verisini yarış mesafesine oranlayarak tahmini yarış derecesi hesaplar.
+    
+    Mantık:
+    1. İdman times dict'inden en uzun mesafeli süreyi al (daha güvenilir)
+    2. Lineer genişlet: (target_distance / training_distance) × training_time
+    3. Uzun mesafe yorulma faktörü ekle
+    4. Yarış ortalamasıyla karşılaştır
+    
+    Returns: dict {
+        projectedDegree: formatted string (dk.sn.ss),
+        projectedDegreeSeconds: float,
+        projectedFromDistance: str (e.g. "600m"),
+        expansionRatio: float,
+        projectionLabel: str,
+        projectionDiff: float (saniye farkı, negatif = idman daha hızlı)
+    } or None
+    """
+    if not training_data:
+        return None
+    
+    times = training_data.get('times', {})
+    if not times:
+        return None
+    
+    # Hedef mesafeyi sayıya çevir
+    try:
+        if isinstance(target_distance, str):
+            target_dist = int(target_distance.replace(' ', '').replace('m', ''))
+        else:
+            target_dist = int(target_distance)
+    except:
+        return None
+    
+    if target_dist <= 0:
+        return None
+    
+    # En uzun mesafeli idman süresini bul (daha güvenilir projeksiyon için)
+    best_entry = None
+    best_distance_num = 0
+    
+    for dist_str, time_str in times.items():
+        seconds = parse_training_time(time_str)
+        if seconds and seconds > 0:
+            try:
+                dist_num = int(dist_str.replace('m', ''))
+                if dist_num > best_distance_num:
+                    best_distance_num = dist_num
+                    best_entry = (dist_str, seconds, dist_num)
+            except:
+                continue
+    
+    if not best_entry or best_distance_num <= 0:
+        return None
+    
+    training_dist_str, training_seconds, training_dist_num = best_entry
+    
+    # Genişleme oranı
+    expansion_ratio = target_dist / training_dist_num
+    
+    # Lineer projeksiyon
+    projected_seconds = training_seconds * expansion_ratio
+    
+    # Yorulma düzeltme faktörü — uzun mesafelerde tempo düşer
+    if expansion_ratio <= 2.0:
+        fatigue_factor = 1.03   # +%3
+    elif expansion_ratio <= 3.0:
+        fatigue_factor = 1.07   # +%7
+    elif expansion_ratio <= 4.0:
+        fatigue_factor = 1.12   # +%12
+    else:
+        fatigue_factor = 1.18   # +%18
+    
+    projected_seconds *= fatigue_factor
+    projected_formatted = format_seconds_to_degree(projected_seconds)
+    
+    # Yarış ortalamasıyla karşılaştırma
+    projection_label = "Projeksiyon"
+    projection_diff = None
+    
+    if avg_race_degree and avg_race_degree > 0:
+        projection_diff = round(projected_seconds - avg_race_degree, 2)
+        tolerance = avg_race_degree * 0.03  # ±%3 tolerans
+        
+        if projected_seconds < avg_race_degree - tolerance:
+            projection_label = "İdman Hızlı ⚡"
+        elif projected_seconds > avg_race_degree + tolerance:
+            projection_label = "İdman Yavaş"
+        else:
+            projection_label = "İdman Uyumlu ✓"
+    
+    return {
+        'projectedDegree': projected_formatted,
+        'projectedDegreeSeconds': round(projected_seconds, 2),
+        'projectedFromDistance': training_dist_str,
+        'expansionRatio': round(expansion_ratio, 1),
+        'projectionLabel': projection_label,
+        'projectionDiff': projection_diff
+    }
+
+
 # ============== ADVANCED ANALYSIS FUNCTIONS ==============
 
 def calculate_early_speed(races):
@@ -1832,6 +1934,12 @@ def analyze_race():
                     # 4. En İyi Derece — yarış derecesinden alınıyor
                     best_time = degree_stats.get('bestDegreeFormatted', training_best_time)
                     
+                    # FAZ 2.2: İdman projeksiyonu hesapla
+                    training_projection = None
+                    if training_data:
+                        avg_race_deg = degree_stats.get('avgDegree') if degree_stats else None
+                        training_projection = project_training_to_race_distance(training_data, target_distance, avg_race_deg)
+                    
                     analyzed_horses.append({
                         'name': horse_data['name'],
                         'no': original_horse.get('no', ''),
@@ -1871,8 +1979,16 @@ def analyze_race():
                             'bestTrainingTime': training_best_time,
                             'bestTrainingDistance': training_best_distance,
                             'bestTrainingTimeSeconds': parse_training_time(training_best_time) if training_best_time else None,
+                            # FAZ 2.2: Projeksiyon verileri
+                            'projectedDegree': training_projection.get('projectedDegree') if training_projection else None,
+                            'projectedDegreeSeconds': training_projection.get('projectedDegreeSeconds') if training_projection else None,
+                            'projectedFromDistance': training_projection.get('projectedFromDistance') if training_projection else None,
+                            'expansionRatio': training_projection.get('expansionRatio') if training_projection else None,
+                            'projectionLabel': training_projection.get('projectionLabel') if training_projection else None,
+                            'projectionDiff': training_projection.get('projectionDiff') if training_projection else None,
                         } if training_data else None
                     })
+
                 else:
                     # Veri çekilemediyse
                     analyzed_horses.append({
