@@ -1938,7 +1938,10 @@ def analyze_race():
                     training_projection = None
                     if training_data:
                         avg_race_deg = degree_stats.get('avgDegree') if degree_stats else None
+                        print(f"[PROJ DEBUG] Horse: {horse_data['name']}, target_distance: '{target_distance}', avg_race_deg: {avg_race_deg}")
+                        print(f"[PROJ DEBUG] training_data times: {training_data.get('times', {})}")
                         training_projection = project_training_to_race_distance(training_data, target_distance, avg_race_deg)
+                        print(f"[PROJ DEBUG] Result: {training_projection}")
                     
                     analyzed_horses.append({
                         'name': horse_data['name'],
