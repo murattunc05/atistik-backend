@@ -1059,8 +1059,10 @@ def apply_class_factor_to_degrees(races):
         list: Her yarışa 'adjustedDegreeInSeconds' ve 'classMultiplier' eklenmiş hali
     """
     for race in races:
-        group = race.get('group', '')
-        multiplier = get_class_multiplier(group)
+        # NOT: 'group' alanı yaş/ırk bilgisi içerir (3A, 2İ vb.)
+        # Koşu cinsi (Maiden, KV, Handikap) 'raceType' alanındadır (cells[13])
+        race_type = race.get('raceType', '') or race.get('group', '')
+        multiplier = get_class_multiplier(race_type)
         race['classMultiplier'] = multiplier
         
         degree_seconds = race.get('degreeInSeconds')
