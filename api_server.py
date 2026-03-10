@@ -744,8 +744,16 @@ def health_check():
     """Sunucu sağlık kontrolü"""
     return jsonify({'status': 'ok', 'message': 'TJK API Server çalışıyor'})
 
-def fetch_horse_details_safe(horse_data):
-    """Güvenli bir şekilde at detaylarını çeker (Hata yönetimi ile)"""
+def fetch_horse_details_safe(horse_data, target_distance=None):
+    """
+    Güvenli bir şekilde at detaylarını çeker (Hata yönetimi ile).
+    FAZ 1.1: Tüm yarış geçmişini çeker, mesafe bazlı filtreleme yapar.
+    
+    TJK At Koşu Bilgileri Tablo Sütunları:
+    [0]Tarih [1]Şehir [2]Msf [3]Pist [4]S(sıra) [5]Derece
+    [6]Sıklet [7]Takı [8]Jokey [9]St [10]Gny [11]Grup
+    [12]K.No-K.Adı [13]Kcins [14]Ant. [15]Sahip [16]HP [17]Ikramiye [18]S20
+    """
     try:
         detail_link = horse_data.get('detailLink')
         if not detail_link:
@@ -753,10 +761,7 @@ def fetch_horse_details_safe(horse_data):
             
         full_url = urljoin(TARGET_URL, detail_link).replace("&amp;", "&")
         
-        # Rastgele bekleme (Anti-bot önlemi)
-        # time.sleep(0.1) 
-        
-        response = requests.get(full_url, headers=HEADERS, timeout=10)
+        response = requests.get(full_url, headers=HEADERS, timeout=15)
         if response.status_code != 200:
             return None
             
@@ -774,16 +779,20 @@ def fetch_horse_details_safe(horse_data):
             return None
             
         rows = table_body.find_all('tr')
-        races = []
+        all_races = []       # Tüm yarışlar
+        filtered_races = []  # Mesafe bazlı filtrelenmiş yarışlar
         
-        # Son 5 yarışı al
-        count = 0
+        # Hedef mesafeyi sayıya çevir (filtreleme için)
+        target_dist_num = None
+        if target_distance:
+            try:
+                target_dist_num = int(str(target_distance).replace(' ', '').replace('m', ''))
+            except:
+                pass
+        
         for row in rows:
             if 'hidable' in row.get('class', []):
                 continue
-            
-            if count >= 5:
-                break
                 
             cells = row.find_all('td')
             if len(cells) > 17:
@@ -791,50 +800,276 @@ def fetch_horse_details_safe(horse_data):
                     race_date = cells[0].text.strip()
                     city = cells[1].text.strip()
                     distance = cells[2].text.strip()
-                    track = cells[3].text.strip()  # Çim/Kum
-                    rank = cells[4].text.strip()   # Sıralama
-                    weight = cells[6].text.strip() # Kilo
-                    jockey = cells[7].text.strip() # Jokey
-                    degree = cells[12].text.strip() # Derece (süre)
+                    track = " ".join(cells[3].text.strip().split())  # Pist tipi (Çim/Kum/Sentetik) + durum
+                    rank = cells[4].text.strip()     # Sıralama
+                    degree = cells[5].text.strip()   # Derece (süre)
+                    weight = cells[6].text.strip()   # Sıklet
+                    jockey = cells[8].text.strip()   # Jokey
+                    group_info = cells[11].text.strip() if len(cells) > 11 else ''  # Grup
+                    race_type = cells[13].text.strip() if len(cells) > 13 else ''   # Koşu Cinsi (Kcins)
                     
-                    races.append({
+                    # Derece saniyeye çevir
+                    degree_in_seconds = calculate_seconds(degree)
+                    
+                    # Pist bilgisini ayır: "Kum Normal" -> track_type="Kum", track_condition="Normal"
+                    track_parts = track.split()
+                    track_type = track_parts[0] if track_parts else track
+                    track_condition = ' '.join(track_parts[1:]) if len(track_parts) > 1 else ''
+                    
+                    race_entry = {
                         'date': race_date,
                         'city': city,
                         'distance': distance,
-                        'track': track,
+                        'track': track_type,              # Pist tipi: Kum/Çim/Sentetik
+                        'trackCondition': track_condition, # Pist durumu: Normal/Sulu/Islak/Ağır vb.
                         'rank': rank,
                         'weight': weight,
                         'jockey': jockey,
-                        'degree': degree
-                    })
-                    count += 1
-                except:
+                        'degree': degree,
+                        'degreeInSeconds': degree_in_seconds,
+                        'group': group_info,               # Grup: Maiden/Şartlı/Handikap vb.
+                        'raceType': race_type              # Koşu cinsi detayı
+                    }
+                    
+                    all_races.append(race_entry)
+                    
+                    # Mesafe filtrelemesi (±100m tolerans)
+                    if target_dist_num:
+                        try:
+                            race_dist = int(distance.replace(' ', ''))
+                            if abs(race_dist - target_dist_num) <= 100:
+                                # Derece verisi olan yarışları ön planda tut
+                                if degree_in_seconds:
+                                    filtered_races.append(race_entry)
+                        except:
+                            pass
+                    
+                except Exception as e:
                     continue
+        
+        # FAZ 3.1: Sınıf/Grup Zorluk Çarpanı uygula (tüm yarışlara)
+        all_races = apply_class_factor_to_degrees(all_races)
+        filtered_races = apply_class_factor_to_degrees(filtered_races)
+        
+        # Derece istatistikleri hesapla (filtrelenmiş yarışlar üzerinden)
+        target_races = filtered_races if filtered_races else all_races
+        degree_stats = calculate_degree_stats(target_races)
         
         return {
             'name': horse_data.get('name'),
-            'jockey': horse_data.get('jockey', ''),  # Mevcut jokey
-            'weight': horse_data.get('weight', ''),  # Mevcut kilo
-            'races': races
+            'jockey': horse_data.get('jockey', ''),
+            'weight': horse_data.get('weight', ''),
+            'races': all_races,
+            'filteredRaces': filtered_races,
+            'degreeStats': degree_stats,
+            'totalRaceCount': len(all_races),
+            'filteredRaceCount': len(filtered_races)
         }
         
     except Exception as e:
         print(f"Error fetching details for {horse_data.get('name')}: {e}")
         return None
 
-def calculate_seconds(degree_str):
-    """Derece stringini (1.24.50) saniyeye çevirir"""
+
+def calculate_degree_stats(races):
+    """
+    FAZ 1.2 + FAZ 3.1: Yarış listesinden derece istatistikleri hesaplar.
+    Class factor uygulanmış adjustedDegreeInSeconds varsa onu kullanır,
+    yoksa ham degreeInSeconds değerine düşer.
+    
+    Returns: {
+        avgDegree, bestDegree, worstDegree (saniye),
+        avgDegreeFormatted, bestDegreeFormatted, worstDegreeFormatted,
+        degreeTrend (pozitif=iyileşme), degreeStdDev (düşük=istikrarlı),
+        raceCount, degreeScore (0-100)
+    }
+    """
+    # FAZ 3.1: adjustedDegreeInSeconds varsa onu tercih et
+    degrees = [r.get('adjustedDegreeInSeconds') or r.get('degreeInSeconds') 
+               for r in races 
+               if r.get('adjustedDegreeInSeconds') or r.get('degreeInSeconds')]
+    
+    if not degrees:
+        return {
+            'avgDegree': None, 'bestDegree': None, 'worstDegree': None,
+            'avgDegreeFormatted': '-', 'bestDegreeFormatted': '-', 'worstDegreeFormatted': '-',
+            'degreeTrend': 0, 'degreeStdDev': 0, 'raceCount': 0,
+            'degreeScore': 50, 'trendScore': 50, 'stabilityScore': 50
+        }
+    
+    avg_degree = sum(degrees) / len(degrees)
+    best_degree = min(degrees)
+    worst_degree = max(degrees)
+    std_dev = float(np.std(degrees)) if len(degrees) > 1 else 0
+    
+    # Trend hesaplama: Son yarışlardaki iyileşme/kötüleşme
+    trend_value = 0
+    if len(degrees) >= 2:
+        # degrees[0] = en son yarış, degrees[-1] = en eski yarış
+        # Düşen süre = iyileşme (pozitif trend)
+        y = np.array(degrees[::-1])  # Eski -> yeni sıra
+        x = np.arange(len(y))
+        if len(x) >= 2:
+            slope, _ = np.polyfit(x, y, 1)
+            trend_value = -slope  # Negatif slope = süre düşüyor = iyileşme
+    
+    # Skorlama
+    # Derece skoru: Daha düşük ortalama = daha iyi (mesafeye göre normalizasyon gerekir ama burada göreceli)
+    # Bu skor yarış grubu içinde normalize edilecek (analyze_race içinde)
+    degree_score = 50  # Varsayılan - gruplar arası karşılaştırma gerekir
+    
+    # Trend skoru: Pozitif trend = iyileşme = yüksek skor
+    trend_score = 50 + (trend_value * 10)
+    trend_score = max(0, min(100, trend_score))
+    
+    # İstikrar skoru: Düşük std_dev = yüksek istikrar
+    # std_dev 0-5 arası tipik, 0=mükemmel, 5+=çok değişken
+    stability_score = max(0, min(100, 100 - (std_dev * 15)))
+    
+    return {
+        'avgDegree': round(avg_degree, 2),
+        'bestDegree': round(best_degree, 2),
+        'worstDegree': round(worst_degree, 2),
+        'avgDegreeFormatted': format_seconds_to_degree(avg_degree),
+        'bestDegreeFormatted': format_seconds_to_degree(best_degree),
+        'worstDegreeFormatted': format_seconds_to_degree(worst_degree),
+        'degreeTrend': round(trend_value, 3),
+        'degreeStdDev': round(std_dev, 3),
+        'raceCount': len(degrees),
+        'degreeScore': round(degree_score, 1),
+        'trendScore': round(trend_score, 1),
+        'stabilityScore': round(stability_score, 1)
+    }
+
+
+def format_seconds_to_degree(seconds):
+    """Saniye değerini derece formatına çevirir: 125.34 -> '2.05.34'"""
+    if seconds is None:
+        return '-'
     try:
-        if not degree_str or degree_str == '-':
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        centisecs = int(round((seconds % 1) * 100))
+        if minutes > 0:
+            return f"{minutes}.{secs:02d}.{centisecs:02d}"
+        else:
+            return f"{secs}.{centisecs:02d}"
+    except:
+        return '-'
+
+
+def calculate_seconds(degree_str):
+    """Derece stringini (1.24.50) saniyeye çevirir — iyileştirilmiş parse"""
+    try:
+        if not degree_str or degree_str.strip() in ('-', '', '0'):
             return None
+        
+        # Boşlukları temizle
+        degree_str = degree_str.strip()
+        
         parts = degree_str.split('.')
         if len(parts) == 3:
-            return int(parts[0]) * 60 + int(parts[1]) + int(parts[2]) / 100
-        elif len(parts) == 2: # Sadece saniye.salise
-             return int(parts[0]) + int(parts[1]) / 100
+            # Format: dakika.saniye.salise (örn: 1.24.50 veya 2.05.34)
+            minutes = int(parts[0])
+            seconds = int(parts[1])
+            centisecs = int(parts[2])
+            return minutes * 60 + seconds + centisecs / 100
+        elif len(parts) == 2:
+            # Format: saniye.salise (örn: 24.50)
+            seconds = int(parts[0])
+            centisecs = int(parts[1])
+            return seconds + centisecs / 100
         return None
     except:
         return None
+
+# ============== CLASS FACTOR (SINIF ZORLUK ÇARPANI) ==============
+
+def get_class_multiplier(group_info):
+    """
+    FAZ 3.1: TJK grup bilgisinden zorluk çarpanı döndürür.
+    Daha zorlu gruplarda elde edilen dereceler daha değerli kabul edilir.
+    
+    Çarpan > 1.0: Derece bölündüğünde daha hızlı (= daha iyi) normalize edilir
+    Çarpan < 1.0: Derece bölündüğünde daha yavaş (= daha düşük değer) normalize edilir
+    
+    Args:
+        group_info (str): TJK'dan gelen grup bilgisi (örn: "Maiden", "KV-8", "Şartlı 2")
+    
+    Returns:
+        float: Zorluk çarpanı (0.96 - 1.10 arası)
+    """
+    if not group_info:
+        return 1.00
+    
+    g = group_info.strip().upper()
+    
+    # Açık Yarış / Grup yarışları (en zorlu)
+    if any(k in g for k in ['GRUP', 'GROUP', 'G1', 'G2', 'G3', 'AÇIK', 'ACIK', 'LİSTED', 'LISTED']):
+        return 1.10
+    
+    # Kısa Vade (KV) yarışları — numara bazlı ayrıntı
+    if 'KV' in g or 'KISA VADE' in g:
+        if '8' in g:
+            return 1.08
+        elif '7' in g:
+            return 1.06
+        elif '6' in g:
+            return 1.05
+        elif '5' in g:
+            return 1.04
+        return 1.05  # KV varsayılan
+    
+    # Handikap
+    if 'HANDİKAP' in g or 'HANDIKAP' in g or 'HNDİKAP' in g or 'HNDIKAP' in g:
+        return 1.02
+    
+    # Şartlı yarışlar — numara bazlı ayrıntı
+    if 'ŞARTLI' in g or 'SARTLI' in g or 'Ş-' in g or 'S-' in g:
+        if '4' in g or '5' in g:
+            return 1.02
+        elif '3' in g:
+            return 1.01
+        elif '2' in g:
+            return 1.00
+        elif '1' in g:
+            return 0.98
+        return 1.00  # Şartlı varsayılan
+    
+    # Tay / Maiden (en düşük zorluk)
+    if 'MAİDEN' in g or 'MAIDEN' in g or 'TAY' in g:
+        return 0.96
+    
+    # Bilinmeyen grup → nötr
+    return 1.00
+
+
+def apply_class_factor_to_degrees(races):
+    """
+    FAZ 3.1: Yarış listesindeki dereceleri sınıf/grup çarpanıyla normalize eder.
+    
+    Her yarışın degreeInSeconds değerini class multiplier ile bölerek
+    "ayarlanmış derece" hesaplar. Bu sayede zorlu grupta yapılan 2.05,
+    Maiden'da yapılan 2.05'ten daha hızlı bir değere normalize olur.
+    
+    Args:
+        races (list): Yarış dictionaryleri listesi (degreeInSeconds ve group içermeli)
+    
+    Returns:
+        list: Her yarışa 'adjustedDegreeInSeconds' ve 'classMultiplier' eklenmiş hali
+    """
+    for race in races:
+        group = race.get('group', '')
+        multiplier = get_class_multiplier(group)
+        race['classMultiplier'] = multiplier
+        
+        degree_seconds = race.get('degreeInSeconds')
+        if degree_seconds and degree_seconds > 0:
+            race['adjustedDegreeInSeconds'] = round(degree_seconds / multiplier, 2)
+        else:
+            race['adjustedDegreeInSeconds'] = None
+    
+    return races
 
 # ============== TRAINING DATA FUNCTIONS ==============
 
@@ -1025,13 +1260,14 @@ def calculate_training_fitness(training_data, race_date_str=None):
     Returns: (score: 0-100, label: str, days_since: int or None, best_time: str or None)
     """
     if not training_data:
-        return 50.0, "Bilinmiyor", None, None
+        return 50.0, "Bilinmiyor", None, None, None
         
     from datetime import datetime, timedelta
     
     score = 50.0  # Başlangıç skoru
     days_since_training = None
     best_time_str = None
+    best_distance = None
     
     # 1. İdman tarihi analizi
     training_date_str = training_data.get('trainingDate', '')
@@ -1110,6 +1346,7 @@ def calculate_training_fitness(training_data, race_date_str=None):
             
         # En iyi süreyi kaydet (gösterim için)
         best_time_str = valid_times[0][2] if valid_times else None
+        best_distance = valid_times[0][0] if valid_times else None
     
     # Skoru 0-100 arasında sınırla
     score = max(0, min(100, score))
@@ -1126,7 +1363,77 @@ def calculate_training_fitness(training_data, race_date_str=None):
     else:
         label = "Zayıf Form"
     
-    return round(score, 1), label, days_since_training, best_time_str
+    return round(score, 1), label, days_since_training, best_time_str, best_distance
+
+def project_training_to_race_distance(training_data, target_distance, avg_race_degree=None):
+    """
+    FAZ 2.2: İdman verisini yarış mesafesine oranlayarak tahmini yarış derecesi hesaplar.
+    
+    Returns: dict or None
+    """
+    if not training_data:
+        return None
+    
+    times = training_data.get('times', {})
+    if not times:
+        return None
+    
+    try:
+        if isinstance(target_distance, str):
+            target_dist = int(target_distance.replace(' ', '').replace('m', ''))
+        else:
+            target_dist = int(target_distance)
+    except:
+        return None
+    
+    if target_dist <= 0:
+        return None
+    
+    best_entry = None
+    best_distance_num = 0
+    
+    for dist_str, time_str in times.items():
+        seconds = parse_training_time(time_str)
+        if seconds and seconds > 0:
+            try:
+                dist_num = int(dist_str.replace('m', ''))
+                if dist_num > best_distance_num:
+                    best_distance_num = dist_num
+                    best_entry = (dist_str, seconds, dist_num)
+            except:
+                continue
+    
+    if not best_entry or best_distance_num <= 0:
+        return None
+    
+    training_dist_str, training_seconds, training_dist_num = best_entry
+    expansion_ratio = target_dist / training_dist_num
+    projected_seconds = training_seconds * expansion_ratio
+    projected_formatted = format_seconds_to_degree(projected_seconds)
+    
+    projection_label = "Projeksiyon"
+    projection_diff = None
+    
+    if avg_race_degree and avg_race_degree > 0:
+        projection_diff = round(projected_seconds - avg_race_degree, 2)
+        tolerance = avg_race_degree * 0.03
+        
+        if projected_seconds < avg_race_degree - tolerance:
+            projection_label = "İdman Hızlı ⚡"
+        elif projected_seconds > avg_race_degree + tolerance:
+            projection_label = "İdman Yavaş"
+        else:
+            projection_label = "İdman Uyumlu ✓"
+    
+    return {
+        'projectedDegree': projected_formatted,
+        'projectedDegreeSeconds': round(projected_seconds, 2),
+        'projectedFromDistance': training_dist_str,
+        'expansionRatio': round(expansion_ratio, 1),
+        'projectionLabel': projection_label,
+        'projectionDiff': projection_diff
+    }
+
 
 # ============== ADVANCED ANALYSIS FUNCTIONS ==============
 
@@ -1406,17 +1713,17 @@ def calculate_distance_suitability(races, target_distance):
 
 def calculate_ai_score(metrics):
     """
-    Tüm metriklerin ağırlıklı birleşimi - Nihai AI Skoru (0-100)
-    İdman fitness skoru da dahil edildi.
+    FAZ 1.2: Tüm metriklerin ağırlıklı birleşimi - Nihai AI Skoru (0-100)
+    Derece bazlı yeni ağırlıklar.
     """
     weights = {
-        'early_speed': 0.12,
-        'late_kick': 0.18,
-        'form_trend': 0.18,
-        'consistency': 0.12,
-        'track_suit': 0.13,
-        'distance_suit': 0.12,
-        'training_fitness': 0.15
+        'degree_avg': 0.35,         # Derece ortalaması (en önemli)
+        'degree_trend': 0.15,       # Derece trendi
+        'degree_stability': 0.10,   # Derece istikrarı
+        'training_fitness': 0.15,   # İdman fitness
+        'track_suit': 0.10,         # Pist uyumu
+        'form_trend': 0.10,         # Form trend
+        'distance_suit': 0.05       # Mesafe uygunluğu
     }
     
     weighted_sum = 0
@@ -1424,49 +1731,47 @@ def calculate_ai_score(metrics):
     
     for key, weight in weights.items():
         value = metrics.get(key, 50)
-        if key == 'consistency':
-            value = value * 10
         weighted_sum += value * weight
         weight_total += weight
     
     return round(weighted_sum / weight_total, 1) if weight_total > 0 else 50.0
 
 def generate_prediction(ai_score, metrics):
-    """Tahmin etiketi oluştur"""
+    """Tahmin etiketi oluştur — derece bazlı"""
     if ai_score >= 85:
         return "Favori ⭐"
     elif ai_score >= 75:
         return "Plase Adayı"
-    elif metrics.get('form_trend_value', 0) > 0.5:
+    elif metrics.get('degree_trend', 50) >= 70:
         return "Formda 📈"
-    elif metrics.get('late_kick', 50) >= 70:
-        return "Sprinter"
-    elif metrics.get('early_speed', 50) >= 70:
-        return "Kaçak"
-    elif metrics.get('consistency', 5) >= 7:
+    elif metrics.get('degree_stability', 50) >= 80:
         return "Güvenilir"
+    elif metrics.get('form_trend_value', 0) > 0.5:
+        return "Yükselişte"
+    elif metrics.get('track_suit', 50) >= 75:
+        return "Pist Uzmanı"
     else:
         return "İzlenmeli"
 
 def generate_insight(name, metrics, ai_score):
-    """At için Türkçe insight metni oluştur"""
+    """At için Türkçe insight metni oluştur — derece bazlı"""
     insights = []
     
-    if metrics.get('form_trend_value', 0) > 0.3:
-        insights.append(f"Son yarışlarda yükselen performans")
-    elif metrics.get('form_trend_value', 0) < -0.3:
-        insights.append(f"Son yarışlarda düşüş eğilimi")
+    if metrics.get('degree_trend', 50) >= 65:
+        insights.append("Derecelerinde iyileşme trendi var")
+    elif metrics.get('degree_trend', 50) <= 35:
+        insights.append("Derecelerinde düşüş eğilimi")
+    
+    if metrics.get('degree_stability', 50) >= 75:
+        insights.append("İstikrarlı dereceler sergiliyor")
+    elif metrics.get('degree_stability', 50) <= 30:
+        insights.append("Dereceleri değişken, sürpriz yapabilir")
     
     if metrics.get('track_suit', 50) >= 75:
-        insights.append(f"Bu pist tipinde başarılı geçmişi var")
+        insights.append("Bu pist tipinde başarılı geçmişi var")
     
-    if metrics.get('late_kick', 50) >= 70:
-        insights.append(f"Son düzlükte güçlü sprint kapasitesi")
-    
-    if metrics.get('consistency', 5) >= 7:
-        insights.append(f"Tutarlı performans sergiliyor")
-    elif metrics.get('consistency', 5) <= 3:
-        insights.append(f"Performansı değişken, sürpriz yapabilir")
+    if metrics.get('form_trend_value', 0) > 0.3:
+        insights.append("Son yarışlarda yükselen performans")
     
     if not insights:
         if ai_score >= 70:
@@ -1474,7 +1779,7 @@ def generate_insight(name, metrics, ai_score):
         else:
             insights.append("Rakiplerine göre dezavantajlı konumda")
     
-    return " • ".join(insights[:2])  # Max 2 insight
+    return " • ".join(insights[:2])
 
 @app.route('/api/analyze-race', methods=['POST'])
 def analyze_race():
@@ -1506,7 +1811,7 @@ def analyze_race():
         analyzed_horses = []
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_horse = {executor.submit(fetch_horse_details_safe, horse): horse for horse in horses}
+            future_to_horse = {executor.submit(fetch_horse_details_safe, horse, target_distance): horse for horse in horses}
             
             for future in concurrent.futures.as_completed(future_to_horse):
                 original_horse = future_to_horse[future]
@@ -1567,29 +1872,30 @@ def analyze_race():
                     print(f"[DEBUG] EŞLEŞME: {horse_name_clean} -> Training VAR")
                 else:
                     print(f"[DEBUG] At: {horse_name_clean}, Training: YOK")
-                training_fitness, training_label, days_since, training_best_time = calculate_training_fitness(training_data)
+                training_fitness, training_label, days_since, training_best_time, training_best_distance = calculate_training_fitness(training_data)
                 
                 if horse_data and horse_data.get('races'):
                     races = horse_data['races']
+                    filtered_races = horse_data.get('filteredRaces', [])
+                    degree_stats = horse_data.get('degreeStats', {})
                     
-                    # 2. Gelişmiş Metrikler
-                    early_speed, early_label = calculate_early_speed(races)
-                    late_kick, late_label = calculate_late_kick(races)
+                    # 2. Gelişmiş Metrikler — Derece bazlı
                     trend_value, trend_score, trend_label = calculate_form_trend(races)
                     consistency, consistency_label = calculate_consistency(races)
                     track_suit, track_label = calculate_track_suitability(races, target_track)
                     distance_suit, distance_label = calculate_distance_suitability(races, target_distance)
                     
-                    # 3. AI Score hesaplama - İdman verisi dahil
+                    # 3. AI Score hesaplama — Derece bazlı yeni metrikler
                     metrics = {
-                        'early_speed': early_speed,
-                        'late_kick': late_kick,
+                        'degree_avg': degree_stats.get('degreeScore', 50),
+                        'degree_trend': degree_stats.get('trendScore', 50),
+                        'degree_stability': degree_stats.get('stabilityScore', 50),
                         'form_trend': trend_score,
                         'form_trend_value': trend_value,
                         'consistency': consistency,
                         'track_suit': track_suit,
                         'distance_suit': distance_suit,
-                        'training_fitness': training_fitness  # İdman fitness skoru
+                        'training_fitness': training_fitness
                     }
                     
                     ai_score = calculate_ai_score(metrics)
@@ -1681,8 +1987,14 @@ def analyze_race():
                     except Exception as e:
                         print(f"[DEBUG] Kilo parse hatası: {e}")
                     
-                    # 4. En İyi Derece - İdman süresinden alınıyor
-                    best_time = training_best_time  # İdman verisinden
+                    # 4. En İyi Derece — yarış derecesinden alınıyor
+                    best_time = degree_stats.get('bestDegreeFormatted', training_best_time)
+                    
+                    # FAZ 2.2: İdman projeksiyonu hesapla
+                    training_projection = None
+                    if training_data:
+                        avg_race_deg = degree_stats.get('avgDegree') if degree_stats else None
+                        training_projection = project_training_to_race_distance(training_data, target_distance, avg_race_deg)
                     
                     analyzed_horses.append({
                         'name': horse_data['name'],
@@ -1693,6 +2005,8 @@ def analyze_race():
                             'trendValue': trend_value,
                         },
                         'raceHistory': races,
+                        'filteredRaces': filtered_races,     # FAZ 1.1: Mesafe bazlı filtrelenmiş yarışlar
+                        'degreeStats': degree_stats,          # FAZ 1.2: Derece istatistikleri
                         'stats': {
                             'avgRank': round(avg_rank, 1) if avg_rank > 0 else None,
                             'winRate': round(wins / len(ranks) * 100) if ranks else None,
@@ -1706,6 +2020,7 @@ def analyze_race():
                         'weightChange': weight_change,
                         'bestTime': best_time,
                         'raceCount': len(races),
+                        'filteredRaceCount': len(filtered_races),
                         # === İDMAN BİLGİLERİ ===
                         'trainingInfo': {
                             'hasData': training_data is not None,
@@ -1717,6 +2032,16 @@ def analyze_race():
                             'trackCondition': training_data.get('trackCondition', '') if training_data else None,
                             'trainingJockey': training_data.get('trainingJockey', '') if training_data else None,
                             'times': training_data.get('times', {}) if training_data else {},
+                            'bestTrainingTime': training_best_time,
+                            'bestTrainingDistance': training_best_distance,
+                            'bestTrainingTimeSeconds': parse_training_time(training_best_time) if training_best_time else None,
+                            # FAZ 2.2: Projeksiyon verileri
+                            'projectedDegree': training_projection.get('projectedDegree') if training_projection else None,
+                            'projectedDegreeSeconds': training_projection.get('projectedDegreeSeconds') if training_projection else None,
+                            'projectedFromDistance': training_projection.get('projectedFromDistance') if training_projection else None,
+                            'expansionRatio': training_projection.get('expansionRatio') if training_projection else None,
+                            'projectionLabel': training_projection.get('projectionLabel') if training_projection else None,
+                            'projectionDiff': training_projection.get('projectionDiff') if training_projection else None,
                         } if training_data else None
                     })
                 else:
@@ -1725,37 +2050,51 @@ def analyze_race():
                         'name': original_horse.get('name', 'Bilinmiyor'),
                         'no': original_horse.get('no', ''),
                         'aiScore': 0,
-                        'paceAnalysis': {
-                            'earlySpeed': 0,
-                            'earlySpeedLabel': 'Veri Yok',
-                            'lateKick': 0,
-                            'lateKickLabel': 'Veri Yok'
-                        },
                         'formIndex': {
                             'trend': '-',
                             'trendValue': 0,
-                            'trendScore': 0,
-                            'trendLabel': 'Veri Yok'
                         },
-                        'consistency': {
-                            'score': 0,
-                            'label': 'Veri Yok'
-                        },
-                        'suitability': {
-                            'trackScore': 0,
-                            'trackLabel': 'Veri Yok',
-                            'distanceScore': 0,
-                            'distanceLabel': 'Veri Yok'
-                        },
-                        'prediction': 'Veri Yok',
-                        'insight': 'Geçmiş yarış verisi bulunamadı',
-                        'raceCount': 0
+                        'raceHistory': [],
+                        'filteredRaces': [],
+                        'degreeStats': {},
+                        'stats': {},
+                        'raceCount': 0,
+                        'filteredRaceCount': 0,
                     })
 
-        # 4. Sıralama (Yüksek AI puanından düşüğe)
+        # 4. Derece skorlarını normalize et (yarisis içindeki atlar arasında göreceli)
+        avg_degrees = []
+        for h in analyzed_horses:
+            ds = h.get('degreeStats', {})
+            if ds and ds.get('avgDegree'):
+                avg_degrees.append(ds['avgDegree'])
+        
+        if avg_degrees:
+            best_avg = min(avg_degrees)  # En düşük ortalama = en iyi
+            worst_avg = max(avg_degrees)
+            degree_range = worst_avg - best_avg if worst_avg > best_avg else 1
+            
+            for h in analyzed_horses:
+                ds = h.get('degreeStats', {})
+                if ds and ds.get('avgDegree'):
+                    # En iyi ortalama = 100, en kötü = 0
+                    normalized = 100 - ((ds['avgDegree'] - best_avg) / degree_range * 100)
+                    h['degreeStats']['degreeScore'] = round(max(0, min(100, normalized)), 1)
+                    
+                    # AI skoru yeniden hesapla (normalize edilmiş derece ile)
+                    if h.get('aiScore', 0) > 0:
+                        # Önceki metriklerden degree_avg'yi güncelle
+                        old_ai = h['aiScore']
+                        # degree_avg ağırlığı %35, diğerlerinin toplamı %65
+                        # Yeni AI = (eski AI * 0.65/1.0) + (normalized * 0.35)
+                        other_contribution = old_ai  # Eski skor zaten diğer metrikleri içeriyor
+                        new_ai = (other_contribution * 0.65) + (normalized * 0.35)
+                        h['aiScore'] = round(max(0, min(100, new_ai)), 1)
+        
+        # 5. Sıralama (Yüksek AI puanından düşüğe)
         analyzed_horses.sort(key=lambda x: x['aiScore'], reverse=True)
         
-        # 5. Sıralama numaraları ekle
+        # 6. Sıralama numaraları ekle
         for i, horse in enumerate(analyzed_horses):
             horse['rank'] = i + 1
         
