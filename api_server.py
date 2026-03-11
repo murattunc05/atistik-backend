@@ -1713,19 +1713,59 @@ def calculate_distance_suitability(races, target_distance):
     
     return round(score, 1), label
 
+def calculate_training_degree_score(training_projection, avg_race_degree):
+    """
+    Son idman projeksiyonunu ortalama yarış derecesiyle karşılaştırarak skor üretir.
+    
+    - Projeksiyon daha hızlıysa (düşük süre) → yüksek skor (70-100)
+    - Projeksiyon uyumluysa (yakın süre) → orta skor (50-65)
+    - Projeksiyon daha yavaşsa → düşük skor (20-45)
+    - Veri yoksa → nötr (50)
+    
+    Returns: float (0-100)
+    """
+    if not training_projection or not avg_race_degree or avg_race_degree <= 0:
+        return 50.0  # Nötr
+    
+    projected_seconds = training_projection.get('projectedDegreeSeconds')
+    if not projected_seconds or projected_seconds <= 0:
+        return 50.0
+    
+    # Fark hesapla: negatif = projeksiyon daha hızlı (iyi)
+    diff = projected_seconds - avg_race_degree
+    tolerance = avg_race_degree * 0.03  # %3 tolerans
+    
+    if diff < -tolerance:
+        # İdman projeksiyonu yarış ortalamasından hızlı
+        # Fark büyüdükçe skor artar (max 100)
+        improvement_ratio = abs(diff) / avg_race_degree
+        score = 70 + min(30, improvement_ratio * 500)  # 70-100 arası
+    elif abs(diff) <= tolerance:
+        # Uyumlu — yakın süreler
+        closeness = 1 - (abs(diff) / tolerance)  # 0-1 arası
+        score = 50 + closeness * 15  # 50-65 arası
+    else:
+        # İdman projeksiyonu yarış ortalamasından yavaş
+        decline_ratio = diff / avg_race_degree
+        score = max(20, 50 - decline_ratio * 300)  # 20-50 arası
+    
+    return round(max(0, min(100, score)), 1)
+
+
 def calculate_ai_score(metrics):
     """
-    FAZ 1.2: Tüm metriklerin ağırlıklı birleşimi - Nihai AI Skoru (0-100)
-    Derece bazlı yeni ağırlıklar.
+    FAZ 1.2 + Güncel: Tüm metriklerin ağırlıklı birleşimi - Nihai AI Skoru (0-100)
+    Derece bazlı ağırlıklar + son idman projeksiyonu.
     """
     weights = {
-        'degree_avg': 0.35,         # Derece ortalaması (en önemli)
-        'degree_trend': 0.15,       # Derece trendi
-        'degree_stability': 0.10,   # Derece istikrarı
-        'training_fitness': 0.15,   # İdman fitness
-        'track_suit': 0.10,         # Pist uyumu
-        'form_trend': 0.10,         # Form trend
-        'distance_suit': 0.05       # Mesafe uygunluğu
+        'degree_avg': 0.30,             # Derece ortalaması (en önemli)
+        'degree_trend': 0.13,           # Derece trendi
+        'degree_stability': 0.10,       # Derece istikrarı
+        'training_fitness': 0.12,       # İdman fitness (zamanlama)
+        'training_degree_score': 0.10,  # İdman projeksiyon vs yarış derecesi
+        'track_suit': 0.10,             # Pist uyumu
+        'form_trend': 0.10,             # Form trend
+        'distance_suit': 0.05           # Mesafe uygunluğu
     }
     
     weighted_sum = 0
@@ -1887,7 +1927,15 @@ def analyze_race():
                     track_suit, track_label = calculate_track_suitability(races, target_track)
                     distance_suit, distance_label = calculate_distance_suitability(races, target_distance)
                     
-                    # 3. AI Score hesaplama — Derece bazlı yeni metrikler
+                    # FAZ 2.2: İdman projeksiyonu hesapla (AI score'dan ÖNCE)
+                    training_projection = None
+                    training_deg_score = 50.0
+                    if training_data:
+                        avg_race_deg = degree_stats.get('avgDegree') if degree_stats else None
+                        training_projection = project_training_to_race_distance(training_data, target_distance, avg_race_deg)
+                        training_deg_score = calculate_training_degree_score(training_projection, avg_race_deg)
+                    
+                    # 3. AI Score hesaplama — Derece bazlı yeni metrikler + idman projeksiyon
                     metrics = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
                         'degree_trend': degree_stats.get('trendScore', 50),
@@ -1897,7 +1945,8 @@ def analyze_race():
                         'consistency': consistency,
                         'track_suit': track_suit,
                         'distance_suit': distance_suit,
-                        'training_fitness': training_fitness
+                        'training_fitness': training_fitness,
+                        'training_degree_score': training_deg_score
                     }
                     
                     ai_score = calculate_ai_score(metrics)
@@ -1992,11 +2041,7 @@ def analyze_race():
                     # 4. En İyi Derece — yarış derecesinden alınıyor
                     best_time = degree_stats.get('bestDegreeFormatted', training_best_time)
                     
-                    # FAZ 2.2: İdman projeksiyonu hesapla
-                    training_projection = None
-                    if training_data:
-                        avg_race_deg = degree_stats.get('avgDegree') if degree_stats else None
-                        training_projection = project_training_to_race_distance(training_data, target_distance, avg_race_deg)
+                    # NOT: training_projection artık yukarıda (AI score öncesinde) hesaplanıyor
                     
                     analyzed_horses.append({
                         'name': horse_data['name'],
@@ -2044,6 +2089,8 @@ def analyze_race():
                             'expansionRatio': training_projection.get('expansionRatio') if training_projection else None,
                             'projectionLabel': training_projection.get('projectionLabel') if training_projection else None,
                             'projectionDiff': training_projection.get('projectionDiff') if training_projection else None,
+                            # Yeni: İdman projeksiyon derecesi skoru
+                            'trainingDegreeScore': training_deg_score,
                         } if training_data else None
                     })
                 else:
