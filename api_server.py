@@ -2539,11 +2539,11 @@ def calculate_dynamic_weights(metrics):
 
     # ── VARSAYİLAN TEMEL AĞİRLIKLAR ────────────────────────────────────────────────
     w = {
-        'degree_avg':            0.20,  # K1: Normalize Hız Skoru
-        'degree_trend':          0.11,  # K1b: Derece trendi
-        'degree_stability':      0.07,  # K10: İstikrar
-        'training_fitness':      0.04,  # K5a: İdman zamanlama
-        'training_degree_score': 0.04,  # K5b: İdman projeksiyon
+        'degree_avg':            0.18,  # K1: Normalize Hız Skoru
+        'degree_trend':          0.09,  # K1b: Derece trendi
+        'degree_stability':      0.06,  # K10: İstikrar
+        'training_fitness':      0.05,  # K5a: İdman zamanlama
+        'training_degree_score': 0.05,  # K5b: İdman projeksiyon
         'track_suit':            0.08,  # K3: Pist uyumu
         'form_trend':            0.08,  # K4: Form & momentum
         'distance_suit':         0.07,  # K2: Mesafe uyumu
@@ -2552,7 +2552,7 @@ def calculate_dynamic_weights(metrics):
         'bounce_score':          0.06,  # K8: Dinlenme
         'pace_score':            0.03,  # K9: Tempo senaryosu
         'pedigree':              0.03,  # K11: Pedigri (baz=%3, dinamik yukarı gidebilir)
-        'hp_score':              0.08,  # K12: HP Kalite Puanı (FAZ 5.2)
+        'hp_score':              0.09,  # FAZ 5.2 (K12): Handikap (Kalite) Sınıf Etkisi
     }
 
     # ── SENARYO: MAİDEN (İlk koşu — hiç yarış verisi yok) ───────────────────
@@ -2564,7 +2564,7 @@ def calculate_dynamic_weights(metrics):
         w['track_suit']            = 0.0
         w['distance_suit']         = 0.0
         w['bounce_score']          = 0.0
-        w['hp_score']              = 0.0  # Maiden atın HP puanı yoktur
+        w['hp_score']              *= 0.50 # Maiden'da HP çok güvenilir değil, yarıya düşür
         w['training_fitness']      = 0.25 if has_training else 0.0
         w['training_degree_score'] = 0.15 if has_training else 0.0
         w['jockey_score']          = 0.15
@@ -2872,16 +2872,16 @@ def analyze_race():
                 concurrent.futures.wait(sire_futures)
             print(f"[ANALYZE] Pedigri verileri başarıyla önbelleğe alındı.")
 
-        # FAZ 5.2: Koşu İçi Handikap (Kalite) Skoru Normalizasyonu
-        # Yarıştaki en yüksek handikapa sahip atı referans alarak göreceli sınıf skoru çıkar (0-100)
-        horse_hps = []
+        # FAZ 5.2: HP (Handikap) Normalizasyonu (Pass 1 öncesi hazırlık)
+        valid_hps = []
         for h in horses:
             hp_str = str(h.get('hp', '')).strip()
-            hp_val = int(hp_str) if hp_str.isdigit() else 0
-            if hp_val > 0:
-                horse_hps.append(hp_val)
+            if hp_str.isdigit():
+                valid_hps.append(int(hp_str))
         
-        max_hp_in_race = max(horse_hps) if horse_hps else 0
+        race_max_hp = max(valid_hps) if valid_hps else 50
+        race_min_hp = min(valid_hps) if valid_hps else 50
+        hp_range = race_max_hp - race_min_hp if race_max_hp > race_min_hp else 1
 
         # PASS 1: Paralel veri çekme + stil belirleme
         intermediate_horses = []  # [{ original_horse, horse_data, style, ess, ... }]
@@ -2992,12 +2992,13 @@ def analyze_race():
                     
                     bounce_score_val = calculate_bounce_score(races)
                     
-                    # FAZ 5.2: Yarış içi HP Skoru Normalizasyonu
-                    curr_hp_str = str(original_horse.get('hp', '')).strip()
-                    curr_hp = int(curr_hp_str) if curr_hp_str.isdigit() else 0
-                    hp_score = 50.0 # Varsayılan/Nötr
-                    if max_hp_in_race > 0 and curr_hp > 0:
-                        hp_score = round((curr_hp / max_hp_in_race) * 100, 1)
+                    # FAZ 5.2: HP (Handikap) Puanı Hesabı
+                    raw_hp = str(original_horse.get('hp', '')).strip()
+                    horse_hp = int(raw_hp) if raw_hp.isdigit() else (race_min_hp if valid_hps else 50)
+                    if not valid_hps or race_max_hp == race_min_hp:
+                        hp_score_val = 50.0  # Yarışta hiç kimsede HP yoksa veya herkes eşitse
+                    else:
+                        hp_score_val = round(((horse_hp - race_min_hp) / hp_range) * 100, 1)
 
                     metrics_pass1 = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
@@ -3013,10 +3014,10 @@ def analyze_race():
                         'weight_impact': weight_impact_score,   # FAZ 4.2
                         'jockey_score': jockey_score_val,       # FAZ 4.3
                         'bounce_score': bounce_score_val,       # FAZ 4.4
-                        'pace_score': 50.0,                     # FAZ 4.5: PASS 2'de güncellenecek
-                        'pedigree': 50.0,                        # FAZ 4.6
-                        'pedigree_weight': 0.03,                 # FAZ 4.6
-                        'hp_score': hp_score,                    # FAZ 5.2: Handikap Kalite Puanı
+                        'pace_score': 50.0,                     # FAZ 4.5: PASS 2'de güncellenecek (nötr placeholder)
+                        'pedigree': 50.0,                       # FAZ 4.6: pedigri skoru (placeholder)
+                        'pedigree_weight': 0.03,                # FAZ 4.6: dinamik ağırlık (placeholder)
+                        'hp_score': hp_score_val,               # FAZ 5.2: Handikap Puanı normalizasyonu
                         # FAZ 4.7: calculate_dynamic_weights için meta alanlar
                         '_total_races':   len(races),
                         '_track_races':   sum(1 for r in races if target_track.lower() in r.get('track', '').lower()) if target_track else 0,
