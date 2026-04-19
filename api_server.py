@@ -1044,30 +1044,86 @@ def get_class_multiplier(group_info):
     return 1.00
 
 
-def apply_class_factor_to_degrees(races):
+# ============== FAZ 4.1: PİST DURUMU ÇARPANI ==============
+
+def get_track_condition_multiplier(condition):
     """
-    FAZ 3.1: Yarış listesindeki dereceleri sınıf/grup çarpanıyla normalize eder.
+    FAZ 4.1: Pist durumundan derece normalizasyon çarpanı döndürür.
     
-    Her yarışın degreeInSeconds değerini class multiplier ile bölerek
-    "ayarlanmış derece" hesaplar. Bu sayede zorlu grupta yapılan 2.05,
-    Maiden'da yapılan 2.05'ten daha hızlı bir değere normalize olur.
+    Mantık: Islak/Ağır pistte atlar daha yavaş koşar. Bu çarpanla
+    farklı durumlardaki dereceler karşılaştırılabilir hale gelir.
+    Örnek: Ağır pist 2.10 ≈ Normal pist 2.05 → çarpan bunu düzeltir.
     
     Args:
-        races (list): Yarış dictionaryleri listesi (degreeInSeconds ve group içermeli)
+        condition (str): Pist durumu (örn: "Normal", "Sulu", "Islak", "Ağır", "Yumuşak")
     
     Returns:
-        list: Her yarışa 'adjustedDegreeInSeconds' ve 'classMultiplier' eklenmiş hali
+        float: Düzeltme çarpanı (0.93 - 1.00 arası)
+                > Normal pist baz (1.00), ıslak pistte süre uzar → çarpan düşer
+    """
+    if not condition:
+        return 1.00
+    
+    c = condition.strip().upper()
+    
+    # Tam eşleşmeler — TJK'nın kullandığı standart ifadeler
+    if 'AĞIR' in c or 'AGIR' in c:
+        return 0.93   # En yavaş koşulur → en büyük düzeltme
+    elif 'ISLAK' in c:
+        return 0.96
+    elif 'SULU' in c:
+        return 0.98
+    elif 'YUMUŞAK' in c or 'YUMUSAK' in c:
+        return 0.95
+    elif 'SERİ' in c or 'SERT' in c:
+        return 1.01   # Sert/seri pist → atlar biraz daha hızlı koşabilir
+    elif 'NORMAL' in c or 'İYİ' in c or 'IYI' in c:
+        return 1.00   # Baz pist
+    
+    # Bilinmeyen durum → nötr
+    return 1.00
+
+
+def apply_class_factor_to_degrees(races):
+    """
+    FAZ 3.1 + FAZ 4.1: Yarış listesindeki dereceleri;
+      1) Sınıf/grup zorluk çarpanı (classMultiplier)
+      2) Pist durumu çarpanı (trackConditionMultiplier) — FAZ 4.1 YENİ
+    ile birlikte normalize eder.
+    
+    Formül:
+        adjustedDegreeInSeconds = degreeInSeconds / classMultiplier / trackConditionMultiplier
+    
+    Örnek:
+        Ağır pistte KV-8'de koşulan 2.10 (130sn)
+        classMultiplier = 1.08, trackConditionMultiplier = 0.93
+        adjusted = 130 / 1.08 / 0.93 ≈ 129.53 / 0.93 ≈ 115.54sn  <-- çok daha hızlı normalize olur
+    
+    Args:
+        races (list): Yarış dictionaryleri listesi
+    
+    Returns:
+        list: Her yarışa 'adjustedDegreeInSeconds', 'classMultiplier',
+              'trackConditionMultiplier' eklenmiş hali
     """
     for race in races:
-        # NOT: 'group' alanı yaş/ırk bilgisi içerir (3A, 2İ vb.)
-        # Koşu cinsi (Maiden, KV, Handikap) 'raceType' alanındadır (cells[13])
+        # Sınıf çarpanı: raceType (KV-8, Maiden vb.) veya group bilgisinden
         race_type = race.get('raceType', '') or race.get('group', '')
-        multiplier = get_class_multiplier(race_type)
-        race['classMultiplier'] = multiplier
+        class_mult = get_class_multiplier(race_type)
+        race['classMultiplier'] = class_mult
         
+        # FAZ 4.1: Pist durumu çarpanı: trackCondition (Normal/Ağır/Islak vb.)
+        track_condition = race.get('trackCondition', '')
+        track_cond_mult = get_track_condition_multiplier(track_condition)
+        race['trackConditionMultiplier'] = track_cond_mult
+        
+        # Birleşik normalize edilmiş derece
         degree_seconds = race.get('degreeInSeconds')
         if degree_seconds and degree_seconds > 0:
-            race['adjustedDegreeInSeconds'] = round(degree_seconds / multiplier, 2)
+            # Önce class, sonra pist durumu düzeltmesi
+            race['adjustedDegreeInSeconds'] = round(
+                degree_seconds / class_mult / track_cond_mult, 2
+            )
         else:
             race['adjustedDegreeInSeconds'] = None
     
@@ -1752,76 +1808,1025 @@ def calculate_training_degree_score(training_projection, avg_race_degree):
     return round(max(0, min(100, score)), 1)
 
 
+# ============== FAZ 4.2: SİKLET (KİLO) PERFORMANS ENDİKSİ ==============
+
+def calculate_weight_impact(current_weight_str, last_weight_str, target_distance):
+    """
+    FAZ 4.2: Kilo değişimini mesafe÷etkileşimi dâhilinde 0-100 skor üretir.
+    
+    Mantık:
+    - Kilo düşen at hafifleşmiş = avantajlı (+bonus)
+    - Kilo artan at ağırlaşmış = dezavantajlı (-ceza)
+    - Mesafe uzadıkça kilo etkisi artar (sprint'te önemsiz, uzunda kritik)
+    
+    Mesafe çarpanı:
+        1200m → 1.00x (baz)
+        1600m → 1.17x
+        2000m → 1.33x
+        2400m → 1.50x
+    
+    Args:
+        current_weight_str (str): Bugünkü kilo ("54+2.00Fazla Kilo" formatı olabilir)
+        last_weight_str (str): Son yarıştaki kilo
+        target_distance (str|int): Hedef mesafe (metre)
+    
+    Returns:
+        float: Skor (0-100), nötr = 50
+    """
+    def parse_w(w_str):
+        """Parse weight string like '50+2.00Fazla Kilo' -> 52.0"""
+        if not w_str:
+            return None
+        base_match = re.match(r'(\d+[,.]?\d*)', str(w_str).strip())
+        if not base_match:
+            return None
+        base = float(base_match.group(1).replace(',', '.'))
+        bonus_match = re.search(r'\+(\d+[,.]?\d*)', str(w_str))
+        if bonus_match:
+            base += float(bonus_match.group(1).replace(',', '.'))
+        return base
+    
+    cw = parse_w(current_weight_str)
+    lw = parse_w(last_weight_str)
+    
+    # Kilo bilgisi yoksa nötr
+    if cw is None or lw is None:
+        return 50.0
+    
+    kilo_diff = cw - lw  # Pozitif = arttı, Negatif = düştü
+    
+    # Mesafe çarpanı
+    try:
+        mesafe = int(str(target_distance).replace(' ', '').replace('m', ''))
+    except:
+        mesafe = 1600  # Varsayılan
+    
+    mesafe_carpani = 1.0 + max(0, (mesafe - 1200)) / 2400
+    
+    # Etkiyi hesapla
+    if kilo_diff < 0:
+        # Düşen kilo = avantaj (bonus)
+        etki = abs(kilo_diff) * 3 * mesafe_carpani
+        score = 50 + etki
+    elif kilo_diff > 0:
+        # Artan kilo = dezavantaj (ceza daha sert)
+        etki = kilo_diff * 4 * mesafe_carpani
+        score = 50 - etki
+    else:
+        score = 50  # Nötr
+    
+    return round(max(0, min(100, score)), 1)
+
+# ============== FAZ 4.3: GELİŞMİŞ JOKEY ANALİZİ ==============
+
+def calculate_jockey_score(jockey_stats, jockey_changed, training_jockey, race_jockey):
+    """
+    FAZ 4.3: Jokey-at uyumu, jokey değişimi ve idman jokeyi etkisini 0-100 skor üretir.
+    
+    Bileşenler:
+    1. Jokey-At Uyum Skoru  → Bu jokeyle kaç yarış + kazanma oranı
+    2. Jokey Değişim Etkisi → Yeni jokey mi? (nötr — gelecekte jokey genel istatistiği eklenecek)
+    3. İdman Jokeyi Bonusu  → Aynı jokey idman yaptıysa +5
+    
+    Args:
+        jockey_stats (dict|None): {'totalRaces': int, 'wins': int, 'winRate': float}
+        jockey_changed (bool): Jokey son yarıştan farklı mı?
+        training_jockey (str|None): İdman jokeyi adı
+        race_jockey (str|None): Yarış jokeyi adı
+    
+    Returns:
+        float: Skor (0-100), nötr = 50
+    """
+    score = 50.0
+    
+    # 1. Jokey-At Uyum Skoru
+    if jockey_stats:
+        total = jockey_stats.get('totalRaces', 0)
+        wins = jockey_stats.get('wins', 0)
+        
+        if total > 0:
+            win_rate = wins / total
+            # Yarış sayısına göre güven çarpanı (5 yarış = tam güven)
+            confidence = min(total / 5.0, 1.0)
+            # Win rate 0.3 = mükemmel (30%+), 0.0 = kötü
+            uyum_skoru = win_rate * 100 * confidence
+            # uyum_skoru: 0-30 aralığı beklenir, 0-100'e normalize
+            jockey_uyum = min(100, uyum_skoru * 2.5)
+            # Merkeze çek: 50 + (uyum - 50) * 0.6 (30% katkı payı)
+            score = 50 + (jockey_uyum - 50) * 0.5
+    
+    # 2. Jokey Değişimi (şimdilik nötr — Faz 4.7'de jokey genel istatistiğiyle geliştirilecek)
+    if jockey_changed:
+        score -= 3  # Küçük belirsizlik cezası
+    
+    # 3. İdman Jokeyi = Yarış Jokeyi Bonusu
+    if training_jockey and race_jockey:
+        tj = training_jockey.strip().upper()
+        rj = race_jockey.strip().upper()
+        # Kısmi eşleşme yeterli (soyad kontrolü)
+        if tj and rj and (tj in rj or rj in tj or tj.split('.')[-1] == rj.split('.')[-1]):
+            score += 5  # Ata alışık jokey bonusu
+    
+    return round(max(0, min(100, score)), 1)
+
+
+# ============== FAZ 4.4: BOUNCE EFFECT (DİNLENME ANALİZİ) ==============
+
+def calculate_bounce_score(races, race_date_str=None):
+    """
+    FAZ 4.4: Son yarıştan bu yana geçen günü ve yarış sıklığını analiz ederek
+    atın dinlenme/kondisyon durumunu 0-100 skor üretir.
+    
+    İdeal dinlenme aralıkları:
+    - 14-28 gün  → Mükemmel (100)
+    - 10-13 gün  → İyi (85)
+    - 29-42 gün  → Kabul Edilebilir (75)
+    - 7-9 gün   → Riskli (60) — çok kısa
+    - 43-60 gün  → Uzun ara (55) — form kaybı riski
+    - 61+ gün   → Çok uzun (35)
+    - 0-6 gün   → Çok kısa (40) — fiziksel yorgunluk
+    
+    Ek cezalar:
+    - Son 30 günde 3+ yarış → -15
+    - Son yarış 1. + rekor derece → -10 (bounce riski)
+    - Hiç yarış yok → nötr 50
+    
+    Args:
+        races (list): Geçmiş yarış listesi (en yeni first). 'date' alanı 'dd.MM.yyyy' formatı
+        race_date_str (str|None): Koşu tarihi 'dd.MM.yyyy' (yoksa bugün kullanılır)
+    
+    Returns:
+        float: Skor (0-100), nötr = 50
+    """
+    from datetime import datetime
+    
+    if not races:
+        return 50.0  # Hiç yarış yok → nötr
+    
+    # Referans tarih
+    try:
+        if race_date_str:
+            ref_date = datetime.strptime(race_date_str, '%d.%m.%Y')
+        else:
+            ref_date = datetime.now()
+    except:
+        ref_date = datetime.now()
+    
+    # Son yarış tarihi
+    last_race_date = None
+    for race in races:
+        date_str = race.get('date', '')
+        if date_str:
+            try:
+                last_race_date = datetime.strptime(date_str.strip(), '%d.%m.%Y')
+                break  # En son yarış (liste en yeni → en eski sıralı)
+            except:
+                continue
+    
+    if last_race_date is None:
+        return 50.0  # Tarih parse edilemedi → nötr
+    
+    gun_farki = (ref_date - last_race_date).days
+    gun_farki = max(0, gun_farki)
+    
+    # Dinlenme süresi skoru
+    if 14 <= gun_farki <= 28:
+        base_score = 100
+    elif 10 <= gun_farki <= 13:
+        base_score = 85
+    elif 29 <= gun_farki <= 42:
+        base_score = 75
+    elif 7 <= gun_farki <= 9:
+        base_score = 60
+    elif 43 <= gun_farki <= 60:
+        base_score = 55
+    elif gun_farki > 60:
+        base_score = 35
+    elif gun_farki <= 6:
+        base_score = 40
+    else:
+        base_score = 50
+    
+    penalty = 0
+    
+    # Bounce Effect: Son yarışı 1. ve olağanüstü hızlıysa → pil bitme riski
+    try:
+        last_rank = str(races[0].get('rank', '')).strip()
+        if last_rank == '1':
+            # Son yarış derecesi genel ortalamasından %3'ten fazla hızlıysa
+            last_deg = races[0].get('adjustedDegreeInSeconds') or races[0].get('degreeInSeconds')
+            all_degs = [
+                r.get('adjustedDegreeInSeconds') or r.get('degreeInSeconds')
+                for r in races[1:6]
+                if r.get('adjustedDegreeInSeconds') or r.get('degreeInSeconds')
+            ]
+            if last_deg and all_degs:
+                avg_deg = sum(all_degs) / len(all_degs)
+                if last_deg < avg_deg * 0.97:  # %3+ daha hızlı
+                    penalty -= 10  # Bounce riski
+    except:
+        pass
+    
+    # Aşırı koşma cezası: Son 30 günde 3+ yarış
+    try:
+        from datetime import timedelta
+        thirty_days_ago = ref_date - timedelta(days=30)
+        recent_race_count = 0
+        for race in races:
+            date_str = race.get('date', '')
+            if date_str:
+                try:
+                    rd = datetime.strptime(date_str.strip(), '%d.%m.%Y')
+                    if rd >= thirty_days_ago:
+                        recent_race_count += 1
+                except:
+                    pass
+        if recent_race_count >= 3:
+            penalty -= 15
+    except:
+        pass
+    
+    score = base_score + penalty
+    return round(max(0, min(100, score)), 1)
+
+
+# ============== FAZ 4.5: KOŞU TEMPOSU SENARYOSU (PACE SIMULATION) ==============
+
+def determine_running_style(races):
+    """
+    FAZ 4.5: Atın koşu stilini geçmiş yarışlardan belirler.
+    
+    Mantık: Son 5 yarışın sıralamalarına bakarak atın
+    genel pozisyon eğilimini çıkarır.
+    
+    Early Speed Score (ESS):
+    - Son 5 yarışta genelde 1-3. bitiriyorsa → KAÇAK  (ESS > 70)
+    - Orta sıralarda tutuyorsa            → TAKİPÇİ (40 < ESS <= 70)
+    - Genel olarak geride kalıyorsa       → BEKLEME  (ESS <= 40)
+    
+    Args:
+        races (list): Geçmiş yarış listesi (en yeni first)
+    
+    Returns:
+        str: 'KAÇAK', 'TAKİPÇİ', veya 'BEKLEME'
+        float: ESS skoru (0-100)
+    """
+    if not races:
+        return 'TAKİPÇİ', 50.0  # Veri yoksa nötr kabul
+    
+    scores = []
+    for i, race in enumerate(races[:5]):
+        try:
+            rank_str = re.sub(r'[^0-9]', '', str(race.get('rank', '0')))
+            rank = int(rank_str) if rank_str else 0
+            if rank > 0:
+                # Düşük sıralama (1.=en iyi) → yüksek ESS
+                # 1.→100, 2.→87, 3.→73, 4.→60, 5.→47, 6+→max(0, 47-(rank-5)*13)
+                if rank == 1:
+                    base = 100
+                elif rank == 2:
+                    base = 87
+                elif rank == 3:
+                    base = 73
+                elif rank == 4:
+                    base = 60
+                elif rank == 5:
+                    base = 47
+                else:
+                    base = max(0, 47 - (rank - 5) * 13)
+                
+                # Son yarışlara daha fazla ağırlık (azalan)
+                weight = 1.0 - (i * 0.12)
+                scores.append(base * max(0.4, weight))
+        except:
+            continue
+    
+    if not scores:
+        return 'TAKİPÇİ', 50.0
+    
+    ess = sum(scores) / len(scores)
+    ess = round(min(100, max(0, ess)), 1)
+    
+    if ess > 70:
+        return 'KAÇAK', ess
+    elif ess > 40:
+        return 'TAKİPÇİ', ess
+    else:
+        return 'BEKLEME', ess
+
+
+def calculate_pace_scenario(horse_styles):
+    """
+    FAZ 4.5: Yarıştaki tüm atların koşu stillerine göre
+    yarışın tempo profilini belirler.
+    
+    Args:
+        horse_styles (list): [{'name': str, 'style': 'KAÇAK'|'TAKİPÇİ'|'BEKLEME'}, ...]
+    
+    Returns:
+        str: 'HIZLI', 'NORMAL', 'YAVAŞ', 'ÇOK_YAVAŞ'
+        int: kaçak_sayısı
+    """
+    kacak_sayisi = sum(1 for h in horse_styles if h.get('style') == 'KAÇAK')
+    
+    if kacak_sayisi >= 3:
+        return 'HIZLI', kacak_sayisi       # Çok fazla kaçak → sert tempo
+    elif kacak_sayisi == 2:
+        return 'NORMAL', kacak_sayisi      # İki kaçak → dengeli tempo
+    elif kacak_sayisi == 1:
+        return 'YAVAŞ', kacak_sayisi       # Tek kaçak → o tempoyu kontrol eder
+    else:
+        return 'ÇOK_YAVAŞ', kacak_sayisi  # Kimse çekmiyor → çok yavaş
+
+
+def calculate_pace_score(horse_style, pace_scenario):
+    """
+    FAZ 4.5: Atın koşu stili ile yarış temposu senaryosunun uyumuna göre
+    0-100 skor üretir.
+    
+    Kural tablosu:
+    ┌─────────────┬──────────────────────────────────────────────────────┐
+    │ Tempo       │ KAÇAK      │ TAKİPÇİ   │ BEKLEME                   │
+    ├─────────────┼────────────┼───────────┼───────────────────────────┤
+    │ HIZLI       │ -10 (yıpr) │  0 (nötr) │ +15 (gelecek)             │
+    │ NORMAL      │  0 (nötr)  │  0 (nötr) │  0 (nötr)                 │
+    │ YAVAŞ       │ +15 (krng) │  0 (nötr) │ -5 (geç kalır)            │
+    │ ÇOK_YAVAŞ  │ +10 (çek)  │ +5        │ -10 (çok geç)             │
+    └─────────────┴────────────┴───────────┴───────────────────────────┘
+    
+    Args:
+        horse_style (str): 'KAÇAK', 'TAKİPÇİ', 'BEKLEME'
+        pace_scenario (str): 'HIZLI', 'NORMAL', 'YAVAŞ', 'ÇOK_YAVAŞ'
+    
+    Returns:
+        float: Skor (0-100), nötr = 50
+    """
+    adjustment = 0
+    
+    if pace_scenario == 'HIZLI':
+        if horse_style == 'KAÇAK':
+            adjustment = -10  # Çok sert tempo: kaçaklar yorulur
+        elif horse_style == 'BEKLEME':
+            adjustment = +15  # Sert tempoda bekleme atı kazanır
+        # TAKİPÇİ: nötr
+        
+    elif pace_scenario == 'YAVAŞ':
+        if horse_style == 'KAÇAK':
+            adjustment = +15  # Tek kaçak tempoyu kontrol eder
+        elif horse_style == 'BEKLEME':
+            adjustment = -5   # Geride kalırsa yetişemez
+        
+    elif pace_scenario == 'ÇOK_YAVAŞ':
+        if horse_style == 'KAÇAK':
+            adjustment = +10  # Öne geçip tutar
+        elif horse_style == 'TAKİPÇİ':
+            adjustment = +5   # Öne çıkma şansı
+        elif horse_style == 'BEKLEME':
+            adjustment = -10  # Çok geride kalır, son düzlük yetmez
+    
+    # NORMAL tempo → herkese nötr (adjustment = 0)
+    
+    score = 50 + adjustment
+    return round(max(0, min(100, score)), 1)
+
+
+# ══════════════════════════════════════════════════════════════════
+# FAZ 4.6: PEDİGRİ / KAN HATTI ANALİZİ (KATMAN 11)
+# ══════════════════════════════════════════════════════════════════
+
+# Modül düzeyi önbellek — aynı baba için TJK'ya tek istek
+_sire_cache = {}  # { 'BABA_ADI_UPPER': { ...stats... } }
+
+
+def fetch_sire_offspring_stats(sire_name):
+    """
+    FAZ 4.6: TJK KosuSorgulama sayfasından babanın yavrularının
+    geçmiş yarış istatistiklerini çeker.
+
+    Döndürür:
+        dict: {
+            'sire_name', 'total_offspring_races',
+            'win_rate', 'track_profile', 'distance_profile', 'data_quality'
+        }
+    """
+    global _sire_cache
+
+    if not sire_name or not sire_name.strip():
+        return None
+
+    sire_key = sire_name.strip().upper()
+
+    # Önbellekte varsa direkt dön
+    if sire_key in _sire_cache:
+        print(f"[PEDIGREE CACHE] {sire_key} önbellekten alındı")
+        return _sire_cache[sire_key]
+
+    print(f"[PEDIGREE] {sire_name} için yavru istatistikleri çekiliyor...")
+
+    try:
+        base_url = "https://www.tjk.org/TR/YarisSever/Query/Page/KosuSorgulama"
+        params = {
+            'QueryParameter_BabaIsmi': sire_name.strip(),
+            'QueryParameter_Tarih_Start': '01.01.2022',
+            'QueryParameter_Tarih_End':   '31.12.2025',
+            'QueryParameter_SehirId':     '-1',
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "tr-TR,tr;q=0.9",
+            "Referer": "https://www.tjk.org/TR/YarisSever/Query/Page/KosuSorgulama"
+        }
+
+        response = requests.get(base_url, params=params, headers=headers, timeout=12)
+        if response.status_code != 200:
+            print(f"[PEDIGREE] TJK hatası: {response.status_code}")
+            return None
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Tablo gövdesini bul
+        table = soup.find('table', id='queryTable')
+        tbody = None
+        if table:
+            tbody = table.find('tbody', id='tbody0') or table.find('tbody')
+        if not tbody:
+            tbody = soup.find('tbody', id='tbody0')
+
+        if not tbody:
+            print(f"[PEDIGREE] {sire_name} için tablo bulunamadı — veri yok")
+            result = {
+                'sire_name': sire_name,
+                'total_offspring_races': 0,
+                'win_rate': 0.0,
+                'track_profile': {},
+                'distance_profile': {},
+                'data_quality': 'NONE'
+            }
+            _sire_cache[sire_key] = result
+            return result
+
+        rows = tbody.find_all('tr')
+
+        # ── Sayaçlar ──────────────────────────────────────────────
+        total_races = 0
+        total_wins  = 0
+        track_counts = {}
+        dist_buckets = {'sprint': [], 'mid': [], 'long': []}
+
+        for row in rows:
+            if 'hidable' in row.get('class', []):
+                continue
+            cells = row.find_all('td')
+            if len(cells) < 8:
+                continue
+
+            try:
+                # Sütun eşlemesi (KosuSorgulama tablosu):
+                # [0]Tarih [1]Şehir [2]KoşuNo [3]Grup [4]KoşuCinsi
+                # [5]AprKoşCinsi [6]Mesafe [7]Pist ... → sıralama eksik!
+                # Detay linkinden at adı / sonuç çekmek yerine
+                # kısaca pist + mesafe + yarış varlığını sayıyoruz,
+                # birinci gelme bilgisi için koşu detayı çekmemek adına
+                # ortalama sıralama yerine win_rate'i atlıyoruz.
+                # Yine de pist × mesafe profili için bu satırlar yeterli.
+
+                mesafe_str = cells[6].text.strip() if len(cells) > 6 else ''
+                pist_str   = cells[7].text.strip().lower() if len(cells) > 7 else ''
+
+                # Mesafe sayısına çevir
+                try:
+                    mesafe = int(re.sub(r'[^0-9]', '', mesafe_str))
+                except:
+                    mesafe = 0
+
+                if mesafe <= 0:
+                    continue
+
+                total_races += 1
+
+                # ─ Pist profili ────────────────────────────────
+                if 'çim' in pist_str:
+                    pist_key = 'çim'
+                elif 'kum' in pist_str:
+                    pist_key = 'kum'
+                elif 'sentetik' in pist_str:
+                    pist_key = 'sentetik'
+                else:
+                    pist_key = 'diger'
+
+                if pist_key not in track_counts:
+                    track_counts[pist_key] = {'races': 0}
+                track_counts[pist_key]['races'] += 1
+
+                # ─ Mesafe profili ───────────────────────────────
+                if mesafe <= 1400:
+                    dist_buckets['sprint'].append(mesafe)
+                elif mesafe <= 1800:
+                    dist_buckets['mid'].append(mesafe)
+                else:
+                    dist_buckets['long'].append(mesafe)
+
+            except Exception as row_err:
+                print(f"[PEDIGREE] Satır hatası: {row_err}")
+                continue
+
+        data_quality = 'NONE' if total_races == 0 else ('LOW' if total_races < 20 else 'HIGH')
+
+        # Track profile dict oluştur (win_rate = 0 placeholder — detay çekmiyoruz)
+        track_profile = {}
+        for tk, tv in track_counts.items():
+            track_profile[tk] = {
+                'races':    tv['races'],
+                'share':    round(tv['races'] / total_races, 3) if total_races else 0,
+            }
+
+        distance_profile = {
+            'sprint': {'races': len(dist_buckets['sprint'])},
+            'mid':    {'races': len(dist_buckets['mid'])},
+            'long':   {'races': len(dist_buckets['long'])},
+        }
+
+        result = {
+            'sire_name':             sire_name,
+            'total_offspring_races': total_races,
+            'win_rate':              round(total_wins / total_races, 3) if total_races else 0.0,
+            'track_profile':         track_profile,
+            'distance_profile':      distance_profile,
+            'data_quality':          data_quality,
+        }
+
+        _sire_cache[sire_key] = result
+        print(f"[PEDIGREE] {sire_name}: {total_races} yarış, kalite={data_quality}")
+        return result
+
+    except Exception as e:
+        print(f"[PEDIGREE] fetch_sire_offspring_stats hatası: {e}")
+        return None
+
+
+def calculate_pedigree_score(sire_stats, target_track, target_distance):
+    """
+    FAZ 4.6: Baba istatistikleri × hedef pist × hedef mesafe → 0-100 arası pedigri skoru.
+
+    Formül:
+        PedigriSkoru = GenelPrf(0.40) + PistPrf(0.35) + MesafePrf(0.25)
+    """
+    if not sire_stats or sire_stats.get('data_quality') == 'NONE':
+        return 50.0, 'Veri Yok', 'Bilinmiyor'
+
+    total = sire_stats.get('total_offspring_races', 0)
+    data_quality = sire_stats.get('data_quality', 'LOW')
+
+    # ─ 1. Genel Performans ─────────────────────────────────────────
+    # Veri varsa genel skor orta-üstü; kalite düşükse nötre çek
+    if data_quality == 'HIGH':
+        general_score = 60.0  # Yeterli veri: hafif pozitif
+    else:
+        general_score = 52.0  # Az veri: nötüre yakın
+
+    # ─ 2. Pist Profili ─────────────────────────────────────────────
+    track_profile = sire_stats.get('track_profile', {})
+    target_track_lower = (target_track or '').lower()
+
+    if 'çim' in target_track_lower:
+        target_key = 'çim'
+    elif 'kum' in target_track_lower:
+        target_key = 'kum'
+    elif 'sentetik' in target_track_lower:
+        target_key = 'sentetik'
+    else:
+        target_key = None
+
+    pist_score = 50.0  # nötr
+    track_compat_label = 'Bilinmiyor'
+
+    if target_key and track_profile:
+        target_pist = track_profile.get(target_key, {})
+        target_races = target_pist.get('races', 0)
+        total_track_races = sum(v.get('races', 0) for v in track_profile.values())
+
+        if total_track_races > 0:
+            share = target_races / total_track_races
+            # Payı > %50 → baba bu pistte çok koşmuş → onaylı
+            if share >= 0.50:
+                pist_score = 75.0
+                track_compat_label = f"{target_key.capitalize()} Uyumlu"
+            elif share >= 0.30:
+                pist_score = 60.0
+                track_compat_label = f"{target_key.capitalize()} Uyumlu"
+            elif share >= 0.10:
+                pist_score = 48.0
+                track_compat_label = 'Nötr'
+            else:
+                pist_score = 35.0
+                track_compat_label = f"{target_key.capitalize()} Zayıf"
+        else:
+            pist_score = 50.0
+            track_compat_label = 'Bilinmiyor'
+    elif not track_profile:
+        track_compat_label = 'Bilinmiyor'
+
+    # ─ 3. Mesafe Profili ───────────────────────────────────────────
+    dist_profile = sire_stats.get('distance_profile', {})
+    try:
+        target_dist = int(re.sub(r'[^0-9]', '', str(target_distance)))
+    except:
+        target_dist = 0
+
+    mesafe_score = 50.0
+    dist_compat_label = 'Bilinmiyor'
+
+    if target_dist > 0 and dist_profile:
+        if target_dist <= 1400:
+            bucket = 'sprint'
+        elif target_dist <= 1800:
+            bucket = 'mid'
+        else:
+            bucket = 'long'
+
+        bucket_races = dist_profile.get(bucket, {}).get('races', 0)
+        total_dist_races = sum(v.get('races', 0) for v in dist_profile.values())
+
+        if total_dist_races > 0:
+            share = bucket_races / total_dist_races
+            if share >= 0.50:
+                mesafe_score = 75.0
+                dist_compat_label = f"{bucket.capitalize()} Uzmanı"
+            elif share >= 0.30:
+                mesafe_score = 62.0
+                dist_compat_label = 'Mesafe Uyumlu'
+            elif share >= 0.10:
+                mesafe_score = 48.0
+                dist_compat_label = 'Mesafe Nötr'
+            else:
+                mesafe_score = 35.0
+                dist_compat_label = 'Mesafe Zayıf'
+
+    # ─ 4. Ağırlıklı birleşim ─────────────────────────────────────
+    score = (general_score * 0.40) + (pist_score * 0.35) + (mesafe_score * 0.25)
+
+    # Az veri → skoru nötre (50) doğru çek
+    if data_quality == 'LOW':
+        score = score * 0.6 + 50 * 0.4
+
+    return round(max(0, min(100, score)), 1), track_compat_label, dist_compat_label
+
+
+def calculate_pedigree_weight(horse_races, target_track, target_distance):
+    """
+    FAZ 4.6: Atın hedef pist ve mesafedeki tecrübesine göre pedigri
+    katmanının dinamik ağırlığını hesaplar.
+
+    Returns:
+        float: 0.03 ile 0.20 arası pedigri ağırlığı
+    """
+    if not horse_races:
+        return 0.20  # Maiden / veri yok → maksimum pedigri ağırlığı
+
+    target_track_lower = (target_track or '').lower()
+    try:
+        target_dist = int(re.sub(r'[^0-9]', '', str(target_distance)))
+    except:
+        target_dist = 0
+
+    track_races_count = sum(
+        1 for r in horse_races
+        if target_track_lower and target_track_lower in r.get('track', '').lower()
+    )
+
+    if track_races_count == 0:
+        base_weight = 0.15
+    elif track_races_count <= 2:
+        base_weight = 0.10
+    elif track_races_count <= 5:
+        base_weight = 0.06
+    else:
+        base_weight = 0.03
+
+    if target_dist > 0:
+        dist_races_count = sum(
+            1 for r in horse_races
+            if abs(int(re.sub(r'[^0-9]', '', r.get('distance', '0')) or 0) - target_dist) <= 200
+        )
+        if dist_races_count == 0:
+            base_weight += 0.05
+
+    return round(min(0.20, max(0.03, base_weight)), 3)
+
+
+
+def calculate_dynamic_weights(metrics):
+    """
+    FAZ 4.7: Her at için veri durumuna göre 11 katmanın ağırlıklarını
+    tamamen dinamik hesaplar. Toplam her zaman 1.0 (%100) olur.
+
+    Temel kural: Veri yoksa → o katmanın ağırlığı sıfırlanır →
+    boşluk diğer aktif katmanlara orantılı dağıtılır.
+
+    Args:
+        metrics (dict): PASS1'den gelen ham metrikler
+
+    Returns:
+        dict: Normalize edilmiş ağırlıklar (toplam = 1.0)
+    """
+    total_races       = metrics.get('_total_races', 0)
+    has_training      = metrics.get('_has_training', False)
+    track_races       = metrics.get('_track_races', 0)
+    dist_races        = metrics.get('_dist_races', 0)
+    has_pedigree_data = metrics.get('_has_pedigree', False)
+    pedigree_weight   = float(metrics.get('pedigree_weight', 0.03))
+
+    # ── VARSAYİLAN TEMEL AĞİRLIKLAR ────────────────────────────────────────────────
+    w = {
+        'degree_avg':            0.22,  # K1: Normalize Hız Skoru
+        'degree_trend':          0.11,  # K1b: Derece trendi
+        'degree_stability':      0.07,  # K10: İstikrar
+        'training_fitness':      0.05,  # K5a: İdman zamanlama
+        'training_degree_score': 0.05,  # K5b: İdman projeksiyon
+        'track_suit':            0.10,  # K3: Pist uyumu
+        'form_trend':            0.09,  # K4: Form & momentum
+        'distance_suit':         0.08,  # K2: Mesafe uyumu
+        'weight_impact':         0.06,  # K6: Sıklet etkisi
+        'jockey_score':          0.07,  # K7: Jokey analizi
+        'bounce_score':          0.06,  # K8: Dinlenme
+        'pace_score':            0.03,  # K9: Tempo senaryosu
+        'pedigree':              0.03,  # K11: Pedigri (baz=%3, dinamik yukarı gidebilir)
+    }
+
+    # ── SENARYO: MAİDEN (İlk koşu — hiç yarış verisi yok) ───────────────────
+    if total_races == 0:
+        w['degree_avg']            = 0.0
+        w['degree_trend']          = 0.0
+        w['degree_stability']      = 0.0
+        w['form_trend']            = 0.0
+        w['track_suit']            = 0.0
+        w['distance_suit']         = 0.0
+        w['bounce_score']          = 0.0
+        w['training_fitness']      = 0.25 if has_training else 0.0
+        w['training_degree_score'] = 0.15 if has_training else 0.0
+        w['jockey_score']          = 0.15
+        w['pace_score']            = 0.05
+        w['weight_impact']         = 0.05
+        w['pedigree']              = 0.20  # Tek referans: genetik
+        # Normaliza edilecek, toplam kontrol edilecek
+
+    # ── SENARYO: ÇOK AZ VERİ (1-2 yarış) ─────────────────────────────────
+    elif total_races <= 2:
+        w['degree_avg']       *= 0.55  # Az veri = güven düşük
+        w['form_trend']       *= 0.50
+        w['degree_stability'] *= 0.30
+        if has_training:
+            w['training_fitness']      *= 1.40
+            w['training_degree_score'] *= 1.30
+        w['pedigree'] = pedigree_weight  # Dinamik pedigri ağırlığı
+
+    else:
+        # ── SENARYO: NORMAL (3+ yarış) ─────────────────────────────────
+        # Pist tecrübesi yoksa pist katmanı kapat
+        if track_races == 0:
+            w['track_suit'] *= 0.3  # Hedef pistte hiç koşmamış
+        # Mesafe tecrübesi yoksa mesafe katmanı kapat
+        if dist_races == 0:
+            w['distance_suit'] *= 0.3  # Hedef mesafede hiç koşmamış
+        # Pedigri ağırlığını dinamik değerle güncelle
+        w['pedigree'] = pedigree_weight
+
+    # ── İDMAN VERİSİ YOK → idman katmanlarını kapat ──────────────────
+    if not has_training:
+        freed = w['training_fitness'] + w['training_degree_score']
+        w['training_fitness']      = 0.0
+        w['training_degree_score'] = 0.0
+        # Serbest ağırlığı derece + form'a dağıt
+        w['degree_avg']   += freed * 0.50
+        w['form_trend']   += freed * 0.25
+        w['pedigree']     += freed * 0.15
+        w['jockey_score'] += freed * 0.10
+
+    # ── TOPLAMI %100'e normalize et ────────────────────────────────
+    total = sum(w.values())
+    if total > 0:
+        w = {k: round(v / total, 4) for k, v in w.items()}
+
+    return w
+
+
+def calculate_data_confidence(metrics):
+    """
+    FAZ 4.7: Veri doluluk yüzdesini hesaplar.
+    Kullanıcıya tahmin doğruluğu hakkında güven sinyali verir.
+
+    Returns:
+        float: 0.0 - 1.0 (1.0 = tam veri)
+        str:   '🟢 Yüksek' | '🟡 Orta' | '🔴 Düşük'
+    """
+    total_races  = metrics.get('_total_races', 0)
+    has_training = metrics.get('_has_training', False)
+    track_races  = metrics.get('_track_races', 0)
+    dist_races   = metrics.get('_dist_races', 0)
+    has_pedigree = metrics.get('_has_pedigree', False)
+
+    score = 0.0
+
+    # Yarış geçmişi (max 0.40)
+    if total_races >= 6:
+        score += 0.40
+    elif total_races >= 3:
+        score += 0.28
+    elif total_races >= 1:
+        score += 0.12
+
+    # İdman verisi (max 0.20)
+    if has_training:
+        score += 0.20
+
+    # Pist tecrübesi (max 0.15)
+    if track_races >= 3:
+        score += 0.15
+    elif track_races >= 1:
+        score += 0.08
+
+    # Mesafe tecrübesi (max 0.15)
+    if dist_races >= 3:
+        score += 0.15
+    elif dist_races >= 1:
+        score += 0.07
+
+    # Pedigri verisi (max 0.10)
+    if has_pedigree:
+        score += 0.10
+
+    confidence = round(min(1.0, score), 2)
+
+    if confidence >= 0.75:
+        label = '🟢 Yüksek'
+    elif confidence >= 0.45:
+        label = '🟡 Orta'
+    else:
+        label = '🔴 Düşük'
+
+    return confidence, label
+
+
+def calculate_master_score(metrics):
+    """
+    FAZ 4.7: 11 katmanlı, tamamen dinamik ağırlıklı Master Tahmin Skoru.
+    calculate_dynamic_weights() ile belirlenen ağırlıklar uygulanır.
+
+    Returns:
+        float: 0-100 arası Master AI Skoru
+        dict:  Uygulanan dinamik ağırlıklar
+        float: Güven yüzde skoru (0-1)
+        str:   Güven etiketi
+    """
+    weights = calculate_dynamic_weights(metrics)
+    confidence, confidence_label = calculate_data_confidence(metrics)
+
+    weighted_sum  = 0.0
+    weight_total  = 0.0
+
+    for key, weight in weights.items():
+        if weight <= 0:
+            continue
+        value = metrics.get(key, 50.0)
+        weighted_sum  += value * weight
+        weight_total  += weight
+
+    master_score = round(weighted_sum / weight_total, 1) if weight_total > 0 else 50.0
+    return master_score, weights, confidence, confidence_label
+
+
 def calculate_ai_score(metrics):
     """
-    FAZ 1.2 + Güncel: Tüm metriklerin ağırlıklı birleşimi - Nihai AI Skoru (0-100)
-    Derece bazlı ağırlıklar + son idman projeksiyonu.
+    FAZ 4.7: Gerı uyumluluk wrapperı.
+    Artık calculate_master_score() delegasyonu ile çalışıyor.
+    API'yi bozmadan tüm çağrı noktalarını güncellemeden master skoru kullanır.
     """
-    weights = {
-        'degree_avg': 0.30,             # Derece ortalaması (en önemli)
-        'degree_trend': 0.13,           # Derece trendi
-        'degree_stability': 0.10,       # Derece istikrarı
-        'training_fitness': 0.12,       # İdman fitness (zamanlama)
-        'training_degree_score': 0.10,  # İdman projeksiyon vs yarış derecesi
-        'track_suit': 0.10,             # Pist uyumu
-        'form_trend': 0.10,             # Form trend
-        'distance_suit': 0.05           # Mesafe uygunluğu
-    }
-    
-    weighted_sum = 0
-    weight_total = 0
-    
-    for key, weight in weights.items():
-        value = metrics.get(key, 50)
-        weighted_sum += value * weight
-        weight_total += weight
-    
-    return round(weighted_sum / weight_total, 1) if weight_total > 0 else 50.0
+    score, _, _, _ = calculate_master_score(metrics)
+    return score
+
 
 def generate_prediction(ai_score, metrics):
-    """Tahmin etiketi oluştur — derece bazlı"""
-    if ai_score >= 85:
+    """
+    FAZ 4.7: Zenginleştirilmiş tahmin etiketi.
+    AI skoru + veri güveni + dinamik metrikler üstünden üretilir.
+    """
+    confidence, _ = calculate_data_confidence(metrics)
+    total_races   = metrics.get('_total_races', 0)
+
+    # Veri çok az → tahmin etiketi daha temkinli
+    if total_races == 0:
+        return "İlk Koşu 🔍"  # Maiden
+
+    if ai_score >= 87:
         return "Favori ⭐"
-    elif ai_score >= 75:
-        return "Plase Adayı"
-    elif metrics.get('degree_trend', 50) >= 70:
-        return "Formda 📈"
-    elif metrics.get('degree_stability', 50) >= 80:
-        return "Güvenilir"
-    elif metrics.get('form_trend_value', 0) > 0.5:
-        return "Yükselişte"
-    elif metrics.get('track_suit', 50) >= 75:
-        return "Pist Uzmanı"
+    elif ai_score >= 78:
+        if confidence >= 0.70:
+            return "Güçlü Aday 🥇"
+        else:
+            return "Plase Adayı"
+    elif ai_score >= 68:
+        if metrics.get('form_trend_value', 0) > 0.5:
+            return "Formda 📈"
+        elif metrics.get('pedigree', 50) >= 70 and metrics.get('_track_races', 1) == 0:
+            return "Pedigri Vaadi 🧬"
+        else:
+            return "Plase Adayı"
+    elif ai_score >= 55:
+        if metrics.get('bounce_score', 50) >= 70:
+            return "Kondisyonda ✨"
+        elif metrics.get('track_suit', 50) >= 75:
+            return "Pist Uzmanı"
+        elif metrics.get('pace_score', 50) >= 70:
+            return "Tempo Avantajlı"
+        else:
+            return "İzlenmeli"
     else:
-        return "İzlenmeli"
+        if metrics.get('jockey_score', 50) >= 75:
+            return "Jokey Faktörü"
+        return "Zayıf Aday"
+
 
 def generate_insight(name, metrics, ai_score):
-    """At için Türkçe insight metni oluştur — derece bazlı"""
+    """
+    FAZ 4.7: Zenginleştirilmiş, çok katmanlı Türkçe insight metni.
+    11 katmandan en kritik 2 sinyali seçer.
+    """
     insights = []
-    
-    if metrics.get('degree_trend', 50) >= 65:
-        insights.append("Derecelerinde iyileşme trendi var")
-    elif metrics.get('degree_trend', 50) <= 35:
-        insights.append("Derecelerinde düşüş eğilimi")
-    
-    if metrics.get('degree_stability', 50) >= 75:
-        insights.append("İstikrarlı dereceler sergiliyor")
-    elif metrics.get('degree_stability', 50) <= 30:
-        insights.append("Dereceleri değişken, sürpriz yapabilir")
-    
-    if metrics.get('track_suit', 50) >= 75:
-        insights.append("Bu pist tipinde başarılı geçmişi var")
-    
-    if metrics.get('form_trend_value', 0) > 0.3:
-        insights.append("Son yarışlarda yükselen performans")
-    
+    total_races = metrics.get('_total_races', 0)
+
+    # ─ Maiden (veri yok) ──────────────────────────────────────
+    if total_races == 0:
+        pedigree_s = metrics.get('pedigree', 50)
+        has_t = metrics.get('_has_training', False)
+        if pedigree_s >= 65:
+            insights.append("Pedigri profili bu koşu için umut veriyor")
+        if has_t:
+            insights.append("İdman verileri tek somut referans")
+        else:
+            insights.append("Yarış geçmişi ve idman verisi yok")
+        return " • ".join(insights[:2])
+
+    # ─ K1: Hız / Derece ───────────────────────────────────────
+    degree_avg = metrics.get('degree_avg', 50)
+    if degree_avg >= 80:
+        insights.append("Derecesi rakiplerine göre üstün")
+    elif degree_avg <= 30:
+        insights.append("Genel derecesi rakiplerine göre düşük")
+
+    # ─ K4: Form & Momentum ─────────────────────────────────
+    form_trend_v = metrics.get('form_trend_value', 0)
+    if form_trend_v > 0.5:
+        insights.append("Son yarışlarda güçlü yükseliş eğilimi")
+    elif form_trend_v < -0.5:
+        insights.append("Son yarışlarda düşüş eğilimi var")
+
+    # ─ K5: İdman ─────────────────────────────────────────────
+    training_deg = metrics.get('training_degree_score', 50)
+    if training_deg >= 75 and metrics.get('_has_training', False):
+        insights.append("İdman projeksiyonu yarış ortalamasının üzerinde")
+    elif training_deg <= 30 and metrics.get('_has_training', False):
+        insights.append("İdman projeksiyonu yarış ortalamasının altında")
+
+    # ─ K3: Pist Uyumu ───────────────────────────────────────
+    track_suit = metrics.get('track_suit', 50)
+    track_races = metrics.get('_track_races', 0)
+    if track_races == 0:
+        insights.append("Bu pistte ilk kez koşuyor (belirsizlik)")
+    elif track_suit >= 78:
+        insights.append("Bu pist tipinde yüksek performans geçmişi")
+    elif track_suit <= 30:
+        insights.append("Bu pistte tarihî başarısı zayıf")
+
+    # ─ K8: Bounce / Dinlenme ────────────────────────────────
+    bounce = metrics.get('bounce_score', 50)
+    if bounce <= 30:
+        insights.append("Dinlenme süresi yetersiz veya çok uzun ara")
+    elif bounce >= 78:
+        insights.append("Optimal dinlenme süresinde")
+
+    # ─ K9: Tempo ─────────────────────────────────────────────
+    pace = metrics.get('pace_score', 50)
+    if pace >= 70:
+        insights.append("Koşu temposu koşu stiline uygun")
+    elif pace <= 30:
+        insights.append("Koşu temposu stiline karşı çıkıyor")
+
+    # ─ K11: Pedigri ────────────────────────────────────────────
+    pedigree = metrics.get('pedigree', 50)
+    if pedigree >= 70 and track_races == 0:
+        insights.append("Baba profili bu pistte umut vaat ediyor")
+
     if not insights:
         if ai_score >= 70:
             insights.append("Genel metriklerinde dengeli görünüyor")
         else:
             insights.append("Rakiplerine göre dezavantajlı konumda")
-    
+
     return " • ".join(insights[:2])
+
+
+
 
 @app.route('/api/analyze-race', methods=['POST'])
 def analyze_race():
@@ -1849,9 +2854,16 @@ def analyze_race():
         
         print(f"[ANALYZE] {len(training_data_map)} at için idman verisi bulundu")
         
-        # 2. Paralel Yarış Geçmişi ve Analiz
-        analyzed_horses = []
+        # FAZ 4.5: 2-PASS MİMARİSİ
+        # ─────────────────────────────────────────────────────────────
+        # PASS 1: Tüm atların yarış geçmişini paralel çek + koşu stillerini belirle
+        # PASS 2: Koşu temposunu hesapla + her ata pace_score uygula → final AI Score
+        # ─────────────────────────────────────────────────────────────
         
+        # PASS 1: Paralel veri çekme + stil belirleme
+        intermediate_horses = []  # [{ original_horse, horse_data, style, ess, ... }]
+        
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_horse = {executor.submit(fetch_horse_details_safe, horse, target_distance): horse for horse in horses}
             
@@ -1859,6 +2871,7 @@ def analyze_race():
                 original_horse = future_to_horse[future]
                 horse_data = future.result()
                 horse_name = original_horse.get('name', '')
+
                 
                 # İdman verisini al (Türkçe karakter uyumlu eşleştirme)
                 import unicodedata
@@ -1935,8 +2948,28 @@ def analyze_race():
                         training_projection = project_training_to_race_distance(training_data, target_distance, avg_race_deg)
                         training_deg_score = calculate_training_degree_score(training_projection, avg_race_deg)
                     
-                    # 3. AI Score hesaplama — Derece bazlı yeni metrikler + idman projeksiyon
-                    metrics = {
+                    # FAZ 4.2: Kilo değişimi — AI score'dan ÖNCE hesapla
+                    current_weight = original_horse.get('weight', '').strip()
+                    last_weight = races[0].get('weight', '').strip() if races else ''
+                    weight_impact_score = calculate_weight_impact(current_weight, last_weight, target_distance)
+                    
+                    # FAZ 4.3+4.4: Jokey ve Bounce skorlarını metrics'ten ÖNCE hesapla
+                    # (Jokey bilgisi aşağıda tam hesaplanacak; şimdi hızlı bir ön hesap)
+                    _cur_jockey = original_horse.get('jockey', '').strip()
+                    _jockey_races = [r for r in races if _cur_jockey and _cur_jockey.strip().upper() in r.get('jockey', '').strip().upper()]
+                    _jockey_wins = sum(1 for r in _jockey_races if r.get('rank') == '1')
+                    _jockey_stats_pre = {
+                        'totalRaces': len(_jockey_races) if _jockey_races else len(races),
+                        'wins': _jockey_wins if _jockey_races else sum(1 for r in races if r.get('rank') == '1'),
+                    } if _cur_jockey else None
+                    _last_jockey_race = races[0].get('jockey', '').strip() if races else ''
+                    _jockey_changed_pre = bool(_cur_jockey and _last_jockey_race and _cur_jockey.upper() != _last_jockey_race.upper())
+                    _training_jockey = training_data.get('trainingJockey', '') if training_data else ''
+                    jockey_score_val = calculate_jockey_score(_jockey_stats_pre, _jockey_changed_pre, _training_jockey, _cur_jockey)
+                    
+                    bounce_score_val = calculate_bounce_score(races)
+                    
+                    metrics_pass1 = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
                         'degree_trend': degree_stats.get('trendScore', 50),
                         'degree_stability': degree_stats.get('stabilityScore', 50),
@@ -1946,10 +2979,37 @@ def analyze_race():
                         'track_suit': track_suit,
                         'distance_suit': distance_suit,
                         'training_fitness': training_fitness,
-                        'training_degree_score': training_deg_score
+                        'training_degree_score': training_deg_score,
+                        'weight_impact': weight_impact_score,   # FAZ 4.2
+                        'jockey_score': jockey_score_val,       # FAZ 4.3
+                        'bounce_score': bounce_score_val,       # FAZ 4.4
+                        'pace_score': 50.0,                     # FAZ 4.5: PASS 2'de güncellenecek (nötr placeholder)
+                        'pedigree': 50.0,                        # FAZ 4.6: pedigri skoru (placeholder)
+                        'pedigree_weight': 0.03,                 # FAZ 4.6: dinamik ağırlık (placeholder)
+                        # FAZ 4.7: calculate_dynamic_weights için meta alanlar
+                        '_total_races':   len(races),
+                        '_track_races':   sum(1 for r in races if target_track.lower() in r.get('track', '').lower()) if target_track else 0,
+                        '_dist_races':    len(filtered_races),
+                        '_has_training':  training_data is not None,
+                        '_has_pedigree':  False,  # Pe4.6 sonrası güncellenecek
                     }
-                    
-                    ai_score = calculate_ai_score(metrics)
+                    # FAZ 4.6: Pedigri (baba) skoru — cache'li TJK çekimi
+                    sire_name = original_horse.get('father', '').strip()
+                    sire_stats = fetch_sire_offspring_stats(sire_name) if sire_name else None
+                    pedigree_score_val, track_compat, dist_compat = calculate_pedigree_score(
+                        sire_stats, target_track, target_distance
+                    )
+                    pedigree_weight_val = calculate_pedigree_weight(races, target_track, target_distance)
+
+                    # metrics_pass1 güncellemesi (pedigri + meta)
+                    metrics_pass1['pedigree']        = pedigree_score_val
+                    metrics_pass1['pedigree_weight'] = pedigree_weight_val
+                    metrics_pass1['_has_pedigree']   = (sire_stats is not None and sire_stats.get('data_quality') != 'NONE')
+
+                    ai_score_pass1 = calculate_ai_score(metrics_pass1)
+
+                    # FAZ 4.5: PASS 1 — koşu stilini belirle (diğer atlar bitmeden pace_scenario hesaplanamaz)
+                    horse_style, ess_score = determine_running_style(races)
                     
                     # === TEMEL İSTATİSTİKLER ===
                     ranks = [int(r['rank']) for r in races if r.get('rank', '').isdigit()]
@@ -1985,75 +3045,52 @@ def analyze_race():
                         return False
                     
                     jockey_races = [r for r in races if jockey_match(r.get('jockey', ''), current_jockey)]
+
                     jockey_wins = sum(1 for r in jockey_races if r.get('rank') == '1')
-                    
-                    # Eğer jokey eşleşmesi bulunamadıysa, tüm yarışları say
-                    if len(jockey_races) == 0 and current_jockey:
+                    if len(jockey_races) == 0 and _cur_jockey:
                         jockey_races = races
                         jockey_wins = sum(1 for r in races if r.get('rank') == '1')
                     
                     jockey_stats = {
-                        'name': current_jockey,
+                        'name': _cur_jockey,
                         'totalRaces': len(jockey_races),
                         'wins': jockey_wins,
                         'winRate': round(jockey_wins / len(jockey_races) * 100) if jockey_races else 0
-                    } if current_jockey else None
+                    } if _cur_jockey else None
                     
-                    # 2. Jokey Değişimi - daha akıllı karşılaştırma
                     last_jockey = races[0].get('jockey', '').strip() if races else ''
-                    jockey_changed = current_jockey and last_jockey and not jockey_match(current_jockey, last_jockey)
-                    print(f"[DEBUG] Son jokey: '{last_jockey}', Değişti mi: {jockey_changed}")
+                    jockey_changed = _cur_jockey and last_jockey and not jockey_match(_cur_jockey, last_jockey)
                     
-                    # 3. Kilo Değişimi - Fazla kilo dahil toplam hesapla
-                    current_weight = original_horse.get('weight', '').strip()
-                    last_weight = races[0].get('weight', '').strip() if races else ''
                     weight_change = None
-                    
-                    def parse_weight(w_str):
-                        """Parse weight string like '50+2.00Fazla Kilo' -> 52.0"""
-                        if not w_str:
-                            return None
-                        import re
-                        # İlk sayı (temel kilo)
-                        base_match = re.match(r'(\d+[,.]?\d*)', w_str)
-                        if not base_match:
-                            return None
-                        base = float(base_match.group(1).replace(',', '.'))
-                        # + işaretinden sonraki bonus kilo
-                        bonus_match = re.search(r'\+(\d+[,.]?\d*)', w_str)
-                        if bonus_match:
-                            bonus = float(bonus_match.group(1).replace(',', '.'))
-                            return base + bonus
-                        return base
-                    
                     try:
-                        cw = parse_weight(current_weight)
-                        lw = parse_weight(last_weight)
-                        print(f"[DEBUG] Current weight parsed: {cw}, Last weight parsed: {lw}")
+                        def _parse_w_display(w_str):
+                            if not w_str: return None
+                            m = re.match(r'(\d+[,.]?\d*)', str(w_str).strip())
+                            if not m: return None
+                            base = float(m.group(1).replace(',', '.'))
+                            bm = re.search(r'\+(\d+[,.]?\d*)', str(w_str))
+                            if bm: base += float(bm.group(1).replace(',', '.'))
+                            return base
+                        cw = _parse_w_display(current_weight)
+                        lw = _parse_w_display(last_weight)
                         if cw is not None and lw is not None:
-                            weight_change = round(cw - lw, 1)
-                            if weight_change == 0:
-                                weight_change = None  # 0 ise gösterme
-                            print(f"[DEBUG] Kilo değişimi: {weight_change}")
-                    except Exception as e:
-                        print(f"[DEBUG] Kilo parse hatası: {e}")
+                            weight_change = round(cw - lw, 1) or None
+                    except: pass
                     
-                    # 4. En İyi Derece — yarış derecesinden alınıyor
                     best_time = degree_stats.get('bestDegreeFormatted', training_best_time)
                     
-                    # NOT: training_projection artık yukarıda (AI score öncesinde) hesaplanıyor
-                    
-                    analyzed_horses.append({
+                    # PASS 1: intermediate_horses'a kaydet (metrics de dahil)
+                    intermediate_horses.append({
                         'name': horse_data['name'],
                         'no': original_horse.get('no', ''),
-                        'aiScore': ai_score,
+                        'aiScore': ai_score_pass1,   # geçici, PASS 2'de güncellenecek
                         'formIndex': {
                             'trend': 'UP' if trend_value > 0 else 'DOWN' if trend_value < 0 else 'STABLE',
                             'trendValue': trend_value,
                         },
                         'raceHistory': races,
-                        'filteredRaces': filtered_races,     # FAZ 1.1: Mesafe bazlı filtrelenmiş yarışlar
-                        'degreeStats': degree_stats,          # FAZ 1.2: Derece istatistikleri
+                        'filteredRaces': filtered_races,
+                        'degreeStats': degree_stats,
                         'stats': {
                             'avgRank': round(avg_rank, 1) if avg_rank > 0 else None,
                             'winRate': round(wins / len(ranks) * 100) if ranks else None,
@@ -2061,14 +3098,38 @@ def analyze_race():
                             'trackWins': track_wins if track_wins > 0 else None,
                             'distanceWins': distance_wins if distance_wins > 0 else None,
                         },
-                        # Gelişmiş bahis istatistikleri
                         'jockeyStats': jockey_stats,
                         'jockeyChanged': jockey_changed,
                         'weightChange': weight_change,
                         'bestTime': best_time,
                         'raceCount': len(races),
                         'filteredRaceCount': len(filtered_races),
-                        # === İDMAN BİLGİLERİ ===
+                        'scoreBreakdown': {
+                            'weightImpactScore': weight_impact_score,
+                            'jockeyScore': jockey_score_val,
+                            'bounceScore': bounce_score_val,
+                            'paceScore': 50.0,          # PASS 2'de güncellenecek
+                            'pedigreeScore': pedigree_score_val,   # FAZ 4.6
+                            'trackSuitScore': track_suit,
+                            'distanceSuitScore': distance_suit,
+                            'formTrendScore': trend_score,
+                            'degreeAvgScore': degree_stats.get('degreeScore', 50),
+                        },
+                        # FAZ 4.5+4.6: PASS 1 ara değerleri (PASS 2 için gerekli)
+                        '_runningStyle': horse_style,
+                        '_essScore': ess_score,
+                        '_metrics_pass1': metrics_pass1,  # PASS 2'de pace_score + pedigree güncel
+                        # FAZ 4.6: Pedigri bilgileri (API response için korunur)
+                        '_pedigreeInfo': {
+                            'sireName':            sire_name,
+                            'pedigreeScore':       pedigree_score_val,
+                            'pedigreeWeight':      pedigree_weight_val,
+                            'trackCompatibility':  track_compat,
+                            'distanceCompatibility': dist_compat,
+                            'dataQuality':         sire_stats.get('data_quality', 'NONE') if sire_stats else 'NONE',
+                            'totalOffspringRaces': sire_stats.get('total_offspring_races', 0) if sire_stats else 0,
+                        },
+                        # İDMAN
                         'trainingInfo': {
                             'hasData': training_data is not None,
                             'fitnessScore': training_fitness,
@@ -2095,57 +3156,157 @@ def analyze_race():
                     })
                 else:
                     # Veri çekilemediyse
-                    analyzed_horses.append({
+                    intermediate_horses.append({
                         'name': original_horse.get('name', 'Bilinmiyor'),
                         'no': original_horse.get('no', ''),
                         'aiScore': 0,
-                        'formIndex': {
-                            'trend': '-',
-                            'trendValue': 0,
-                        },
+                        'formIndex': {'trend': '-', 'trendValue': 0},
                         'raceHistory': [],
                         'filteredRaces': [],
                         'degreeStats': {},
                         'stats': {},
                         'raceCount': 0,
                         'filteredRaceCount': 0,
+                        '_runningStyle': 'TAKİPÇİ',
+                        '_essScore': 50.0,
+                        '_metrics_pass1': {},
                     })
 
-        # 4. Derece skorlarını normalize et (yarisis içindeki atlar arasında göreceli)
+        # FAZ 4.5: PASS 2 — Tempo Senaryosu + Final AI Score
+        # ─────────────────────────────────────────────────────────────
+        # Tüm atların koşu stilleri artık belli → pace_scenario hesaplanabilir
+        horse_styles_list = [
+            {'name': h['name'], 'style': h.get('_runningStyle', 'TAKİPÇİ')}
+            for h in intermediate_horses
+        ]
+        pace_scenario, kacak_count = calculate_pace_scenario(horse_styles_list)
+        print(f"[FAZ 4.5] Tempo senaryosu: {pace_scenario} ({kacak_count} kaçak at)")
+        
+        analyzed_horses = []
+        for h in intermediate_horses:
+            horse_name = h['name']
+            horse_style = h.get('_runningStyle', 'TAKİPÇİ')
+            metrics_p1 = h.get('_metrics_pass1', {})
+            
+            if metrics_p1:
+                # pace_score hesapla ve metrics'e ekle
+                pace_score_val = calculate_pace_score(horse_style, pace_scenario)
+                metrics_p1['pace_score'] = pace_score_val
+                final_ai_score = calculate_ai_score(metrics_p1)
+                # FAZ 4.7: Veri güven skoru
+                confidence_val, confidence_label = calculate_data_confidence(metrics_p1)
+                # FAZ 4.7: Tahmin etiketi + insight
+                prediction_label = generate_prediction(final_ai_score, metrics_p1)
+                insight_text     = generate_insight(horse_name, metrics_p1, final_ai_score)
+            else:
+                pace_score_val     = 50.0
+                final_ai_score     = h.get('aiScore', 0)
+                confidence_val     = 0.0
+                confidence_label   = '🔴 Düşük'
+                prediction_label   = 'İzlenmeli'
+                insight_text       = 'Yeterli veri bulunamadı.'
+            
+            # scoreBreakdown güncelle
+            if 'scoreBreakdown' in h:
+                h['scoreBreakdown']['paceScore'] = pace_score_val
+            
+            # Temizle: PASS 1 private alanlarını kaldır, pedigreeInfo'yu kalıcıya taşı
+            pedigree_info = h.pop('_pedigreeInfo', None)
+            h.pop('_runningStyle', None)
+            h.pop('_essScore', None)
+            h.pop('_metrics_pass1', None)
+
+            # FAZ 4.7 Bug Fix: Derece normalizasyonu için metrics'i geici sakla
+            # (_mf = metrics_final; normalizasyon sonrası degree_avg güncellenip
+            #  calculate_ai_score() yeniden çağrılacak, üste yazma olmayacak)
+            if metrics_p1:
+                h['_mf'] = metrics_p1
+
+            if pedigree_info:
+                h['pedigreeInfo'] = pedigree_info
+            
+            # Final AI score, güven ve tahmin ekle
+            h['aiScore']          = final_ai_score
+            h['prediction']       = prediction_label      # FAZ 4.7
+            h['insight']          = insight_text          # FAZ 4.7
+            h['dataConfidence']   = {                     # FAZ 4.7
+                'score': confidence_val,
+                'label': confidence_label,
+            }
+            h['paceInfo'] = {
+                'runningStyle': horse_style,
+                'paceScenario': pace_scenario,
+                'paceScore':    pace_score_val,
+                'kacakCount':   kacak_count,
+            }
+            
+            analyzed_horses.append(h)
+
+        # === DERECE NORMİZASYONU + MASTER SKOR YENİDEN HESAP ===
+        # Koşu içi göreceli derece normalizasyonu: En hızlı at = 100, en yavaş = 0
+        # Bu normalize skor degree_avg metriğine yazılır ve FAZ 4.7
+        # calculate_ai_score() yeniden çağrılarak master skor üretilir.
+        # (Eski sabit *0.65 / *0.35 override kaldırıldı — FAZ 4.7 Bug Fix)
         avg_degrees = []
         for h in analyzed_horses:
             ds = h.get('degreeStats', {})
             if ds and ds.get('avgDegree'):
                 avg_degrees.append(ds['avgDegree'])
-        
+
         if avg_degrees:
-            best_avg = min(avg_degrees)  # En düşük ortalama = en iyi
+            best_avg  = min(avg_degrees)  # En düşük ortalama = en iyi derece
             worst_avg = max(avg_degrees)
             degree_range = worst_avg - best_avg if worst_avg > best_avg else 1
-            
+
             for h in analyzed_horses:
                 ds = h.get('degreeStats', {})
                 if ds and ds.get('avgDegree'):
-                    # En iyi ortalama = 100, en kötü = 0
+                    # 0-100 normalize: düşük derece = yüksek skor
                     normalized = 100 - ((ds['avgDegree'] - best_avg) / degree_range * 100)
-                    h['degreeStats']['degreeScore'] = round(max(0, min(100, normalized)), 1)
-                    
-                    # AI skoru yeniden hesapla (normalize edilmiş derece ile)
-                    if h.get('aiScore', 0) > 0:
-                        # Önceki metriklerden degree_avg'yi güncelle
-                        old_ai = h['aiScore']
-                        # degree_avg ağırlığı %35, diğerlerinin toplamı %65
-                        # Yeni AI = (eski AI * 0.65/1.0) + (normalized * 0.35)
-                        other_contribution = old_ai  # Eski skor zaten diğer metrikleri içeriyor
-                        new_ai = (other_contribution * 0.65) + (normalized * 0.35)
-                        h['aiScore'] = round(max(0, min(100, new_ai)), 1)
-        
+                    normalized = round(max(0, min(100, normalized)), 1)
+                    h['degreeStats']['degreeScore'] = normalized
+
+                    # FAZ 4.7 Bug Fix: metrics'i güncelle ve master skoru yeniden hesapla
+                    mf = h.get('_mf')
+                    if mf:
+                        mf['degree_avg'] = normalized  # Koşu içi normalize derece skoru
+                        new_score = calculate_ai_score(mf)
+                        h['aiScore']    = new_score
+                        h['prediction'] = generate_prediction(new_score, mf)
+                        h['insight']    = generate_insight(h.get('name', ''), mf, new_score)
+                        conf_v, conf_l  = calculate_data_confidence(mf)
+                        h['dataConfidence'] = {'score': conf_v, 'label': conf_l}
+
+        # _mf geçici alanını temizle (API response'a karışmasın)
+        for h in analyzed_horses:
+            h.pop('_mf', None)
+
         # 5. Sıralama (Yüksek AI puanından düşüğe)
         analyzed_horses.sort(key=lambda x: x['aiScore'], reverse=True)
         
         # 6. Sıralama numaraları ekle
         for i, horse in enumerate(analyzed_horses):
             horse['rank'] = i + 1
+
+        # === FAZ 5.1: SOFTMAX KAZANMA OLASILIGI ===
+        # AI skorlarını softmax ile olasılığa çevir.
+        # Temperature parametresi ayrışımı kontrol eder:
+        #   Düşük T → kazanan daha net öne çıkar
+        #   Yüksek T → dağılım daha eşit
+        import math
+        _scores = [h.get('aiScore', 0) for h in analyzed_horses]
+        if any(s > 0 for s in _scores):
+            _temp = 12.0  # İyi kalibreli ayrışım için
+            _max_s = max(_scores)
+            _exp_scores = [math.exp((s - _max_s) / _temp) for s in _scores]
+            _exp_total  = sum(_exp_scores)
+            for h, exp_s in zip(analyzed_horses, _exp_scores):
+                win_prob = round((exp_s / _exp_total) * 100, 1)
+                h['winProbability'] = win_prob          # %  kazanma ihtimali
+                h['winProbabilityLabel'] = (
+                    f'%{win_prob:.1f} kazanma ihtimali'
+                )
+
         
         # 6. Yarış insight'ı oluştur
         top_horses = [h['name'] for h in analyzed_horses[:3] if h['aiScore'] > 0]
@@ -2165,6 +3326,7 @@ def analyze_race():
             'raceInsight': race_insight,
             'targetDistance': target_distance,
             'targetTrack': target_track,
+            'paceScenario': pace_scenario,  # FAZ 4.7: Yarış seviyesi tempo
             'processTime': process_time
         })
         
