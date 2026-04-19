@@ -2913,7 +2913,7 @@ def analyze_race():
                 training_data = None
                 
                 # Debug: İlk at için karşılaştırma göster
-                if len(analyzed_horses) == 0:
+                if len(intermediate_horses) == 0:
                     print(f"[DEBUG] Aranan (temiz): '{horse_name_clean}' -> '{horse_name_normalized}'")
                 
                 # Eşleşen anahtarı bul
