@@ -2860,6 +2860,16 @@ def analyze_race():
         # PASS 2: Koşu temposunu hesapla + her ata pace_score uygula → final AI Score
         # ─────────────────────────────────────────────────────────────
         
+        # FAZ 5.5: Pedigri Hız Optimizasyonu (Paralel Çekim)
+        # Sequential döngüyü bloklamaması için benzersiz babaları önden ThreadPool ile önbelleğe al!
+        unique_sires = list(set([h.get('father', '').strip() for h in horses if h.get('father', '').strip()]))
+        if unique_sires:
+            print(f"[ANALYZE] {len(unique_sires)} farklı aygır (baba) paralel sorgulanıyor...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=7) as sire_executor:
+                sire_futures = [sire_executor.submit(fetch_sire_offspring_stats, sire) for sire in unique_sires]
+                concurrent.futures.wait(sire_futures)
+            print(f"[ANALYZE] Pedigri verileri başarıyla önbelleğe alındı.")
+
         # PASS 1: Paralel veri çekme + stil belirleme
         intermediate_horses = []  # [{ original_horse, horse_data, style, ess, ... }]
         
