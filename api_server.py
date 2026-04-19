@@ -3000,6 +3000,9 @@ def analyze_race():
                     else:
                         hp_score_val = round(((horse_hp - race_min_hp) / hp_range) * 100, 1)
 
+                    # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
+                    original_horse['_raw_hp'] = raw_hp if raw_hp else '-';
+
                     metrics_pass1 = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
                         'degree_trend': degree_stats.get('trendScore', 50),
@@ -3115,6 +3118,8 @@ def analyze_race():
                     intermediate_horses.append({
                         'name': horse_data['name'],
                         'no': original_horse.get('no', ''),
+                        'rawHp': original_horse.get('_raw_hp', ''),  # FAZ 5.2 (UI İÇİN)
+                        'hpScore': hp_score_val,                     # FAZ 5.2 (UI İÇİN)
                         'aiScore': ai_score_pass1,   # geçici, PASS 2'de güncellenecek
                         'formIndex': {
                             'trend': 'UP' if trend_value > 0 else 'DOWN' if trend_value < 0 else 'STABLE',
