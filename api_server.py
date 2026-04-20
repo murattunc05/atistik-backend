@@ -897,7 +897,22 @@ def calculate_degree_stats(races):
             'degreeScore': 50, 'trendScore': 50, 'stabilityScore': 50
         }
     
-    avg_degree = sum(degrees) / len(degrees)
+    # FAZ 6.1: Recency-Weighted Derece Ortalaması
+    # Son 3 yarışa %70, diğerlerine %30 ağırlık → son form daha belirleyici
+    if len(degrees) <= 3:
+        # 3 veya daha az yarış varsa ağırlıklı ortalama (en sons en yüksek)
+        recency_weights = [0.45, 0.35, 0.20][:len(degrees)]
+        w_total = sum(recency_weights)
+        avg_degree = sum(d * w for d, w in zip(degrees, recency_weights)) / w_total
+    else:
+        # Son 3'e %70, kalanına %30
+        recent_3 = degrees[:3]
+        older = degrees[3:]
+        recent_weights = [0.30, 0.25, 0.15]  # toplam 0.70
+        recent_avg = sum(d * w for d, w in zip(recent_3, recent_weights))
+        older_weight_each = 0.30 / len(older) if older else 0
+        older_avg = sum(d * older_weight_each for d in older)
+        avg_degree = recent_avg + older_avg
     best_degree = min(degrees)
     worst_degree = max(degrees)
     std_dev = float(np.std(degrees)) if len(degrees) > 1 else 0
@@ -2539,20 +2554,20 @@ def calculate_dynamic_weights(metrics):
 
     # ── VARSAYİLAN TEMEL AĞİRLIKLAR ────────────────────────────────────────────────
     w = {
-        'degree_avg':            0.18,  # K1: Normalize Hız Skoru
-        'degree_trend':          0.09,  # K1b: Derece trendi
+        'degree_avg':            0.16,  # K1: Normalize Hız Skoru (FAZ 6.1: recency-weighted olduğu için -2)
+        'degree_trend':          0.07,  # K1b: Derece trendi (FAZ 6.1: form_trend ile örtüşme azaltıldı -2)
         'degree_stability':      0.06,  # K10: İstikrar
         'training_fitness':      0.05,  # K5a: İdman zamanlama
         'training_degree_score': 0.05,  # K5b: İdman projeksiyon
         'track_suit':            0.08,  # K3: Pist uyumu
-        'form_trend':            0.08,  # K4: Form & momentum
+        'form_trend':            0.13,  # K4: Form & momentum (FAZ 6.1: +5, son yarış momentumu kritik)
         'distance_suit':         0.07,  # K2: Mesafe uyumu
         'weight_impact':         0.06,  # K6: Sıklet etkisi
         'jockey_score':          0.07,  # K7: Jokey analizi
         'bounce_score':          0.06,  # K8: Dinlenme
         'pace_score':            0.03,  # K9: Tempo senaryosu
         'pedigree':              0.03,  # K11: Pedigri (baz=%3, dinamik yukarı gidebilir)
-        'hp_score':              0.09,  # FAZ 5.2 (K12): Handikap (Kalite) Sınıf Etkisi
+        'hp_score':              0.08,  # FAZ 5.2 (K12): Handikap Sınıf Etkisi (FAZ 6.1: ters formül, -1)
     }
 
     # ── SENARYO: MAİDEN (İlk koşu — hiç yarış verisi yok) ───────────────────
@@ -2992,13 +3007,26 @@ def analyze_race():
                     
                     bounce_score_val = calculate_bounce_score(races)
                     
-                    # FAZ 5.2: HP (Handikap) Puanı Hesabı
+                    # FAZ 5.2 + FAZ 6.1: HP (Handikap) Puanı Hesabı — TERS ÇEVRİLMİŞ
+                    # Yüksek HP = ağır taşıma = DEZAVANTAJ → düşük skor
+                    # Düşük HP = hafif = AVANTAJ → yüksek skor
                     raw_hp = str(original_horse.get('hp', '')).strip()
                     horse_hp = int(raw_hp) if raw_hp.isdigit() else (race_min_hp if valid_hps else 50)
                     if not valid_hps or race_max_hp == race_min_hp:
                         hp_score_val = 50.0  # Yarışta hiç kimsede HP yoksa veya herkes eşitse
                     else:
-                        hp_score_val = round(((horse_hp - race_min_hp) / hp_range) * 100, 1)
+                        # FAZ 6.1: Ters formül — düşük HP = yüksek skor
+                        hp_base = round(((race_max_hp - horse_hp) / hp_range) * 100, 1)
+                        # Mesafe etkileşimi: uzun mesafede HP farkı daha kritik
+                        try:
+                            dist_m = int(str(target_distance).replace(' ', '').replace('m', ''))
+                        except:
+                            dist_m = 1600
+                        # 1200m → 0.85x, 1600m → 1.0x, 2000m → 1.15x, 2400m → 1.30x
+                        dist_factor = 0.85 + max(0, (dist_m - 1200)) / 2666
+                        # Mesafe etkisini uygula (merkez 50'den sapma büyür/küçülür)
+                        hp_score_val = round(50 + (hp_base - 50) * dist_factor, 1)
+                        hp_score_val = max(0.0, min(100.0, hp_score_val))
 
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
                     original_horse['_raw_hp'] = raw_hp if raw_hp else '-';
