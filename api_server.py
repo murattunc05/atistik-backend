@@ -2531,7 +2531,41 @@ def calculate_pedigree_weight(horse_races, target_track, target_distance):
 
 
 
-def calculate_dynamic_weights(metrics):
+def calculate_agf_score(agf_str, all_agf_values):
+    """
+    FAZ 6.2: AGF (Asgari Ganyan Fiyatı) verisini 0-100 skoruna çevirir.
+    Düşük AGF = piyasa favorisi = yüksek kazanma ihtimali → yüksek skor.
+
+    Args:
+        agf_str (str): Atın AGF değeri (str, örn. '2.50')
+        all_agf_values (list): Koşudaki tüm geçerli AGF değerlerinin listesi
+
+    Returns:
+        float: 0-100 arası AGF skoru
+    """
+    try:
+        agf_val = float(str(agf_str).replace(',', '.').strip())
+        if agf_val <= 0:
+            return 50.0
+    except (ValueError, TypeError):
+        return 50.0
+
+    if not all_agf_values or len(all_agf_values) < 2:
+        return 50.0
+
+    min_agf = min(all_agf_values)   # En düşük = en fazla favorilenen
+    max_agf = max(all_agf_values)   # En yüksek = en az favorilenen
+
+    agf_range = max_agf - min_agf
+    if agf_range <= 0:
+        return 50.0
+
+    # Ters normalize: düşük AGF → yüksek skor
+    raw_score = ((max_agf - agf_val) / agf_range) * 100
+    return round(max(0.0, min(100.0, raw_score)), 1)
+
+
+def calculate_dynamic_weights(metrics, race_type='default'):
     """
     FAZ 4.7: Her at için veri durumuna göre 11 katmanın ağırlıklarını
     tamamen dinamik hesaplar. Toplam her zaman 1.0 (%100) olur.
@@ -2554,21 +2588,61 @@ def calculate_dynamic_weights(metrics):
 
     # ── VARSAYİLAN TEMEL AĞİRLIKLAR ────────────────────────────────────────────────
     w = {
-        'degree_avg':            0.16,  # K1: Normalize Hız Skoru (FAZ 6.1: recency-weighted olduğu için -2)
-        'degree_trend':          0.07,  # K1b: Derece trendi (FAZ 6.1: form_trend ile örtüşme azaltıldı -2)
+        'degree_avg':            0.16,  # K1: Normalize Hız Skoru
+        'degree_trend':          0.07,  # K1b: Derece trendi
         'degree_stability':      0.06,  # K10: İstikrar
         'training_fitness':      0.05,  # K5a: İdman zamanlama
         'training_degree_score': 0.05,  # K5b: İdman projeksiyon
         'track_suit':            0.08,  # K3: Pist uyumu
-        'form_trend':            0.13,  # K4: Form & momentum (FAZ 6.1: +5, son yarış momentumu kritik)
+        'form_trend':            0.13,  # K4: Form & momentum
         'distance_suit':         0.07,  # K2: Mesafe uyumu
         'weight_impact':         0.06,  # K6: Sıklet etkisi
         'jockey_score':          0.07,  # K7: Jokey analizi
         'bounce_score':          0.06,  # K8: Dinlenme
         'pace_score':            0.03,  # K9: Tempo senaryosu
         'pedigree':              0.03,  # K11: Pedigri (baz=%3, dinamik yukarı gidebilir)
-        'hp_score':              0.08,  # FAZ 5.2 (K12): Handikap Sınıf Etkisi (FAZ 6.1: ters formül, -1)
+        'hp_score':              0.08,  # FAZ 5.2 (K12): Handikap Sınıf Etkisi
+        'agf_score':             0.00,  # FAZ 6.2 (K13): AGF Piyasa Sinyali (koşu tipine göre aktif)
     }
+
+    # ── FAZ 6.2: KOŞU TİPİNE ÖZEL AĞIRLIK PROFİLLERİ ──────────────────────────────
+    race_type_lower = (race_type or 'default').lower()
+
+    if any(k in race_type_lower for k in ['handikap', 'hk', 'handicap']):
+        # HANDIKAP: HP belirleyici, kilo ve derece kritik
+        w['hp_score']              = 0.15  # %8 → %15 (handikaplı koşunun özü)
+        w['weight_impact']         = 0.09  # %6 → %9  (sıklet etkisi artar)
+        w['agf_score']             = 0.07  # AGF aktif: piyasa sinyali değerli
+        w['degree_avg']            = 0.14  # Biraz düşür (HP ile kompanze)
+        w['form_trend']            = 0.10  # Düşür (HP dominant)
+        print(f"[WEIGHTS] Handikap profili aktif → HP:%15 Kilo:%9 AGF:%7")
+
+    elif any(k in race_type_lower for k in ['maiden', 'mdn', 'md']):
+        # MAİDEN: İdman ve pedigri en değerli, derece yok veya az
+        w['pedigree']              = 0.18  # Pedigri max
+        w['training_fitness']      = 0.12  # İdman kritik
+        w['training_degree_score'] = 0.10  # İdman projeksiyon
+        w['agf_score']             = 0.10  # AGF piyasa beklentisi (data yok = piyasa bilir)
+        w['degree_avg']            = 0.08  # Az veri = düşür
+        w['form_trend']            = 0.06  # Az yarış = düşür
+        w['degree_stability']      = 0.03  # Az veri = düşür
+        print(f"[WEIGHTS] Maiden profili aktif → Pedigri:%18 İdman:%22 AGF:%10")
+
+    elif any(k in race_type_lower for k in ['şartlı', 'sartli', 'şartli', 'kv', 'conditions']):
+        # ŞARTLI: Form ve hız dominant, AGF orta seviye
+        w['form_trend']            = 0.16  # Form kritik
+        w['degree_avg']            = 0.18  # Hız kritik
+        w['agf_score']             = 0.05  # AGF biraz aktif
+        w['hp_score']              = 0.04  # HP şartlıda az önemli
+        print(f"[WEIGHTS] Şartlı profili aktif → Form:%16 Hız:%18 AGF:%5")
+
+    elif any(k in race_type_lower for k in ['satış', 'satis', 'claiming']):
+        # SATIŞ: Piyasa sinyali (AGF) çok önemli, belirsizlik yüksek
+        w['agf_score']             = 0.12  # AGF max: piyasa sinyali kritik
+        w['form_trend']            = 0.14
+        w['degree_avg']            = 0.15
+        w['jockey_score']          = 0.08
+        print(f"[WEIGHTS] Satış profili aktif → AGF:%12 Form:%14")
 
     # ── SENARYO: MAİDEN (İlk koşu — hiç yarış verisi yok) ───────────────────
     if total_races == 0:
@@ -2696,7 +2770,8 @@ def calculate_master_score(metrics):
         float: Güven yüzde skoru (0-1)
         str:   Güven etiketi
     """
-    weights = calculate_dynamic_weights(metrics)
+    race_type = metrics.get('_race_type', 'default')  # FAZ 6.2: Koşu tipi ağırlık profili
+    weights = calculate_dynamic_weights(metrics, race_type=race_type)
     confidence, confidence_label = calculate_data_confidence(metrics)
 
     weighted_sum  = 0.0
@@ -2854,7 +2929,8 @@ def analyze_race():
         horses = data.get('horses', [])
         target_distance = data.get('targetDistance', '')
         target_track = data.get('targetTrack', '')
-        race_id = data.get('raceId', '')  # YENİ: Koşu ID'si
+        race_id   = data.get('raceId', '')    # İdman bilgileri için koşu ID'si
+        race_type = data.get('raceType', '')   # FAZ 6.2: Koşu tipi (Handikap/Maiden/Şartlı...)
         
         if not horses:
             return jsonify({'success': False, 'error': 'At listesi boş'}), 400
@@ -2897,6 +2973,18 @@ def analyze_race():
         race_max_hp = max(valid_hps) if valid_hps else 50
         race_min_hp = min(valid_hps) if valid_hps else 50
         hp_range = race_max_hp - race_min_hp if race_max_hp > race_min_hp else 1
+
+        # FAZ 6.2: AGF Normalizasyonu (Pass 1 öncesi hazırlık)
+        valid_agf_values = []
+        for h in horses:
+            agf_str = str(h.get('agf', '')).replace(',', '.').strip()
+            try:
+                agf_val = float(agf_str)
+                if agf_val > 0:
+                    valid_agf_values.append(agf_val)
+            except (ValueError, TypeError):
+                pass
+        print(f"[AGF] {len(valid_agf_values)} at için geçerli AGF verisi bulundu")
 
         # PASS 1: Paralel veri çekme + stil belirleme
         intermediate_horses = []  # [{ original_horse, horse_data, style, ess, ... }]
@@ -3049,12 +3137,14 @@ def analyze_race():
                         'pedigree': 50.0,                       # FAZ 4.6: pedigri skoru (placeholder)
                         'pedigree_weight': 0.03,                # FAZ 4.6: dinamik ağırlık (placeholder)
                         'hp_score': hp_score_val,               # FAZ 5.2: Handikap Puanı normalizasyonu
+                        'agf_score': calculate_agf_score(original_horse.get('agf', ''), valid_agf_values),  # FAZ 6.2: AGF piyasa sinyali
                         # FAZ 4.7: calculate_dynamic_weights için meta alanlar
                         '_total_races':   len(races),
                         '_track_races':   sum(1 for r in races if target_track.lower() in r.get('track', '').lower()) if target_track else 0,
                         '_dist_races':    len(filtered_races),
                         '_has_training':  training_data is not None,
                         '_has_pedigree':  False,  # Pe4.6 sonrası güncellenecek
+                        '_race_type':     race_type,  # FAZ 6.2: Koşu tipine özel ağırlık profili
                     }
                     # FAZ 4.6: Pedigri (baba) skoru — cache'li TJK çekimi
                     sire_name = original_horse.get('father', '').strip()
@@ -3361,7 +3451,7 @@ def analyze_race():
         import math
         _scores = [h.get('aiScore', 0) for h in analyzed_horses]
         if any(s > 0 for s in _scores):
-            _temp = 12.0  # İyi kalibreli ayrışım için
+            _temp = 18.0  # FAZ 6.2: Artırıldı (12→18) — daha yumuşak dağılım, sıralama ayrışımı iyileşti
             _max_s = max(_scores)
             _exp_scores = [math.exp((s - _max_s) / _temp) for s in _scores]
             _exp_total  = sum(_exp_scores)
