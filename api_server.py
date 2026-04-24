@@ -3693,13 +3693,51 @@ def analyze_race():
         process_time = round(time.time() - start_time, 2)
         print(f"[ANALYZE] Tamamlandı: {len(analyzed_horses)} at, {process_time}s")
         
+        # === FAZ 7: ORGANİK ML LOG (predictions.jsonl) ===
+        # Her analiz çağrısında feature vektörlerini logla.
+        # Kullanıcı gerçek sonuçları /api/submit-results ile girince label eklenir.
+        try:
+            import json as _json
+            import os as _os
+            _log_path = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
+            with open(_log_path, 'a', encoding='utf-8') as _lf:
+                for _h in analyzed_horses:
+                    _m = _h.get('_metrics_pass1', {})
+                    _entry = {
+                        'race_id':   race_id or f"{target_distance}_{target_track}_{int(time.time())}",
+                        'horse_name': _h.get('name', ''),
+                        'ai_score':   _h.get('aiScore', 0),
+                        'rank_pred':  _h.get('rank', 0),
+                        'race_type':  race_type or '',
+                        'distance':   target_distance or '',
+                        'track':      target_track or '',
+                        'field_size': len(analyzed_horses),
+                        'finish_pos': None,   # Kullanıcı sonra dolduracak
+                        'is_winner':  None,
+                        'ts':         int(time.time()),
+                        'features': {
+                            k: _m.get(k, 50.0)
+                            for k in [
+                                'degree_avg','degree_trend','degree_stability',
+                                'form_trend','track_suit','distance_suit',
+                                'training_fitness','training_degree_score',
+                                'weight_impact','jockey_score','bounce_score',
+                                'pace_score','pedigree','hp_score',
+                                'agf_score','trainer_score',
+                            ]
+                        }
+                    }
+                    _lf.write(_json.dumps(_entry, ensure_ascii=False) + '\n')
+        except Exception as _le:
+            print(f"[PRED LOG] Loglama hatası: {_le}")
+
         return jsonify({
             'success': True,
             'results': analyzed_horses,
             'raceInsight': race_insight,
             'targetDistance': target_distance,
             'targetTrack': target_track,
-            'paceScenario': pace_scenario,  # FAZ 4.7: Yarış seviyesi tempo
+            'paceScenario': pace_scenario,
             'processTime': process_time
         })
         
@@ -3710,7 +3748,67 @@ def analyze_race():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-if __name__ == '__main__':
+# ══════════════════════════════════════════════════════════════════
+# FAZ 7: SONUÇ GÖNDERME (ML Label)
+# ══════════════════════════════════════════════════════════════════
+
+@app.route('/api/submit-results', methods=['POST'])
+def submit_results():
+    """
+    Kullanıcı gerçek yarış sonuçlarını girinceye kadar predictions.jsonl'daki
+    finish_pos=None satırlarını günceller.
+
+    Body:
+      {
+        "race_id": "12345",
+        "results": [
+          {"horse_name": "ERDEK", "finish_pos": 1},
+          {"horse_name": "SİMSEK YELELI", "finish_pos": 2},
+          ...
+        ]
+      }
+    """
+    try:
+        import json as _json, os as _os
+        data = request.json
+        race_id_in = str(data.get('race_id', '')).strip()
+        incoming   = {r['horse_name'].strip().upper(): r['finish_pos'] for r in data.get('results', [])}
+
+        if not race_id_in or not incoming:
+            return jsonify({'success': False, 'error': 'race_id ve results zorunlu'}), 400
+
+        log_path = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
+        if not _os.path.exists(log_path):
+            return jsonify({'success': False, 'error': 'predictions.jsonl bulunamadı'}), 404
+
+        lines = []
+        updated = 0
+        with open(log_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    entry = _json.loads(line)
+                    if str(entry.get('race_id', '')) == race_id_in:
+                        name_key = entry.get('horse_name', '').strip().upper()
+                        if name_key in incoming:
+                            pos = incoming[name_key]
+                            entry['finish_pos'] = pos
+                            entry['is_winner']  = 1 if pos == 1 else 0
+                            updated += 1
+                    lines.append(_json.dumps(entry, ensure_ascii=False))
+                except Exception:
+                    lines.append(line.strip())
+
+        with open(log_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+
+        print(f"[SUBMIT] {race_id_in}: {updated} at güncellendi")
+        return jsonify({'success': True, 'updated': updated})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+
     import os
     port = int(os.environ.get('PORT', 5000))
     print("TJK API Server başlatılıyor...")
