@@ -3943,8 +3943,85 @@ def submit_results():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ══════════════════════════════════════════════════════════════════
+# FAZ 7: ML EĞİTİM VERİ İSTATİSTİKLERİ
+# ══════════════════════════════════════════════════════════════════
 
-    import os
+@app.route('/api/ml-stats', methods=['GET'])
+def ml_stats():
+    """
+    predictions.jsonl hakkında özet istatistikler döner.
+    Tarayıcıdan doğrudan açılabilir:
+      https://atistik-backend.onrender.com/api/ml-stats
+    """
+    try:
+        import json as _json, os as _os
+        log_path = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
+        if not _os.path.exists(log_path):
+            return jsonify({
+                'success': True,
+                'total': 0,
+                'labeled': 0,
+                'unlabeled': 0,
+                'races': [],
+                'message': 'Henüz hiç analiz yapılmamış. predictions.jsonl yok.'
+            })
+
+        total     = 0
+        labeled   = 0
+        unlabeled = 0
+        races     = {}   # race_id → {horses, labeled}
+
+        with open(log_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                    total += 1
+                    rid = entry.get('race_id', 'bilinmiyor')
+                    if rid not in races:
+                        races[rid] = {'horses': 0, 'labeled': 0, 'sample_horse': entry.get('horse_name', '')}
+                    races[rid]['horses'] += 1
+
+                    if entry.get('finish_pos') is not None:
+                        labeled += 1
+                        races[rid]['labeled'] += 1
+                    else:
+                        unlabeled += 1
+                except Exception:
+                    continue
+
+        race_list = [
+            {
+                'race_id': rid,
+                'horses':  v['horses'],
+                'labeled': v['labeled'],
+                'done':    v['labeled'] == v['horses'],
+            }
+            for rid, v in sorted(races.items(), reverse=True)
+        ]
+
+        return jsonify({
+            'success':   True,
+            'total':     total,
+            'labeled':   labeled,
+            'unlabeled': unlabeled,
+            'race_count': len(races),
+            'training_ready': labeled >= 50,
+            'races':     race_list[:20],   # Son 20 koşu
+            'message':   (
+                f'{labeled} etiketlenmiş at verisi var. '
+                f'{"Model eğitilebilir! ✅" if labeled >= 50 else f"Model eğitimi için {50 - labeled} tane daha gerekli."}'
+            )
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+
     port = int(os.environ.get('PORT', 5000))
     print("TJK API Server başlatılıyor...")
     print("Endpoint'ler:")
