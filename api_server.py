@@ -176,6 +176,141 @@ def search_horses():
             'error': f'Beklenmeyen hata: {str(e)}'
         }), 500
 
+
+# ══════════════════════════════════════════════════════════════════
+# FAZ 7: OTOMATİK SONUÇ ÇEKME
+# ══════════════════════════════════════════════════════════════════
+
+@app.route('/api/fetch-race-results', methods=['POST'])
+def fetch_race_results():
+    """
+    Günün programındaki bir koşunun gerçek sonuçlarını otomatik çeker.
+    At geçmişinden (horse-details gibi) bitiş pozisyonlarını okur.
+
+    Body:
+      {
+        "race_date": "24.04.2026",   # Koşu tarihi (dd.mm.yyyy)
+        "race_no": "3",              # Koşu numarası
+        "horses": [
+          {"name": "ERDEK", "detailLink": "/TR/.../AtBilgileri?..."},
+          ...
+        ]
+      }
+
+    Response:
+      {
+        "success": true,
+        "results": [
+          {"horse_name": "ERDEK", "finish_pos": 1},
+          ...
+        ],
+        "race_id": "24.04.2026-3"
+      }
+    """
+    try:
+        data        = request.json
+        race_date   = data.get('race_date', '').strip()   # "24.04.2026"
+        race_no     = data.get('race_no', '').strip()     # "3"
+        horses_in   = data.get('horses', [])
+
+        if not race_date or not horses_in:
+            return jsonify({'success': False, 'error': 'race_date ve horses zorunlu'}), 400
+
+        race_id = f"{race_date}-{race_no}" if race_no else race_date
+
+        results = []
+        errors  = []
+
+        for horse in horses_in:
+            horse_name  = horse.get('name', '').strip()
+            detail_link = horse.get('detailLink', '').strip()
+
+            if not detail_link or not horse_name:
+                continue
+
+            try:
+                detail_url = urljoin(TARGET_URL, detail_link)
+                detail_url = detail_url.replace('&amp;', '&')
+
+                resp = requests.get(detail_url, headers=HEADERS, timeout=12)
+                if resp.status_code != 200:
+                    errors.append(f'{horse_name}: HTTP {resp.status_code}')
+                    continue
+
+                soup     = BeautifulSoup(resp.text, 'html.parser')
+                data_div = soup.find('div', id='dataDiv')
+                if not data_div:
+                    errors.append(f'{horse_name}: dataDiv yok')
+                    continue
+
+                race_table = data_div.find('table', id='queryTable')
+                tbody      = race_table.find('tbody', id='tbody0') if race_table else None
+                if not tbody:
+                    errors.append(f'{horse_name}: tablo yok')
+                    continue
+
+                # Tarihe göre eşleştir
+                found_pos = None
+                for row in tbody.find_all('tr'):
+                    if 'hidable' in row.get('class', []):
+                        continue
+                    cells = row.find_all('td')
+                    if len(cells) < 6:
+                        continue
+
+                    row_date = cells[0].text.strip()   # "24.04.2026"
+                    position = cells[4].text.strip()   # "1", "2", "K" vs.
+
+                    # Tarih eşleştir (gün.ay.yıl — farklı format varyantları)
+                    row_date_norm = row_date.replace('/', '.').replace('-', '.')[:10]
+                    race_date_norm = race_date.replace('/', '.').replace('-', '.')[:10]
+
+                    if row_date_norm == race_date_norm:
+                        # Koşu numarası da eşleştirmeye çalış
+                        # cells[1] genellikle şehir, bazı formatlarda race_no var
+                        # Tarihe göre buldukta ilk eşleşmeyi al (en yakın koşu)
+                        if position.isdigit():
+                            found_pos = int(position)
+                            break
+                        else:
+                            # K=Kalp, D=Disklifiye, F=Foul vb. — sona koy
+                            found_pos = 99
+                            break
+
+                if found_pos is not None:
+                    results.append({
+                        'horse_name': horse_name,
+                        'finish_pos': found_pos,
+                    })
+                else:
+                    errors.append(f'{horse_name}: {race_date} tarihli koşu geçmişte bulunamadı')
+
+            except Exception as e:
+                errors.append(f'{horse_name}: {str(e)}')
+                continue
+
+        if not results:
+            return jsonify({
+                'success': False,
+                'error': 'Hiçbir at için sonuç bulunamadı.',
+                'details': errors,
+            }), 404
+
+        # Sıralamaya göre tertle
+        results_sorted = sorted(results, key=lambda x: x['finish_pos'])
+
+        print(f'[FETCH-RESULTS] {race_id}: {len(results)} at sonucu bulundu, {len(errors)} hata')
+        return jsonify({
+            'success': True,
+            'race_id': race_id,
+            'results': results_sorted,
+            'errors':  errors,
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/horse-details', methods=['POST'])
 def get_horse_details():
     """At detay bilgilerini getir"""
