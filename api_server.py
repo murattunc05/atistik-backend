@@ -1894,6 +1894,58 @@ def calculate_weight_impact(current_weight_str, last_weight_str, target_distance
 
 # ============== FAZ 4.3: GELİŞMİŞ JOKEY ANALİZİ ==============
 
+# ── Jokey adı normalizer (modül düzeyi — hem jockey_match için hem de PASS-1 filtresi için) ──
+def normalize_jockey_name(name):
+    """
+    TJK'da jokey isimleri farklı formatlarda gelebiliyor:
+      'H.Karataş'  /  'H. Karataş'  /  'Halis Karataş'  /  'H.KARATAŞ'
+    Hepsini karşılaştırılabilir forma getirir:
+      → büyük harf, Türkçe → Latin, nokta/boşluk → tek boşluk
+    """
+    if not name:
+        return ""
+    name = str(name).strip().upper()
+    tr_map = {
+        'İ': 'I', 'I': 'I', 'Ğ': 'G', 'Ü': 'U',
+        'Ş': 'S', 'Ö': 'O', 'Ç': 'C',
+        'ı': 'I', 'ğ': 'G', 'ü': 'U', 'ş': 'S', 'ö': 'O', 'ç': 'C',
+    }
+    for k, v in tr_map.items():
+        name = name.replace(k, v)
+    # Nokta ve birden fazla boşluğu tek boşluğa çevir
+    name = re.sub(r'[.\s]+', ' ', name).strip()
+    return name
+
+
+def jockey_match(j1, j2):
+    """
+    İki jokey isminin aynı kişi olup olmadığını kontrol eder.
+    Türkçe karakter ve format farklılıklarına karşı dirençli.
+      'H.Karataş' == 'Halis Karataş' == 'H KARATAS'  → True
+    """
+    n1 = normalize_jockey_name(j1)
+    n2 = normalize_jockey_name(j2)
+    if not n1 or not n2:
+        return False
+    # 1. Birebir eşleşme
+    if n1 == n2:
+        return True
+    parts1 = n1.split()
+    parts2 = n2.split()
+    if not parts1 or not parts2:
+        return False
+    surname1 = parts1[-1]
+    surname2 = parts2[-1]
+    # 2. Soyad eşleştirme (en az 4 karakter — 'KOC' gibi kısa soyadlarda yanlış match önleme)
+    if len(surname1) >= 4 and surname1 == surname2:
+        return True
+    # 3. İlk harf kısaltması + soyad: 'H KARATAS' ~ 'HALIS KARATAS'
+    if surname1 == surname2:
+        if (len(parts1[0]) == 1) or (len(parts2[0]) == 1):
+            return True
+    return False
+
+
 def calculate_jockey_score(jockey_stats, jockey_changed, training_jockey, race_jockey):
     """
     FAZ 4.3: Jokey-at uyumu, jokey değişimi ve idman jokeyi etkisini 0-100 skor üretir.
@@ -3255,14 +3307,14 @@ def analyze_race():
                     # FAZ 4.3+4.4: Jokey ve Bounce skorlarını metrics'ten ÖNCE hesapla
                     # (Jokey bilgisi aşağıda tam hesaplanacak; şimdi hızlı bir ön hesap)
                     _cur_jockey = original_horse.get('jockey', '').strip()
-                    _jockey_races = [r for r in races if _cur_jockey and _cur_jockey.strip().upper() in r.get('jockey', '').strip().upper()]
+                    _jockey_races = [r for r in races if jockey_match(r.get('jockey', ''), _cur_jockey)]
                     _jockey_wins = sum(1 for r in _jockey_races if r.get('rank') == '1')
                     _jockey_stats_pre = {
                         'totalRaces': len(_jockey_races) if _jockey_races else len(races),
                         'wins': _jockey_wins if _jockey_races else sum(1 for r in races if r.get('rank') == '1'),
                     } if _cur_jockey else None
                     _last_jockey_race = races[0].get('jockey', '').strip() if races else ''
-                    _jockey_changed_pre = bool(_cur_jockey and _last_jockey_race and _cur_jockey.upper() != _last_jockey_race.upper())
+                    _jockey_changed_pre = bool(_cur_jockey and _last_jockey_race and not jockey_match(_cur_jockey, _last_jockey_race))
                     _training_jockey = training_data.get('trainingJockey', '') if training_data else ''
                     jockey_score_val = calculate_jockey_score(_jockey_stats_pre, _jockey_changed_pre, _training_jockey, _cur_jockey)
                     
@@ -3361,23 +3413,9 @@ def analyze_race():
                     print(f"[DEBUG] At: {horse_data['name']}, Mevcut Jokey: '{current_jockey}'")
                     print(f"[DEBUG] Yarış geçmişindeki jokeyler: {[r.get('jockey', '') for r in races]}")
                     
-                    # Jokey eşleştirmesi - kısmi eşleşme kullan (isim baş harfleri farklı olabilir)
-                    def jockey_match(j1, j2):
-                        if not j1 or not j2:
-                            return False
-                        j1 = j1.strip().upper()
-                        j2 = j2.strip().upper()
-                        # Birebir eşleşme
-                        if j1 == j2:
-                            return True
-                        # Kısmi eşleşme (soyad aynı mı?)
-                        parts1 = j1.split('.')
-                        parts2 = j2.split('.')
-                        if len(parts1) > 1 and len(parts2) > 1:
-                            return parts1[-1].strip() == parts2[-1].strip()
-                        return False
-                    
+                    # jockey_match() modül düzeyinde tanımlandı (normalize_jockey_name ile Türkçe uyumlu)
                     jockey_races = [r for r in races if jockey_match(r.get('jockey', ''), current_jockey)]
+
 
                     jockey_wins = sum(1 for r in jockey_races if r.get('rank') == '1')
                     if len(jockey_races) == 0 and _cur_jockey:
