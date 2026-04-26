@@ -13,6 +13,138 @@ import re
 app = Flask(__name__)
 CORS(app)  # Flutter'dan gelen isteklere izin ver
 
+# ══════════════════════════════════════════════════════════════════
+# FAZ 7.2: GITHUB BACKUP / RESTORE (predictions.jsonl kalıcılığı)
+# ══════════════════════════════════════════════════════════════════
+import os as _os
+import json as _json
+import base64 as _b64
+import threading as _threading
+
+_GITHUB_TOKEN    = _os.environ.get('GITHUB_TOKEN', '')
+_GITHUB_ML_REPO  = _os.environ.get('GITHUB_ML_REPO', '')   # "kullanici/repo-adi"
+_GITHUB_FILE     = 'predictions.jsonl'
+_GITHUB_API_BASE = 'https://api.github.com'
+_PREDICTIONS_PATH = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
+
+# Thread-safe kilit — eşzamanlı backup/restore çakışmasını önler
+_gh_lock = _threading.Lock()
+# Son backup SHA'sı — güncelleme için gerekli
+_gh_file_sha = None
+
+
+def _gh_headers():
+    return {
+        'Authorization': f'token {_GITHUB_TOKEN}',
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Atistik-ML-Backup'
+    }
+
+
+def github_restore():
+    """
+    Sunucu başlangıcında predictions.jsonl'ı GitHub'dan indirir.
+    Dosya zaten varsa (ve boş değilse) dokunmaz.
+    """
+    global _gh_file_sha
+    if not _GITHUB_TOKEN or not _GITHUB_ML_REPO:
+        print("[GH-BACKUP] GITHUB_TOKEN veya GITHUB_ML_REPO tanımlı değil, restore atlanıyor.")
+        return
+
+    # Eğer dosya zaten var ve boş değilse restore etme
+    if _os.path.exists(_PREDICTIONS_PATH) and _os.path.getsize(_PREDICTIONS_PATH) > 10:
+        print(f"[GH-BACKUP] predictions.jsonl zaten mevcut ({_os.path.getsize(_PREDICTIONS_PATH)} bytes), restore atlanıyor.")
+        # Yine de SHA'yı al (sonraki update için gerekli)
+        try:
+            url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
+            r = requests.get(url, headers=_gh_headers(), timeout=10)
+            if r.status_code == 200:
+                _gh_file_sha = r.json().get('sha')
+        except Exception:
+            pass
+        return
+
+    try:
+        url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
+        r = requests.get(url, headers=_gh_headers(), timeout=15)
+
+        if r.status_code == 200:
+            data = r.json()
+            content = _b64.b64decode(data['content']).decode('utf-8')
+            _gh_file_sha = data.get('sha')
+
+            with open(_PREDICTIONS_PATH, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            line_count = content.count('\n')
+            print(f"[GH-BACKUP] ✅ Restore başarılı: {line_count} satır GitHub'dan indirildi.")
+        elif r.status_code == 404:
+            print("[GH-BACKUP] GitHub'da predictions.jsonl bulunamadı (ilk çalıştırma).")
+        else:
+            print(f"[GH-BACKUP] ⚠️ Restore hatası: HTTP {r.status_code}")
+
+    except Exception as e:
+        print(f"[GH-BACKUP] Restore exception: {e}")
+
+
+def github_backup():
+    """
+    predictions.jsonl'ı GitHub'a yükler/günceller.
+    Arka planda (thread) çalışır — ana isteği bloklamaz.
+    """
+    global _gh_file_sha
+    if not _GITHUB_TOKEN or not _GITHUB_ML_REPO:
+        return
+
+    def _do_backup():
+        global _gh_file_sha
+        with _gh_lock:
+            try:
+                if not _os.path.exists(_PREDICTIONS_PATH):
+                    return
+
+                with open(_PREDICTIONS_PATH, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                encoded = _b64.b64encode(content.encode('utf-8')).decode('utf-8')
+                url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
+
+                payload = {
+                    'message': f'ML data backup ({time.strftime("%d.%m.%Y %H:%M")})',
+                    'content': encoded,
+                }
+
+                # Güncelleme yapabilmek için mevcut SHA gerekli
+                if _gh_file_sha:
+                    payload['sha'] = _gh_file_sha
+                else:
+                    # SHA'yı al
+                    try:
+                        r = requests.get(url, headers=_gh_headers(), timeout=10)
+                        if r.status_code == 200:
+                            _gh_file_sha = r.json().get('sha')
+                            payload['sha'] = _gh_file_sha
+                    except Exception:
+                        pass
+
+                r = requests.put(url, headers=_gh_headers(), json=payload, timeout=15)
+
+                if r.status_code in (200, 201):
+                    _gh_file_sha = r.json().get('content', {}).get('sha')
+                    line_count = content.count('\n')
+                    print(f"[GH-BACKUP] ✅ Backup başarılı: {line_count} satır GitHub'a yüklendi.")
+                else:
+                    print(f"[GH-BACKUP] ⚠️ Backup hatası: HTTP {r.status_code} — {r.text[:200]}")
+
+            except Exception as e:
+                print(f"[GH-BACKUP] Backup exception: {e}")
+
+    _threading.Thread(target=_do_backup, daemon=True).start()
+
+
+# Sunucu başlarken otomatik restore
+github_restore()
+
 # TJK ayarları
 TARGET_URL = "https://www.tjk.org/TR/YarisSever/Query/Data/Atlar"
 REFERER_URL = "https://www.tjk.org/TR/YarisSever/Query/Page/Atlar?QueryParameter_OLDUFLG=on"
@@ -3906,6 +4038,7 @@ def analyze_race():
                     _wf.write(_ne + '\n')
 
             print(f"[PRED LOG] Upsert: {_current_race_id} → {len(_new_entries)} at (mevcut {len(_existing)} güncellendi)")
+            github_backup()  # FAZ 7.2: GitHub'a yedekle
         except Exception as _le:
             print(f"[PRED LOG] Loglama hatası: {_le}")
 
@@ -3980,6 +4113,7 @@ def submit_results():
             f.write('\n'.join(lines) + '\n')
 
         print(f"[SUBMIT] {race_id_in}: {updated} at güncellendi")
+        github_backup()  # FAZ 7.2: GitHub'a yedekle
         return jsonify({'success': True, 'updated': updated})
 
     except Exception as e:
