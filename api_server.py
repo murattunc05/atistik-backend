@@ -3828,41 +3828,84 @@ def analyze_race():
         process_time = round(time.time() - start_time, 2)
         print(f"[ANALYZE] Tamamlandı: {len(analyzed_horses)} at, {process_time}s")
         
-        # === FAZ 7: ORGANİK ML LOG (predictions.jsonl) ===
-        # Her analiz çağrısında feature vektörlerini logla.
-        # Kullanıcı gerçek sonuçları /api/submit-results ile girince label eklenir.
+        # === FAZ 7: ORGANİK ML LOG (predictions.jsonl) — UPSERT ===
+        # Aynı race_id + horse_name varsa GÜNCELLE, yoksa EKLE.
+        # Etiketlenmiş (finish_pos != None) kayıtların label bilgisi korunur.
         try:
             import json as _json
             import os as _os
             _log_path = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
-            with open(_log_path, 'a', encoding='utf-8') as _lf:
-                for _h in analyzed_horses:
-                    _m = _h.get('_metrics_pass1', {})
-                    _entry = {
-                        'race_id':   race_id or f"{target_distance}_{target_track}_{int(time.time())}",
-                        'horse_name': _h.get('name', ''),
-                        'ai_score':   _h.get('aiScore', 0),
-                        'rank_pred':  _h.get('rank', 0),
-                        'race_type':  race_type or '',
-                        'distance':   target_distance or '',
-                        'track':      target_track or '',
-                        'field_size': len(analyzed_horses),
-                        'finish_pos': None,   # Kullanıcı sonra dolduracak
-                        'is_winner':  None,
-                        'ts':         int(time.time()),
-                        'features': {
-                            k: _m.get(k, 50.0)
-                            for k in [
-                                'degree_avg','degree_trend','degree_stability',
-                                'form_trend','track_suit','distance_suit',
-                                'training_fitness','training_degree_score',
-                                'weight_impact','jockey_score','bounce_score',
-                                'pace_score','pedigree','hp_score',
-                                'agf_score','trainer_score',
-                            ]
-                        }
+            _current_race_id = race_id or f"{target_distance}_{target_track}_{int(time.time())}"
+
+            # 1. Mevcut dosyayı oku → dict'e çevir
+            _existing = {}   # key = (race_id, horse_name_upper) → entry
+            _other_lines = []  # Bu koşuya ait OLMAYAN satırlar
+            if _os.path.exists(_log_path):
+                with open(_log_path, 'r', encoding='utf-8') as _rf:
+                    for _line in _rf:
+                        _line = _line.strip()
+                        if not _line:
+                            continue
+                        try:
+                            _old = _json.loads(_line)
+                            _old_rid = str(_old.get('race_id', ''))
+                            _old_name = _old.get('horse_name', '').strip().upper()
+                            if _old_rid == str(_current_race_id):
+                                _existing[(_old_rid, _old_name)] = _old
+                            else:
+                                _other_lines.append(_line)
+                        except Exception:
+                            _other_lines.append(_line)
+
+            # 2. Yeni entry'leri hazırla (upsert)
+            _new_entries = []
+            for _h in analyzed_horses:
+                _m = _h.get('_metrics_pass1', {})
+                _h_name = _h.get('name', '')
+                _key = (str(_current_race_id), _h_name.strip().upper())
+
+                _entry = {
+                    'race_id':    _current_race_id,
+                    'horse_name': _h_name,
+                    'ai_score':   _h.get('aiScore', 0),
+                    'rank_pred':  _h.get('rank', 0),
+                    'race_type':  race_type or '',
+                    'distance':   target_distance or '',
+                    'track':      target_track or '',
+                    'field_size': len(analyzed_horses),
+                    'finish_pos': None,
+                    'is_winner':  None,
+                    'ts':         int(time.time()),
+                    'features': {
+                        k: _m.get(k, 50.0)
+                        for k in [
+                            'degree_avg','degree_trend','degree_stability',
+                            'form_trend','track_suit','distance_suit',
+                            'training_fitness','training_degree_score',
+                            'weight_impact','jockey_score','bounce_score',
+                            'pace_score','pedigree','hp_score',
+                            'agf_score','trainer_score',
+                        ]
                     }
-                    _lf.write(_json.dumps(_entry, ensure_ascii=False) + '\n')
+                }
+
+                # Eğer bu at daha önce logllanmış VE etiketlenmişse → label'ı koru
+                if _key in _existing:
+                    _prev = _existing[_key]
+                    if _prev.get('finish_pos') is not None:
+                        _entry['finish_pos'] = _prev['finish_pos']
+                        _entry['is_winner']  = _prev.get('is_winner')
+
+                _new_entries.append(_json.dumps(_entry, ensure_ascii=False))
+
+            # 3. Dosyayı yeniden yaz (diğer koşular + güncel koşu)
+            with open(_log_path, 'w', encoding='utf-8') as _wf:
+                for _ol in _other_lines:
+                    _wf.write(_ol + '\n')
+                for _ne in _new_entries:
+                    _wf.write(_ne + '\n')
+
+            print(f"[PRED LOG] Upsert: {_current_race_id} → {len(_new_entries)} at (mevcut {len(_existing)} güncellendi)")
         except Exception as _le:
             print(f"[PRED LOG] Loglama hatası: {_le}")
 
@@ -3938,6 +3981,71 @@ def submit_results():
 
         print(f"[SUBMIT] {race_id_in}: {updated} at güncellendi")
         return jsonify({'success': True, 'updated': updated})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ══════════════════════════════════════════════════════════════════
+# FAZ 7.1: ML VERİ TEMİZLEME (Duplikasyon Giderme)
+# ══════════════════════════════════════════════════════════════════
+
+@app.route('/api/ml-cleanup', methods=['POST'])
+def ml_cleanup():
+    """
+    predictions.jsonl içindeki duplike satırları temizler.
+    Aynı race_id + horse_name için sadece en son kaydı tutar.
+    Etiketlenmiş (finish_pos != None) kayıtlar önceliklidir.
+
+    POST /api/ml-cleanup
+    """
+    try:
+        import json as _json, os as _os
+        log_path = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
+        if not _os.path.exists(log_path):
+            return jsonify({'success': False, 'error': 'predictions.jsonl bulunamadı'}), 404
+
+        entries = {}  # key=(race_id, horse_name_upper) → entry
+        total_before = 0
+        duplicates_removed = 0
+
+        with open(log_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                    total_before += 1
+                    rid = str(entry.get('race_id', ''))
+                    name = entry.get('horse_name', '').strip().upper()
+                    key = (rid, name)
+
+                    if key in entries:
+                        prev = entries[key]
+                        # Etiketli kayıt varsa onu koru, yoksa yenisini al
+                        if prev.get('finish_pos') is not None:
+                            # Zaten etiketli → sadece feature'ları güncelle, label koru
+                            entry['finish_pos'] = prev['finish_pos']
+                            entry['is_winner'] = prev.get('is_winner')
+                        duplicates_removed += 1
+                    entries[key] = entry
+                except Exception:
+                    continue
+
+        # Yeniden yaz
+        total_after = len(entries)
+        with open(log_path, 'w', encoding='utf-8') as f:
+            for entry in entries.values():
+                f.write(_json.dumps(entry, ensure_ascii=False) + '\n')
+
+        print(f"[ML-CLEANUP] {total_before} → {total_after} ({duplicates_removed} duplike silindi)")
+        return jsonify({
+            'success': True,
+            'before': total_before,
+            'after': total_after,
+            'duplicates_removed': duplicates_removed,
+            'message': f'{duplicates_removed} duplike kayıt temizlendi. {total_after} kayıt kaldı.'
+        })
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
