@@ -3413,6 +3413,8 @@ def analyze_race():
         target_track = data.get('targetTrack', '')
         race_id   = data.get('raceId', '')    # İdman bilgileri için koşu ID'si
         race_type = data.get('raceType', '')   # FAZ 6.2: Koşu tipi (Handikap/Maiden/Şartlı...)
+        race_date = data.get('raceDate', '')   # FAZ 7: ML log için koşu tarihi (dd.MM.yyyy)
+        race_no   = data.get('raceNo', '')     # FAZ 7: ML log için koşu numarası
         
         if not horses:
             return jsonify({'success': False, 'error': 'At listesi boş'}), 400
@@ -3992,12 +3994,15 @@ def analyze_race():
             # 2. Yeni entry'leri hazırla (upsert)
             _new_entries = []
             for _h in analyzed_horses:
-                _m = _h.get('_metrics_pass1', {})
+                # FAZ 7 Bug Fix: _metrics_pass1 zaten pop() ile silindi → _mf kullan
+                _m = _h.get('_mf', {})
                 _h_name = _h.get('name', '')
                 _key = (str(_current_race_id), _h_name.strip().upper())
 
                 _entry = {
                     'race_id':    _current_race_id,
+                    'race_date':  race_date or '',   # FAZ 7: Lookup için
+                    'race_no':    race_no or '',     # FAZ 7: Lookup için
                     'horse_name': _h_name,
                     'ai_score':   _h.get('aiScore', 0),
                     'rank_pred':  _h.get('rank', 0),
@@ -4180,6 +4185,51 @@ def ml_cleanup():
             'duplicates_removed': duplicates_removed,
             'message': f'{duplicates_removed} duplike kayıt temizlendi. {total_after} kayıt kaldı.'
         })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════
+# FAZ 7.3: RACE-ID ÇÖZÜMLEME (date+raceNo → numeric race_id)
+# ══════════════════════════════════════════════════════════════════
+
+@app.route('/api/resolve-race-id', methods=['GET'])
+def resolve_race_id():
+    """
+    predictions.jsonl'dan date + raceNo ile numeric race_id döndürür.
+    Yarış bittiğinde TJK HTML değiştiği için Flutter scraper race_id'yi
+    boş parse edebiliyor. Bu endpoint o durumda fallback olarak kullanılır.
+
+    GET /api/resolve-race-id?date=27.04.2026&raceNo=3
+    Yanıt: {"race_id": "224638", "source": "jsonl"}
+    """
+    try:
+        import json as _json, os as _os
+        date_param = request.args.get('date', '').strip()    # dd.MM.yyyy
+        race_no_param = request.args.get('raceNo', '').strip()
+
+        if not date_param or not race_no_param:
+            return jsonify({'success': False, 'error': 'date ve raceNo zorunlu'}), 400
+
+        log_path = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
+        if _os.path.exists(log_path):
+            with open(log_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = _json.loads(line)
+                        if (str(entry.get('race_date', '')) == date_param and
+                                str(entry.get('race_no', '')) == str(race_no_param)):
+                            rid = str(entry.get('race_id', ''))
+                            if rid:
+                                return jsonify({'success': True, 'race_id': rid, 'source': 'jsonl'})
+                    except Exception:
+                        continue
+
+        return jsonify({'success': False, 'error': 'Bu tarih/koşu için kayıt bulunamadı'}), 404
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
