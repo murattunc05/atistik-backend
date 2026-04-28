@@ -4105,6 +4105,8 @@ def submit_results():
     Body:
       {
         "race_id": "12345",
+        "race_date": "28.04.2026",   (opsiyonel — fallback eşleşme için)
+        "race_no":   "3",            (opsiyonel — fallback eşleşme için)
         "results": [
           {"horse_name": "ERDEK", "finish_pos": 1},
           {"horse_name": "SİMSEK YELELI", "finish_pos": 2},
@@ -4115,8 +4117,10 @@ def submit_results():
     try:
         import json as _json, os as _os
         data = request.json
-        race_id_in = str(data.get('race_id', '')).strip()
-        incoming   = {r['horse_name'].strip().upper(): r['finish_pos'] for r in data.get('results', [])}
+        race_id_in  = str(data.get('race_id', '')).strip()
+        race_date   = str(data.get('race_date', '')).strip()   # FAZ 7.4: fallback
+        race_no_in  = str(data.get('race_no', '')).strip()     # FAZ 7.4: fallback
+        incoming    = {r['horse_name'].strip().upper(): r['finish_pos'] for r in data.get('results', [])}
 
         if not race_id_in or not incoming:
             return jsonify({'success': False, 'error': 'race_id ve results zorunlu'}), 400
@@ -4125,8 +4129,10 @@ def submit_results():
         if not _os.path.exists(log_path):
             return jsonify({'success': False, 'error': 'predictions.jsonl bulunamadı'}), 404
 
+        # ── PASS 1: race_id ile eşleştir ──────────────────────────────
         lines = []
         updated = 0
+        resolved_race_id = None  # Eğer tarih-format ID geldiyse, gerçek numeric ID'yi bul
         with open(log_path, 'r', encoding='utf-8') as f:
             for line in f:
                 try:
@@ -4142,12 +4148,114 @@ def submit_results():
                 except Exception:
                     lines.append(line.strip())
 
+        # ── PASS 2 (FALLBACK): race_id eşleşmedi → race_date + horse_name ──
+        # Bu durum genellikle Flutter "28.04.2026-3" formatında ID gönderdiğinde
+        # ama predictions.jsonl'da numeric "224680" kayıtlı olduğunda oluşur.
+        if updated == 0 and race_date:
+            print(f"[SUBMIT] PASS 1 başarısız (race_id={race_id_in}), PASS 2: race_date={race_date} ile deneniyor...")
+            lines = []
+            # Tarih eşleşen koşuları bul — eğer horse_name de eşleşiyorsa güncelle
+            with open(log_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        entry = _json.loads(line)
+                        entry_date = str(entry.get('race_date', ''))
+                        entry_no   = str(entry.get('race_no', ''))
+                        name_key   = entry.get('horse_name', '').strip().upper()
+
+                        # race_date eşleşiyor VE (race_no eşleşiyor VEYA boş) VE horse_name listede
+                        date_match = entry_date == race_date
+                        no_match   = (not race_no_in or not entry_no or entry_no == race_no_in)
+                        name_match = name_key in incoming
+
+                        if date_match and no_match and name_match:
+                            pos = incoming[name_key]
+                            entry['finish_pos'] = pos
+                            entry['is_winner']  = 1 if pos == 1 else 0
+                            updated += 1
+                            if not resolved_race_id:
+                                resolved_race_id = str(entry.get('race_id', ''))
+
+                        lines.append(_json.dumps(entry, ensure_ascii=False))
+                    except Exception:
+                        lines.append(line.strip())
+
+            if updated > 0:
+                print(f"[SUBMIT] PASS 2 başarılı: {updated} at güncellendi (resolved race_id={resolved_race_id})")
+
+        # ── PASS 3 (SON ÇARE): race_date alanı olmayan eski kayıtlar ──
+        # Eski analizlerdeki predictions.jsonl entries'de race_date yok.
+        # Horse_name set eşleşmesi ile doğru koşuyu bul.
+        if updated == 0 and incoming:
+            print(f"[SUBMIT] PASS 2 başarısız, PASS 3: horse_name set eşleşmesi deneniyor...")
+            lines = []
+            # race_id'lere göre grupla ve horse_name set overlap'i en yüksek olanı bul
+            race_groups = {}  # race_id → {names: set, count: int}
+            all_entries = []
+            with open(log_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        entry = _json.loads(line)
+                        all_entries.append(entry)
+                        rid = str(entry.get('race_id', ''))
+                        name = entry.get('horse_name', '').strip().upper()
+                        if rid not in race_groups:
+                            race_groups[rid] = {'names': set(), 'count': 0}
+                        race_groups[rid]['names'].add(name)
+                        race_groups[rid]['count'] += 1
+                    except Exception:
+                        all_entries.append(line.strip())
+
+            # En yüksek overlap'li race_id'yi bul
+            incoming_names = set(incoming.keys())
+            best_rid = None
+            best_overlap = 0
+            for rid, info in race_groups.items():
+                overlap = len(incoming_names & info['names'])
+                # En az %50 eşleşme gerekli (yanlış koşuyla eşleşmeyi önle)
+                if overlap > best_overlap and overlap >= len(incoming_names) * 0.5:
+                    best_overlap = overlap
+                    best_rid = rid
+
+            if best_rid:
+                for entry in all_entries:
+                    if isinstance(entry, dict):
+                        if str(entry.get('race_id', '')) == best_rid:
+                            name_key = entry.get('horse_name', '').strip().upper()
+                            if name_key in incoming:
+                                pos = incoming[name_key]
+                                entry['finish_pos'] = pos
+                                entry['is_winner']  = 1 if pos == 1 else 0
+                                updated += 1
+                        lines.append(_json.dumps(entry, ensure_ascii=False))
+                    else:
+                        lines.append(entry)
+                resolved_race_id = best_rid
+                print(f"[SUBMIT] PASS 3 başarılı: {updated} at güncellendi (best_rid={best_rid}, overlap={best_overlap}/{len(incoming_names)})")
+            else:
+                # Hiçbir yöntemle eşleşme bulunamadı
+                for entry in all_entries:
+                    if isinstance(entry, dict):
+                        lines.append(_json.dumps(entry, ensure_ascii=False))
+                    else:
+                        lines.append(entry)
+
         with open(log_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines) + '\n')
 
-        print(f"[SUBMIT] {race_id_in}: {updated} at güncellendi")
-        github_backup()  # FAZ 7.2: GitHub'a yedekle
-        return jsonify({'success': True, 'updated': updated})
+        final_id = resolved_race_id or race_id_in
+        print(f"[SUBMIT] {final_id}: {updated} at güncellendi")
+
+        if updated > 0:
+            github_backup()  # FAZ 7.2: GitHub'a yedekle
+            return jsonify({'success': True, 'updated': updated, 'race_id': final_id})
+        else:
+            # updated == 0: Kullanıcıya açık uyarı ver
+            return jsonify({
+                'success': True,
+                'updated': 0,
+                'warning': f'race_id={race_id_in} ile eşleşen kayıt bulunamadı. Bu koşuyu önce analiz ettiğinizden emin olun.'
+            })
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
