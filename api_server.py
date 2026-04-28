@@ -431,10 +431,35 @@ def fetch_race_results():
         # Sıralamaya göre tertle
         results_sorted = sorted(results, key=lambda x: x['finish_pos'])
 
-        print(f'[FETCH-RESULTS] {race_id}: {len(results)} at sonucu bulundu, {len(errors)} hata')
+        # FAZ 7.3: predictions.jsonl'dan numeric race_id lookup
+        # fetch-race-results "28.04.2026-3" formatında ID üretiyor ama
+        # predictions.jsonl'da numeric ("224666") ID var. Doğru ID'yi bul.
+        import json as _fj, os as _fo
+        _log_path = _fo.path.join(_fo.path.dirname(__file__), 'predictions.jsonl')
+        numeric_race_id = None
+        if _fo.path.exists(_log_path):
+            try:
+                with open(_log_path, 'r', encoding='utf-8') as _lf:
+                    for _line in _lf:
+                        _line = _line.strip()
+                        if not _line:
+                            continue
+                        try:
+                            _entry = _fj.loads(_line)
+                            if (str(_entry.get('race_date', '')) == race_date and
+                                    str(_entry.get('race_no', '')) == str(race_no)):
+                                numeric_race_id = str(_entry.get('race_id', ''))
+                                break
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+        final_race_id = numeric_race_id if numeric_race_id else race_id
+        print(f'[FETCH-RESULTS] {race_id}: {len(results)} at sonucu bulundu, {len(errors)} hata → final race_id={final_race_id}')
         return jsonify({
             'success': True,
-            'race_id': race_id,
+            'race_id': final_race_id,   # numeric ID (varsa), yoksa tarih-format
             'results': results_sorted,
             'errors':  errors,
         })
@@ -3919,9 +3944,8 @@ def analyze_race():
                         conf_v, conf_l  = calculate_data_confidence(mf)
                         h['dataConfidence'] = {'score': conf_v, 'label': conf_l}
 
-        # _mf geçici alanını temizle (API response'a karışmasın)
-        for h in analyzed_horses:
-            h.pop('_mf', None)
+        # NOT: _mf burada temizlenmez! FAZ 7 ML log'u için kullanılacak.
+        # _mf temizleme FAZ 7 upsert'ten SONRA yapılır (aşağıda).
 
         # 5. Sıralama (Yüksek AI puanından düşüğe)
         analyzed_horses.sort(key=lambda x: x['aiScore'], reverse=True)
@@ -4046,6 +4070,10 @@ def analyze_race():
             github_backup()  # FAZ 7.2: GitHub'a yedekle
         except Exception as _le:
             print(f"[PRED LOG] Loglama hatası: {_le}")
+        finally:
+            # FAZ 7 tamamlandı — şimdi _mf geçici alanını temizle (API response'a karışmasın)
+            for _h in analyzed_horses:
+                _h.pop('_mf', None)
 
         return jsonify({
             'success': True,
