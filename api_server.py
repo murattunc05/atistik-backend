@@ -4132,12 +4132,14 @@ def submit_results():
         # ── PASS 1: race_id ile eşleştir ──────────────────────────────
         lines = []
         updated = 0
+        race_id_hits = 0  # race_id eşleşen satır sayısı (horse_name'den bağımsız)
         resolved_race_id = None  # Eğer tarih-format ID geldiyse, gerçek numeric ID'yi bul
         with open(log_path, 'r', encoding='utf-8') as f:
             for line in f:
                 try:
                     entry = _json.loads(line)
                     if str(entry.get('race_id', '')) == race_id_in:
+                        race_id_hits += 1
                         name_key = entry.get('horse_name', '').strip().upper()
                         if name_key in incoming:
                             pos = incoming[name_key]
@@ -4148,11 +4150,13 @@ def submit_results():
                 except Exception:
                     lines.append(line.strip())
 
-        # ── PASS 2 (FALLBACK): race_id eşleşmedi → race_date + horse_name ──
-        # Bu durum genellikle Flutter "28.04.2026-3" formatında ID gönderdiğinde
-        # ama predictions.jsonl'da numeric "224680" kayıtlı olduğunda oluşur.
-        if updated == 0 and race_date:
-            print(f"[SUBMIT] PASS 1 başarısız (race_id={race_id_in}), PASS 2: race_date={race_date} ile deneniyor...")
+        print(f"[SUBMIT] PASS 1: race_id={race_id_in} → {race_id_hits} kayıt bulundu, {updated} at güncellendi")
+
+        # ── PASS 2 (FALLBACK): race_id hiç bulunamadıysa → race_date + horse_name ──
+        # NOT: race_id_hits > 0 ama updated == 0 ise at isimleri eşleşmedi demek.
+        # Bu durumda PASS 2/3'e geçme — race_id doğru koşuyu buldu, at isimleri sorun.
+        if race_id_hits == 0 and race_date:
+            print(f"[SUBMIT] PASS 1 race_id bulunamadı, PASS 2: race_date={race_date} ile deneniyor...")
             lines = []
             # Tarih eşleşen koşuları bul — eğer horse_name de eşleşiyorsa güncelle
             with open(log_path, 'r', encoding='utf-8') as f:
@@ -4186,8 +4190,9 @@ def submit_results():
         # ── PASS 3 (SON ÇARE): race_date alanı olmayan eski kayıtlar ──
         # Eski analizlerdeki predictions.jsonl entries'de race_date yok.
         # Horse_name set eşleşmesi ile doğru koşuyu bul.
-        if updated == 0 and incoming:
-            print(f"[SUBMIT] PASS 2 başarısız, PASS 3: horse_name set eşleşmesi deneniyor...")
+        # SADECE race_id hiç bulunamadığında (race_id_hits==0) devreye girer.
+        if race_id_hits == 0 and updated == 0 and incoming:
+            print(f"[SUBMIT] PASS 3: horse_name set eşleşmesi deneniyor...")
             lines = []
             # race_id'lere göre grupla ve horse_name set overlap'i en yüksek olanı bul
             race_groups = {}  # race_id → {names: set, count: int}
@@ -4249,8 +4254,19 @@ def submit_results():
         if updated > 0:
             github_backup()  # FAZ 7.2: GitHub'a yedekle
             return jsonify({'success': True, 'updated': updated, 'race_id': final_id})
+        elif race_id_hits > 0:
+            # race_id bulundu ama hiçbir at ismi eşleşmedi
+            # Bu, fetch-race-results'tan gelen at isimleri predictions.jsonl'dakiyle uyuşmadığında olur
+            return jsonify({
+                'success': True,
+                'updated': 0,
+                'race_id_hits': race_id_hits,
+                'incoming_horses': list(incoming.keys()),
+                'warning': f'race_id={race_id_in} bulundu ({race_id_hits} at) ama hiçbir at ismi eşleşmedi. '
+                           f'Gönderilen atlar: {list(incoming.keys())[:5]}'
+            })
         else:
-            # updated == 0: Kullanıcıya açık uyarı ver
+            # race_id hiç bulunamadı
             return jsonify({
                 'success': True,
                 'updated': 0,
