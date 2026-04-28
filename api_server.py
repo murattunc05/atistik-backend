@@ -355,6 +355,9 @@ def fetch_race_results():
 
         for horse in horses_in:
             horse_name  = horse.get('name', '').strip()
+            # FAZ 7.4: TJK scraper at ismine newline + derece numarası ekleyebiliyor
+            # Örn: "AĞASAÇAN\n (1)" → "AĞASAÇAN"
+            horse_name = horse_name.split('\n')[0].strip()
             detail_link = horse.get('detailLink', '').strip()
 
             if not detail_link or not horse_name:
@@ -4117,10 +4120,14 @@ def submit_results():
     try:
         import json as _json, os as _os
         data = request.json
+        def _clean_name(s):
+            """At isminden newline ve sonrasını temizle: 'AĞASAÇAN\n (1)' → 'AĞASAÇAN'"""
+            return str(s).split('\n')[0].strip().upper()
+
         race_id_in  = str(data.get('race_id', '')).strip()
         race_date   = str(data.get('race_date', '')).strip()   # FAZ 7.4: fallback
         race_no_in  = str(data.get('race_no', '')).strip()     # FAZ 7.4: fallback
-        incoming    = {r['horse_name'].strip().upper(): r['finish_pos'] for r in data.get('results', [])}
+        incoming    = {_clean_name(r['horse_name']): r['finish_pos'] for r in data.get('results', [])}
 
         if not race_id_in or not incoming:
             return jsonify({'success': False, 'error': 'race_id ve results zorunlu'}), 400
