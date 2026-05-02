@@ -682,87 +682,143 @@ def search_races():
             'error': f'Beklenmeyen hata: {str(e)}'
         }), 500
 
+
 @app.route('/api/daily-races', methods=['POST'])
 def get_daily_races():
     """Günün koşularını getir"""
     try:
         data = request.json
-        # Şehir ID mapping
+        # Gerçek TJK SehirId değerleri (live sayfadan doğrulandı: 02.05.2026)
         city_map = {
             'İstanbul': '1',
-            'Ankara': '2',
-            'İzmir': '3',
-            'Adana': '4',
-            'Bursa': '5',
-            'Şanlıurfa': '6',
-            'Diyarbakır': '7',
-            'Elazığ': '8',
-            'Kocaeli': '9'
+            'Ankara':   '5',
+            'İzmir':    '2',
+            'Adana':    '4',
+            'Bursa':    '3',
+            'Şanlıurfa':'6',
+            'Diyarbakır':'8',
+            'Elazığ':   '9',
+            'Kocaeli':  '10'
         }
-        
+
         city = data.get('city', 'İstanbul')
         city_id = city_map.get(city, '1')
-        
+
         # Bugünün tarihini al
         from datetime import datetime
         today = datetime.now().strftime('%d.%m.%Y')
-        
-        # TJK günlük program sayfası
-        url = f"https://www.tjk.org/TR/YarisSever/Info/Page/GunlukYarisProgrami?SehirId={city_id}"
-        
+        today_url = datetime.now().strftime('%d/%m/%Y')   # URL formatı
+
+        # TJK günlük program sayfası — şehir bazlı doğru URL
+        url = (
+            f"https://www.tjk.org/TR/YarisSever/Info/Sehir/GunlukYarisProgrami"
+            f"?SehirId={city_id}&QueryParameter_Tarih={today_url}&SehirAdi={city}&Era=today"
+        )
+
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "tr-TR,tr;q=0.9"
+            "Accept-Language": "tr-TR,tr;q=0.9",
+            "Referer": "https://www.tjk.org/TR/YarisSever/Info/Page/GunlukYarisProgrami"
         }
-        
+
         response = requests.get(url, headers=headers, timeout=15)
-        
+
         if response.status_code != 200:
             return jsonify({
                 'success': False,
                 'error': f'TJK sayfası yüklenemedi. Status: {response.status_code}'
             }), 500
-        
+
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Koşu bilgilerini bul
+
+        # ── Saat bilgisini race_id → time eşlemesi olarak çıkar ──────────────
+        time_map = {}
+        tabs_ul = soup.find('ul', class_=lambda c: c and 'races-tabs' in (' '.join(c) if isinstance(c, list) else c))
+        if tabs_ul:
+            for a_tag in tabs_ul.find_all('a', href=True):
+                href = a_tag.get('href', '')
+                frag_match = re.search(r'#(\d+)', href)
+                if frag_match:
+                    rid = frag_match.group(1)
+                    full_text = a_tag.get_text(separator='\n', strip=True)
+                    lines = [l.strip() for l in full_text.splitlines() if l.strip()]
+                    if len(lines) >= 2:
+                        time_map[rid] = lines[1]
+
+        # ── Her koşu için race-details div'ini parse et ─────────────────────
         races = []
-        race_cards = soup.find_all('div', class_='race-card') or soup.find_all('div', class_='kosu-card')
-        
-        # Alternatif: Tablo formatında koşular
-        if not race_cards:
-            tables = soup.find_all('table')
-            for table in tables:
-                rows = table.find_all('tr')
-                for row in rows[1:]:  # İlk satır başlık
-                    cells = row.find_all('td')
-                    if len(cells) >= 4:
-                        try:
-                            race = {
-                                'raceNumber': cells[0].text.strip(),
-                                'time': cells[1].text.strip(),
-                                'distance': cells[2].text.strip(),
-                                'track': cells[3].text.strip(),
-                                'city': city
-                            }
-                            races.append(race)
-                        except:
-                            continue
-        else:
-            for card in race_cards:
-                try:
-                    race = {
-                        'raceNumber': card.find('span', class_='race-number').text.strip() if card.find('span', class_='race-number') else '',
-                        'time': card.find('span', class_='race-time').text.strip() if card.find('span', class_='race-time') else '',
-                        'distance': card.find('span', class_='distance').text.strip() if card.find('span', class_='distance') else '',
-                        'track': card.find('span', class_='track').text.strip() if card.find('span', class_='track') else '',
+        race_details_list = soup.find_all('div', class_='race-details')
+
+        for rd in race_details_list:
+            try:
+                race_no_el = rd.find('h3', class_='race-no')
+                race_config_el = rd.find('h3', class_='race-config')
+
+                race_number = ''
+                race_id = ''
+                race_time = ''
+                if race_no_el:
+                    anchor = race_no_el.find('a', href=True)
+                    if anchor:
+                        href = anchor.get('href', '')
+                        frag = re.search(r'#(\d+)', href)
+                        if frag:
+                            race_id = frag.group(1)
+                            race_time = time_map.get(race_id, '')
+                    no_text = race_no_el.get_text(separator=' ', strip=True)
+                    no_match = re.search(r'(\d+)\.\s*Ko[şs]u', no_text, re.IGNORECASE)
+                    if no_match:
+                        race_number = no_match.group(1)
+
+                distance = ''
+                track = ''
+                race_type = ''
+                if race_config_el:
+                    config_text = race_config_el.get_text(separator=' ', strip=True)
+                    dist_match = re.search(r'\b(\d{3,4})\b', config_text)
+                    if dist_match:
+                        distance = dist_match.group(1)
+                    track_match = re.search(r'\b(Çim|Cim|Kum|Sentetik)\b', config_text, re.IGNORECASE)
+                    if track_match:
+                        trk = track_match.group(1)
+                        if 'im' in trk.lower():
+                            track = 'Çim'
+                        else:
+                            track = trk.capitalize()
+                    type_match = re.search(r'^(.+?)\s*,', config_text.strip())
+                    if type_match:
+                        race_type = type_match.group(1).strip()
+
+                # İkramiye parse
+                prize = ''
+                parent_pane = rd.find_parent('div', id=True)
+                if parent_pane:
+                    for h3_el in parent_pane.find_all('h3'):
+                        if 'kramiye' in h3_el.get_text():
+                            dl_el = h3_el.find_next_sibling('dl')
+                            if dl_el:
+                                dl_text = dl_el.get_text(separator=' ', strip=True)
+                                prize_match = re.search(r'1\.\)\s*([\d.,]+)', dl_text)
+                                if prize_match:
+                                    prize = prize_match.group(1).replace('.', '').replace(',', '') + ' TL'
+                            break
+                if race_number:
+                    races.append({
+                        'raceNumber': race_number,
+                        'raceId': race_id,
+                        'time': race_time,
+                        'distance': distance,
+                        'track': track,
+                        'raceType': race_type,
+                        'prize': prize,
                         'city': city
-                    }
-                    races.append(race)
-                except:
-                    continue
-        
+                    })
+
+            except Exception as e:
+                print(f"[daily-races] Koşu parse hatası: {e}")
+                continue
+
         return jsonify({
             'success': True,
             'races': races,
@@ -770,7 +826,7 @@ def get_daily_races():
             'date': today,
             'count': len(races)
         })
-        
+
     except requests.exceptions.RequestException as e:
         return jsonify({
             'success': False,
@@ -781,6 +837,7 @@ def get_daily_races():
             'success': False,
             'error': f'Beklenmeyen hata: {str(e)}'
         }), 500
+
 
 @app.route('/api/compare-horses', methods=['POST'])
 def compare_horses():
