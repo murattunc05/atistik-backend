@@ -19,22 +19,25 @@ CORS(app)  # Flutter'dan gelen isteklere izin ver
 _ml_model = None
 _ml_feature_cols = []
 _ml_feature_stats = {}
+_ml_load_error = None  # Teşhis için
 
 def load_ml_model():
     """Sunucu başlangıcında model_xgb.json'ı yükle. Yoksa graceful skip."""
-    global _ml_model, _ml_feature_cols, _ml_feature_stats
+    global _ml_model, _ml_feature_cols, _ml_feature_stats, _ml_load_error
     import os as _o, json as _j
     model_path = _o.path.join(_o.path.dirname(__file__), 'model_xgb.json')
     stats_path = _o.path.join(_o.path.dirname(__file__), 'feature_stats.json')
 
     if not _o.path.exists(model_path):
-        print("[ML] model_xgb.json bulunamadı — saf kural tabanlı mod aktif")
+        _ml_load_error = f"model_xgb.json bulunamadı: {model_path}"
+        print(f"[ML] {_ml_load_error}")
         return
 
     try:
         import xgboost as xgb
         _ml_model = xgb.XGBRanker()
         _ml_model.load_model(model_path)
+        _ml_load_error = None
         print(f"[ML] XGBoost model yüklendi: {model_path}")
 
         if _o.path.exists(stats_path):
@@ -43,15 +46,28 @@ def load_ml_model():
             _ml_feature_cols = saved.get('feature_cols', [])
             _ml_feature_stats = saved.get('stats', {})
             print(f"[ML] {len(_ml_feature_cols)} feature tanımı yüklendi")
-    except ImportError:
-        print("[ML] xgboost kurulu değil — saf kural tabanlı mod aktif")
+    except ImportError as ie:
+        _ml_load_error = f"ImportError: {ie}"
+        print(f"[ML] xgboost import hatası: {ie}")
         _ml_model = None
     except Exception as e:
+        _ml_load_error = f"Exception: {e}"
         print(f"[ML] Model yükleme hatası: {e}")
         _ml_model = None
 
 # Sunucu başlangıcında yükle
 load_ml_model()
+
+@app.route('/api/ml-status', methods=['GET'])
+def ml_status():
+    """ML model yükleme durumunu döner (teşhis endpoint'i)."""
+    return jsonify({
+        'model_loaded': _ml_model is not None,
+        'feature_count': len(_ml_feature_cols),
+        'load_error': _ml_load_error,
+        'mode': 'hybrid' if _ml_model else 'rules_only',
+    })
+
 
 # ══════════════════════════════════════════════════════════════════
 # FAZ 7.2: GITHUB BACKUP / RESTORE (predictions.jsonl kalıcılığı)
