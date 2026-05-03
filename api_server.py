@@ -70,6 +70,250 @@ def ml_status():
 
 
 # ══════════════════════════════════════════════════════════════════
+# FAZ 8.1: OTOMATİK SONUÇ ETİKETLEME (/api/auto-label)
+# ══════════════════════════════════════════════════════════════════
+
+@app.route('/api/auto-label', methods=['GET'])
+def auto_label():
+    """
+    Geçmiş tarihli, etiketlenmemiş tahminler için TJK'dan
+    sonuçları otomatik çekip predictions.jsonl'ı günceller.
+
+    Güvenlik: ?secret=XXX parametresi zorunlu.
+    AUTO_LABEL_SECRET ortam değişkeniyle belirlenir.
+    Boş bırakılırsa token kontrolü atlanır (geliştirme modu).
+
+    GET /api/auto-label?secret=benim_secret_kodum
+    """
+    import json as _j, os as _o
+    from datetime import datetime, timedelta
+
+    # ── Güvenlik kontrolü ─────────────────────────────────────────
+    expected_secret = _o.environ.get('AUTO_LABEL_SECRET', '')
+    if expected_secret:
+        provided = request.args.get('secret', '')
+        if provided != expected_secret:
+            return jsonify({'success': False, 'error': 'Yetkisiz erişim'}), 403
+
+    log_path = _o.path.join(_o.path.dirname(__file__), 'predictions.jsonl')
+    if not _o.path.exists(log_path):
+        return jsonify({'success': False, 'error': 'predictions.jsonl bulunamadı'}), 404
+
+    today_str = datetime.now().strftime('%d.%m.%Y')
+
+    # ── 1. Etiketlenmemiş + tarihi geçmiş koşuları topla ──────────
+    # race_id → {race_date, race_no, horses: [{name, detail_link?}]}
+    race_groups = {}
+    all_entries = []
+
+    with open(log_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = _j.loads(line)
+                all_entries.append(entry)
+
+                if entry.get('finish_pos') is not None:
+                    continue  # Zaten etiketli, atla
+
+                race_date = entry.get('race_date', '')
+                if not race_date:
+                    continue  # Tarihi olmayan eski kayıt, atla
+
+                if race_date == today_str:
+                    continue  # Bugünün koşusu, henüz bitmemiş olabilir
+
+                race_id  = str(entry.get('race_id', ''))
+                race_no  = str(entry.get('race_no', ''))
+                h_name   = entry.get('horse_name', '')
+
+                if race_id not in race_groups:
+                    race_groups[race_id] = {
+                        'race_date': race_date,
+                        'race_no':   race_no,
+                        'horses':    []
+                    }
+                race_groups[race_id]['horses'].append({'name': h_name})
+            except Exception:
+                all_entries.append(line)
+                continue
+
+    if not race_groups:
+        return jsonify({
+            'success': True,
+            'message': 'Etiketlenecek geçmiş koşu bulunamadı.',
+            'labeled_races': 0,
+            'labeled_horses': 0,
+        })
+
+    print(f"[AUTO-LABEL] {len(race_groups)} koşu işlenecek")
+
+    total_labeled = 0
+    race_results_summary = []
+    errors = []
+
+    # ── 2. Her koşu için TJK'dan sonuç çek ───────────────────────
+    for race_id, info in list(race_groups.items())[:20]:  # günde max 20 koşu
+        race_date = info['race_date']
+        race_no   = info['race_no']
+        horses    = info['horses']
+
+        print(f"[AUTO-LABEL] Koşu {race_id} ({race_date} / {race_no}), {len(horses)} at")
+
+        # At geçmiş sayfalarından sonuç çek (mevcut fetch-race-results mantığı)
+        horse_positions = {}
+        race_errors = []
+
+        for horse in horses:
+            h_name = horse['name']
+            if not h_name:
+                continue
+
+            # TJK at arama → detay link bul → geçmişten tarihe göre sıralama al
+            try:
+                # At arama
+                search_url = f"{TARGET_URL}/TR/YarisSever/Query/AtBilgileri/AtArama"
+                search_resp = requests.post(
+                    search_url,
+                    data={'AtAdi': h_name},
+                    headers=HEADERS,
+                    timeout=10
+                )
+                if search_resp.status_code != 200:
+                    race_errors.append(f'{h_name}: arama HTTP {search_resp.status_code}')
+                    continue
+
+                soup = BeautifulSoup(search_resp.text, 'html.parser')
+
+                # İlk eşleşen at linkini bul
+                detail_link = None
+                for a_tag in soup.find_all('a', href=True):
+                    href = a_tag['href']
+                    if 'AtBilgileri' in href and 'AtId' in href:
+                        detail_link = href
+                        break
+
+                if not detail_link:
+                    # Alternatif: table içindeki link
+                    for row in soup.find_all('tr'):
+                        cells = row.find_all('td')
+                        for cell in cells:
+                            for a in cell.find_all('a', href=True):
+                                if 'AtBilgileri' in a['href']:
+                                    detail_link = a['href']
+                                    break
+                            if detail_link:
+                                break
+                        if detail_link:
+                            break
+
+                if not detail_link:
+                    race_errors.append(f'{h_name}: detay link bulunamadı')
+                    continue
+
+                # Detay sayfasından tarihe göre bitiş pozisyonu al
+                detail_url = urljoin(TARGET_URL, detail_link).replace('&amp;', '&')
+                det_resp = requests.get(detail_url, headers=HEADERS, timeout=12)
+                if det_resp.status_code != 200:
+                    race_errors.append(f'{h_name}: detay HTTP {det_resp.status_code}')
+                    continue
+
+                det_soup  = BeautifulSoup(det_resp.text, 'html.parser')
+                data_div  = det_soup.find('div', id='dataDiv')
+                if not data_div:
+                    race_errors.append(f'{h_name}: dataDiv yok')
+                    continue
+
+                race_table = data_div.find('table', id='queryTable')
+                tbody      = race_table.find('tbody', id='tbody0') if race_table else None
+                if not tbody:
+                    race_errors.append(f'{h_name}: tablo yok')
+                    continue
+
+                found_pos = None
+                race_date_norm = race_date.replace('/', '.').replace('-', '.')[:10]
+                for row in tbody.find_all('tr'):
+                    if 'hidable' in row.get('class', []):
+                        continue
+                    cells = row.find_all('td')
+                    if len(cells) < 6:
+                        continue
+                    row_date = cells[0].text.strip().replace('/', '.').replace('-', '.')[:10]
+                    position = cells[4].text.strip()
+                    if row_date == race_date_norm:
+                        if position.isdigit():
+                            found_pos = int(position)
+                        else:
+                            found_pos = 99  # K/D/F vb.
+                        break
+
+                if found_pos is not None:
+                    horse_positions[h_name.strip().upper()] = found_pos
+                else:
+                    race_errors.append(f'{h_name}: {race_date} tarihli kayıt bulunamadı')
+
+            except Exception as ex:
+                race_errors.append(f'{h_name}: {ex}')
+                continue
+
+        if not horse_positions:
+            errors.append(f'Koşu {race_id}: hiçbir at eşleştirilemedi. {race_errors[:3]}')
+            continue
+
+        # ── 3. predictions.jsonl'ı güncelle ──────────────────────
+        race_labeled = 0
+        new_all = []
+        for entry in all_entries:
+            if isinstance(entry, dict):
+                if (str(entry.get('race_id', '')) == race_id and
+                        entry.get('finish_pos') is None):
+                    n_key = entry.get('horse_name', '').strip().upper()
+                    if n_key in horse_positions:
+                        pos = horse_positions[n_key]
+                        entry['finish_pos'] = pos
+                        entry['is_winner']  = 1 if pos == 1 else 0
+                        race_labeled += 1
+                new_all.append(_j.dumps(entry, ensure_ascii=False))
+            else:
+                new_all.append(entry)
+        all_entries_ref = [
+            _j.loads(l) if isinstance(l, str) else l
+            for l in new_all
+        ]
+        all_entries = all_entries_ref  # noqa: F841 — bir sonraki iterasyon için
+
+        # Dosyayı güncelle
+        with open(log_path, 'w', encoding='utf-8') as f:
+            for line in new_all:
+                f.write(line + '\n')
+
+        total_labeled += race_labeled
+        race_results_summary.append({
+            'race_id':   race_id,
+            'race_date': race_date,
+            'labeled':   race_labeled,
+            'total':     len(horses),
+            'errors':    len(race_errors),
+        })
+        print(f"[AUTO-LABEL] Koşu {race_id}: {race_labeled}/{len(horses)} at etiketlendi")
+
+    if total_labeled > 0:
+        github_backup()  # GitHub'a yedekle
+        print(f"[AUTO-LABEL] Toplam {total_labeled} at etiketlendi, GitHub'a yedeklendi")
+
+    return jsonify({
+        'success':       True,
+        'labeled_races': len(race_results_summary),
+        'labeled_horses': total_labeled,
+        'races':         race_results_summary,
+        'errors':        errors[:10],
+        'message':       f'{len(race_results_summary)} koşuda {total_labeled} at otomatik etiketlendi.',
+    })
+
+
+# ══════════════════════════════════════════════════════════════════
 # FAZ 7.2: GITHUB BACKUP / RESTORE (predictions.jsonl kalıcılığı)
 # ══════════════════════════════════════════════════════════════════
 import os as _os
