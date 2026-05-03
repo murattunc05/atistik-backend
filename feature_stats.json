@@ -1,0 +1,131 @@
+{
+  "feature_cols": [
+    "degree_avg",
+    "degree_trend",
+    "degree_stability",
+    "form_trend",
+    "track_suit",
+    "distance_suit",
+    "training_fitness",
+    "training_degree_score",
+    "weight_impact",
+    "jockey_score",
+    "bounce_score",
+    "pace_score",
+    "pedigree",
+    "hp_score",
+    "trainer_score",
+    "is_handicap",
+    "is_maiden",
+    "is_conditions",
+    "is_kv",
+    "degree_avg_zscore",
+    "form_trend_zscore",
+    "track_suit_zscore",
+    "field_size",
+    "top3_feature_avg",
+    "feature_variance"
+  ],
+  "stats": {
+    "degree_avg": {
+      "mean": 51.592318840579715,
+      "std": 30.880510603107638
+    },
+    "degree_trend": {
+      "mean": 48.527536231884056,
+      "std": 21.770852967069978
+    },
+    "degree_stability": {
+      "mean": 39.42289855072464,
+      "std": 36.2827006442732
+    },
+    "form_trend": {
+      "mean": 45.91231884057971,
+      "std": 17.758047513992736
+    },
+    "track_suit": {
+      "mean": 50.0,
+      "std": 0.0
+    },
+    "distance_suit": {
+      "mean": 54.08913043478261,
+      "std": 20.47654428158981
+    },
+    "training_fitness": {
+      "mean": 72.99724637681159,
+      "std": 18.15355422136648
+    },
+    "training_degree_score": {
+      "mean": 52.42927536231883,
+      "std": 25.22246472125438
+    },
+    "weight_impact": {
+      "mean": 49.028985507246375,
+      "std": 11.97502361381027
+    },
+    "jockey_score": {
+      "mean": 38.613913043478256,
+      "std": 15.020987080770405
+    },
+    "bounce_score": {
+      "mean": 68.0072463768116,
+      "std": 23.62733662408691
+    },
+    "pace_score": {
+      "mean": 47.64492753623188,
+      "std": 6.723656571170859
+    },
+    "pedigree": {
+      "mean": 53.801449275362316,
+      "std": 5.740392181360674
+    },
+    "hp_score": {
+      "mean": 49.37101449275362,
+      "std": 28.961838669436176
+    },
+    "trainer_score": {
+      "mean": 50.0,
+      "std": 0.0
+    },
+    "is_handicap": {
+      "mean": 0.34057971014492755,
+      "std": 0.4742479618733115
+    },
+    "is_maiden": {
+      "mean": 0.2217391304347826,
+      "std": 0.4157178781331554
+    },
+    "is_conditions": {
+      "mean": 0.30869565217391304,
+      "std": 0.4622903574399317
+    },
+    "is_kv": {
+      "mean": 0.1144927536231884,
+      "std": 0.31863978065644866
+    },
+    "degree_avg_zscore": {
+      "mean": 1.1584935909132068e-17,
+      "std": 0.8720794094413381
+    },
+    "form_trend_zscore": {
+      "mean": 7.88419249371488e-18,
+      "std": 0.8268007132607446
+    },
+    "track_suit_zscore": {
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "field_size": {
+      "mean": 11.450724637681159,
+      "std": 3.1583337447265776
+    },
+    "top3_feature_avg": {
+      "mean": 79.35531400966184,
+      "std": 16.773177561464465
+    },
+    "feature_variance": {
+      "mean": 465.22901230273754,
+      "std": 278.2409573724298
+    }
+  }
+}
