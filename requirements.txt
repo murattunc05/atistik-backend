@@ -4,4 +4,5 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 pandas
 numpy
+xgboost
 gunicorn==22.0.0

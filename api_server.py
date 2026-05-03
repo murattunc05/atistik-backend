@@ -14,6 +14,46 @@ app = Flask(__name__)
 CORS(app)  # Flutter'dan gelen isteklere izin ver
 
 # ══════════════════════════════════════════════════════════════════
+# FAZ 8: ML MODEL YÜKLEME (XGBoost Blend)
+# ══════════════════════════════════════════════════════════════════
+_ml_model = None
+_ml_feature_cols = []
+_ml_feature_stats = {}
+
+def load_ml_model():
+    """Sunucu başlangıcında model_xgb.json'ı yükle. Yoksa graceful skip."""
+    global _ml_model, _ml_feature_cols, _ml_feature_stats
+    import os as _o, json as _j
+    model_path = _o.path.join(_o.path.dirname(__file__), 'model_xgb.json')
+    stats_path = _o.path.join(_o.path.dirname(__file__), 'feature_stats.json')
+
+    if not _o.path.exists(model_path):
+        print("[ML] model_xgb.json bulunamadı — saf kural tabanlı mod aktif")
+        return
+
+    try:
+        import xgboost as xgb
+        _ml_model = xgb.XGBRanker()
+        _ml_model.load_model(model_path)
+        print(f"[ML] XGBoost model yüklendi: {model_path}")
+
+        if _o.path.exists(stats_path):
+            with open(stats_path, 'r', encoding='utf-8') as f:
+                saved = _j.load(f)
+            _ml_feature_cols = saved.get('feature_cols', [])
+            _ml_feature_stats = saved.get('stats', {})
+            print(f"[ML] {len(_ml_feature_cols)} feature tanımı yüklendi")
+    except ImportError:
+        print("[ML] xgboost kurulu değil — saf kural tabanlı mod aktif")
+        _ml_model = None
+    except Exception as e:
+        print(f"[ML] Model yükleme hatası: {e}")
+        _ml_model = None
+
+# Sunucu başlangıcında yükle
+load_ml_model()
+
+# ══════════════════════════════════════════════════════════════════
 # FAZ 7.2: GITHUB BACKUP / RESTORE (predictions.jsonl kalıcılığı)
 # ══════════════════════════════════════════════════════════════════
 import os as _os
@@ -3355,14 +3395,103 @@ def calculate_master_score(metrics):
     return master_score, weights, confidence, confidence_label
 
 
+# ══════════════════════════════════════════════════════════════════
+# FAZ 8: HİBRİT ML BLEND (XGBoost + Kural Tabanlı)
+# ══════════════════════════════════════════════════════════════════
+
+# AGF ML'den hariç (kullanıcı kararı)
+_ML_FEATURE_KEYS = [
+    "degree_avg", "degree_trend", "degree_stability",
+    "form_trend", "track_suit", "distance_suit",
+    "training_fitness", "training_degree_score",
+    "weight_impact", "jockey_score", "bounce_score",
+    "pace_score", "pedigree", "hp_score", "trainer_score",
+]
+
+
+def predict_ml_score(metrics):
+    """
+    FAZ 8: Tek bir at için XGBoost ML skoru döndürür.
+    Returns: float veya None (model yoksa)
+    """
+    if _ml_model is None or not _ml_feature_cols:
+        return None
+
+    try:
+        # Feature vektörü oluştur (eğitim sırasındaki sıra ile)
+        feature_vec = []
+        for col in _ml_feature_cols:
+            if col in metrics:
+                feature_vec.append(float(metrics.get(col, 50.0)))
+            elif col == "field_size":
+                feature_vec.append(float(metrics.get("_field_size", 10)))
+            elif col.endswith("_zscore"):
+                feature_vec.append(0.0)  # Z-score koşu seviyesinde hesaplanacak
+            elif col == "top3_feature_avg":
+                vals = sorted([metrics.get(k, 50.0) for k in _ML_FEATURE_KEYS])
+                feature_vec.append(float(np.mean(vals[-3:])))
+            elif col == "feature_variance":
+                vals = [metrics.get(k, 50.0) for k in _ML_FEATURE_KEYS]
+                feature_vec.append(float(np.var(vals)))
+            elif col.startswith("is_"):
+                race_type = (metrics.get("_race_type", "") or "").lower()
+                if col == "is_handicap":
+                    feature_vec.append(1.0 if any(k in race_type for k in ["handikap", "hk"]) else 0.0)
+                elif col == "is_maiden":
+                    feature_vec.append(1.0 if any(k in race_type for k in ["maiden", "mdn"]) else 0.0)
+                elif col == "is_conditions":
+                    feature_vec.append(1.0 if any(k in race_type for k in ["şartlı", "sartli"]) else 0.0)
+                elif col == "is_kv":
+                    feature_vec.append(1.0 if "kv" in race_type else 0.0)
+                else:
+                    feature_vec.append(0.0)
+            else:
+                feature_vec.append(50.0)
+
+        X = np.array([feature_vec], dtype=np.float32)
+        raw_score = float(_ml_model.predict(X)[0])
+        return raw_score
+    except Exception as e:
+        print(f"[ML] Tahmin hatası: {e}")
+        return None
+
+
+def calculate_blend_alpha(metrics):
+    """
+    FAZ 8: Dinamik blend oranı (α=kural, β=ML, α+β=1.0).
+    Veri durumuna göre ML'e ne kadar güvenileceğini belirler.
+    """
+    total_races = metrics.get("_total_races", 0)
+
+    if _ml_model is None:
+        return 1.0  # Saf kural tabanlı
+
+    if total_races == 0:
+        return 0.90  # Maiden — ML çaresiz
+
+    # Varsayılan: α=0.55 (kural ağırlıklı)
+    return 0.55
+
+
 def calculate_ai_score(metrics):
     """
-    FAZ 4.7: Gerı uyumluluk wrapperı.
-    Artık calculate_master_score() delegasyonu ile çalışıyor.
-    API'yi bozmadan tüm çağrı noktalarını güncellemeden master skoru kullanır.
+    FAZ 8: Hibrit Blend Skoru.
+    α × master_score + (1-α) × ml_score_normalized
+    ML model yoksa saf master_score döner (geriye uyumlu).
     """
-    score, _, _, _ = calculate_master_score(metrics)
-    return score
+    master_score, _, _, _ = calculate_master_score(metrics)
+
+    if _ml_model is None:
+        return master_score
+
+    ml_raw = predict_ml_score(metrics)
+    if ml_raw is None:
+        return master_score
+
+    # ML raw score'u henüz normalize edemeyiz (tek at);
+    # Koşu-seviyesinde normalizasyon PASS 2'de yapılacak.
+    # Şimdilik sadece master_score döndür, blend PASS 2'de uygulanır.
+    return master_score
 
 
 def generate_prediction(ai_score, metrics):
@@ -4007,6 +4136,43 @@ def analyze_race():
         # NOT: _mf burada temizlenmez! FAZ 7 ML log'u için kullanılacak.
         # _mf temizleme FAZ 7 upsert'ten SONRA yapılır (aşağıda).
 
+        # ═══════════════════════════════════════════════════════════
+        # FAZ 8: ML BLEND (XGBoost + Kural Tabanlı Hibrit Skor)
+        # ═══════════════════════════════════════════════════════════
+        blend_mode = 'rules_only'
+        if _ml_model is not None:
+            try:
+                ml_raw_scores = []
+                for h in analyzed_horses:
+                    mf = h.get('_mf', {})
+                    if mf:
+                        mf['_field_size'] = len(analyzed_horses)
+                        raw = predict_ml_score(mf)
+                        ml_raw_scores.append(raw if raw is not None else 0.0)
+                    else:
+                        ml_raw_scores.append(0.0)
+
+                # ML raw score'ları 0-100'e normalize et (koşu içi min-max)
+                ml_min = min(ml_raw_scores)
+                ml_max = max(ml_raw_scores)
+                ml_range = ml_max - ml_min if ml_max > ml_min else 1.0
+                ml_norm = [round((s - ml_min) / ml_range * 100, 1) for s in ml_raw_scores]
+
+                for h, ml_s in zip(analyzed_horses, ml_norm):
+                    mf = h.get('_mf', {})
+                    alpha = calculate_blend_alpha(mf) if mf else 1.0
+                    master_s = h.get('aiScore', 50)
+                    blended = round(alpha * master_s + (1 - alpha) * ml_s, 1)
+                    h['aiScore'] = blended
+                    h['mlScore'] = ml_s
+                    h['blendAlpha'] = round(alpha, 2)
+
+                blend_mode = 'hybrid'
+                print(f"[FAZ 8] ML Blend uygulandı: {len(analyzed_horses)} at, α={alpha:.2f}")
+            except Exception as ml_err:
+                print(f"[FAZ 8] ML Blend hatası, saf kural tabanlı devam: {ml_err}")
+                blend_mode = 'rules_only'
+
         # 5. Sıralama (Yüksek AI puanından düşüğe)
         analyzed_horses.sort(key=lambda x: x['aiScore'], reverse=True)
         
@@ -4142,6 +4308,7 @@ def analyze_race():
             'targetDistance': target_distance,
             'targetTrack': target_track,
             'paceScenario': pace_scenario,
+            'blendMode': blend_mode,
             'processTime': process_time
         })
         
@@ -4528,6 +4695,53 @@ def ml_stats():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+# ══════════════════════════════════════════════════════════════════
+# FAZ 8: ML EĞİTİM VERİSİ EXPORT (predictions.jsonl → JSON)
+# ══════════════════════════════════════════════════════════════════
+
+@app.route('/api/ml-export', methods=['GET'])
+def ml_export():
+    """
+    predictions.jsonl'ın tamamını JSON array olarak döner.
+    Lokal ML eğitimi için kullanılır.
+
+    Opsiyonel parametre:
+      ?labeled_only=true  → sadece finish_pos != null kayıtları
+
+    GET /api/ml-export
+    GET /api/ml-export?labeled_only=true
+    """
+    try:
+        import json as _json, os as _os
+        log_path = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
+        if not _os.path.exists(log_path):
+            return jsonify({'success': False, 'error': 'predictions.jsonl bulunamadı'}), 404
+
+        labeled_only = request.args.get('labeled_only', 'false').lower() == 'true'
+        entries = []
+
+        with open(log_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                    if labeled_only and entry.get('finish_pos') is None:
+                        continue
+                    entries.append(entry)
+                except Exception:
+                    continue
+
+        return jsonify({
+            'success': True,
+            'count': len(entries),
+            'entries': entries,
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
     port = int(os.environ.get('PORT', 5000))
