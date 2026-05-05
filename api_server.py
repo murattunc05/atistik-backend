@@ -3726,14 +3726,12 @@ def calculate_group_adjustment(horse_races, current_race_type):
 
 def calculate_master_score(metrics):
     """
-    FAZ 4.7 + Konsensüs: Dinamik ağırlıklı Master Tahmin Skoru.
+    FAZ 4.7 + Grup Ayarlaması: Dinamik ağırlıklı Master Tahmin Skoru.
     
-    Faz 3 İyileştirmesi:
-    - Konsensüs entegrasyonu: Her katmanın skoru 50'nin üstündeyse "oy" sayılır
-    - Grup ayarlaması: Geçmiş koşuların grup seviyesi dikkate alınır
-    - Final = WeightedScore * 0.75 + ConsensusScore * 0.25
-    
-    calculate_dynamic_weights() ile belirlenen ağırlıklar uygulanır.
+    Konsensüs artık koşu seviyesinde (PASS 2) uygulanıyor.
+    Burada sadece:
+    - Ağırlıklı ortalama (11 katman)
+    - Grup ayarlaması (geçmiş koşu grubu vs mevcut)
 
     Returns:
         float: 0-100 arası Master AI Skoru
@@ -3741,16 +3739,12 @@ def calculate_master_score(metrics):
         float: Güven yüzde skoru (0-1)
         str:   Güven etiketi
     """
-    race_type = metrics.get('_race_type', 'default')  # FAZ 6.2: Koşu tipi ağırlık profili
+    race_type = metrics.get('_race_type', 'default')
     weights = calculate_dynamic_weights(metrics, race_type=race_type)
     confidence, confidence_label = calculate_data_confidence(metrics)
 
     weighted_sum  = 0.0
     weight_total  = 0.0
-    
-    # Konsensüs: kaç katman bu atı 50'nin üstünde (pozitif sinyal) görüyor?
-    positive_layers = 0
-    total_layers = 0
 
     for key, weight in weights.items():
         if weight <= 0:
@@ -3758,30 +3752,17 @@ def calculate_master_score(metrics):
         value = metrics.get(key, 50.0)
         weighted_sum  += value * weight
         weight_total  += weight
-        
-        # Konsensüs sayımı: Her aktif katman için skor > 50 ise pozitif oy
-        total_layers += 1
-        if value > 55:      # 55+ = net pozitif sinyal
-            positive_layers += 1
 
     base_score = round(weighted_sum / weight_total, 1) if weight_total > 0 else 50.0
-    
-    # Konsensüs skoru: 0-100 aralığında
-    consensus_ratio = positive_layers / max(total_layers, 1)
-    consensus_score = consensus_ratio * 100.0
     
     # Grup ayarlaması: geçmiş koşuların grup seviyesi etkisi
     horse_races = metrics.get('_horse_races', [])
     group_adj = calculate_group_adjustment(horse_races, race_type)
     
-    # Final: Ağırlıklı Skor × %75 + Konsensüs × %25, sonra grup ayarla
-    final_score = (base_score * 0.75 + consensus_score * 0.25) * group_adj
-    final_score = max(0, min(100, round(final_score, 1)))
+    final_score = round(base_score * group_adj, 1)
+    final_score = max(0, min(100, final_score))
     
-    # Debug log
-    print(f"    [CONSENSUS] layers={positive_layers}/{total_layers} "
-          f"consensus={consensus_score:.0f} group_adj={group_adj:.3f} "
-          f"base={base_score:.1f} final={final_score:.1f}")
+    print(f"    [MASTER] base={base_score:.1f} group_adj={group_adj:.3f} final={final_score:.1f}")
     
     return final_score, weights, confidence, confidence_label
 
@@ -4558,6 +4539,64 @@ def analyze_race():
             except Exception as ml_err:
                 print(f"[FAZ 8] ML Blend hatası, saf kural tabanlı devam: {ml_err}")
                 blend_mode = 'rules_only'
+
+        # ═══════════════════════════════════════════════════════════
+        # KOŞU-SEVİYESİ KONSENSÜS: Her katmanda atları sırala,
+        # kaç katmanda Top-N'de olduğunu say → çoklu katmanda güçlü
+        # olan atlar ödüllendirilir, tek katmanda parlayan cezalandırılır
+        # ═══════════════════════════════════════════════════════════
+        _CONSENSUS_LAYERS = [
+            'degree_avg', 'form_trend', 'hp_score', 'distance_suit',
+            'track_suit', 'training_fitness', 'jockey_score',
+            'weight_impact', 'bounce_score', 'degree_stability',
+        ]
+        n_horses = len(analyzed_horses)
+        top_n = max(3, n_horses // 3)  # Top-N: at sayısının 1/3'ü (min 3)
+
+        if n_horses >= 3:
+            # Her at için konsensüs puanı hesapla
+            consensus_counts = {}  # horse_name -> kaç katmanda top-N
+            for layer in _CONSENSUS_LAYERS:
+                # Bu katmandaki tüm atların skorlarını topla
+                layer_scores = []
+                for h in analyzed_horses:
+                    mf = h.get('_mf', {})
+                    score = mf.get(layer, 50.0) if mf else 50.0
+                    layer_scores.append((h.get('name', ''), score))
+                
+                # Yüksekten düşüğe sırala
+                layer_scores.sort(key=lambda x: x[1], reverse=True)
+                
+                # Top-N'deki atları işaretle
+                for i, (name, _) in enumerate(layer_scores):
+                    if name not in consensus_counts:
+                        consensus_counts[name] = 0
+                    if i < top_n:
+                        consensus_counts[name] += 1
+
+            # Konsensüs çarpanı uygula
+            max_possible = len(_CONSENSUS_LAYERS)  # 10 katman
+            for h in analyzed_horses:
+                name = h.get('name', '')
+                count = consensus_counts.get(name, 0)
+                ratio = count / max_possible  # 0.0 - 1.0 arası
+                
+                # Çarpan: 0 katmanda top-N → ×0.85, 5/10 → ×1.0, 10/10 → ×1.10
+                # Formül: 0.85 + ratio * 0.25
+                consensus_mult = 0.85 + ratio * 0.25
+                
+                old_score = h.get('aiScore', 50)
+                new_score = round(old_score * consensus_mult, 1)
+                new_score = max(0, min(100, new_score))
+                h['aiScore'] = new_score
+                h['_consensus'] = {
+                    'topN_count': count,
+                    'total_layers': max_possible,
+                    'ratio': round(ratio, 2),
+                    'multiplier': round(consensus_mult, 3),
+                }
+                print(f"    [RACE-CONSENSUS] {name}: {count}/{max_possible} katmanda Top-{top_n} "
+                      f"-> x{consensus_mult:.3f} ({old_score:.1f} -> {new_score:.1f})")
 
         # 5. Sıralama (Yüksek AI puanından düşüğe)
         analyzed_horses.sort(key=lambda x: x['aiScore'], reverse=True)
