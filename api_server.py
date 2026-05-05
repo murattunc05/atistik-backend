@@ -3495,15 +3495,15 @@ def calculate_dynamic_weights(metrics, race_type='default'):
     race_type_lower = (race_type or 'default').lower()
 
     if any(k in race_type_lower for k in ['handikap', 'hk', 'handicap']):
-        # HANDIKAP Faz 3.2: HP artık dar aralıkta (35-65), dominant etki yaratmamalı
-        # Form ve AGF öne çıkıyor — kazananlar genellikle formda veya piyasa fark etmiş
-        w['hp_score']              = 0.07  # %15 → %7  (HP artık dar aralık, dominant değil)
-        w['weight_impact']         = 0.09  # %6 → %9  (sıklet etkisi önemli)
-        w['agf_score']             = 0.10  # %7 → %10 (piyasa sinyali değerli)
-        w['degree_avg']            = 0.15  # Biraz yükselt (HP baskısı azaldı)
-        w['form_trend']            = 0.17  # %10 → %17 (kazananlar formda oluyor)
-        w['trainer_score']         = 0.06  # K14: Antrenör win-rate (handikapta değerli)
-        print(f"[WEIGHTS] Handikap profili aktif (Faz3.2) → HP:%7 Form:%17 AGF:%10 Kilo:%9 Antrenor:%6")
+        # HANDIKAP Faz 3.2b: HP = güç sinyali (onaylandı), geniş aralık [15-90]
+        # HP + Form birlikte dominant → kazananları bulmaya yardımcı
+        w['hp_score']              = 0.12  # %7 → %12 (HP güç sinyali kesinleşti)
+        w['weight_impact']         = 0.08  # Sıklet etkisi
+        w['agf_score']             = 0.10  # Piyasa sinyali değerli
+        w['degree_avg']            = 0.13  # Hız verisi
+        w['form_trend']            = 0.16  # Form/momentum kritik
+        w['trainer_score']         = 0.06  # Antrenör
+        print(f"[WEIGHTS] Handikap profili aktif (Faz3.2b) -> HP:%12 Form:%16 AGF:%10 Hiz:%13 Kilo:%8")
 
     elif any(k in race_type_lower for k in ['maiden', 'mdn', 'md']):
         # MAİDEN: İdman ve pedigri en değerli, derece yok veya az
@@ -4088,24 +4088,18 @@ def analyze_race():
                     bounce_score_val = calculate_bounce_score(races)
                     
                     # FAZ 5.2 + FAZ 6.1: HP (Handikap) Puanı Hesabı
-                    # Faz 3.2 Revizyonu:
-                    # TJK Handikap mantığı: HP yüksek = at daha ağır taşır = at güçlü SAYILIR
-                    # Ama daha fazla kilo taşıdığı için bu bir dezavantaj.
-                    # İki etki çelişiyor → sadece kilo etkisini (weight_impact) kullan,
-                    # HP'yi daha küçük bir "güç sinyali" olarak tut:
-                    #   - Grubun ortasına (50) yakın tut, hafif ödüllendirme
-                    #   - Handikap'ta HP ağırlığını düşür (dynamic weights'te hallolur)
+                    # Faz 3.2b Kesinleştirildi: Yüksek HP = İYİ performans (kullanıcı onayı)
+                    # HP yükseldikçe at daha güçlü demektir → doğrusal ödüllendirme
+                    # Aralık: [15, 90] — en düşük HP'li at 15, en yüksek 90 alır
                     raw_hp = str(original_horse.get('hp', '')).strip()
                     horse_hp = int(raw_hp) if raw_hp.isdigit() else (race_min_hp if valid_hps else 50)
                     if not valid_hps or race_max_hp == race_min_hp:
                         hp_score_val = 50.0
                     else:
-                        # Faz 3.2: HP'yi GÜÇ sinyali olarak kullan (yüksek HP = güçlü at),
-                        # ama çok geniş aralık verme → [35, 65] arasında tut
-                        # Formül: normalize 0-100, sonra 35-65 aralığına sıkıştır
-                        hp_norm = round(((horse_hp - race_min_hp) / hp_range) * 100, 1)
-                        # 35-65 aralığı: hp_score = 35 + hp_norm * 0.30
-                        hp_score_val = round(35 + hp_norm * 0.30, 1)
+                        # Normalize 0-100, sonra 15-90 aralığına map'le
+                        hp_norm = ((horse_hp - race_min_hp) / hp_range) * 100.0
+                        # 15-90 aralığı: hp_score = 15 + hp_norm * 0.75
+                        hp_score_val = round(15 + hp_norm * 0.75, 1)
                         hp_score_val = max(0.0, min(100.0, hp_score_val))
 
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
