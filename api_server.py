@@ -2247,13 +2247,17 @@ def calculate_late_kick(races):
 def calculate_form_trend(races):
     """
     Form Grafiği (Form Trend) - At gelişiyor mu, geriliyor mu?
-    Son 4 yarıştaki sıralamaların ağırlıklı ortalaması
+    Son 4 yarıştaki sıralamaların ağırlıklı ortalaması.
+    
+    İyileştirmeler (Faz 3.3):
+    - Son yarış bonusu: 1. bitirmek +15, 2. +8, 3. +4 puan ekler
+    - Momentum çarpanı: üst üste 3 iyileşme → ×1.15, üst üste 3 kötüleşme → ×0.85
     """
     if len(races) < 2:
         return 0.0, 50.0, "Stabil"
     
     ranks = []
-    for race in races[:4]:
+    for race in races[:6]:
         try:
             rank = int(re.sub(r'[^0-9]', '', race.get('rank', '0')) or 0)
             if rank > 0:
@@ -2271,22 +2275,41 @@ def calculate_form_trend(races):
     
     if len(x) >= 2:
         slope, _ = np.polyfit(x, y, 1)
-        # Negatif slope = sıralama düşüyor = performans artıyor
-        trend_value = -slope
+        trend_value = -slope  # Negatif slope = sıralama düşüyor = iyileşme
     else:
         trend_value = 0
 
     # Trend skorunu 0-100 aralığına normalize et
-    # trend_value: -3 ile +3 arası olabilir
     trend_score = 50 + (trend_value * 15)
     trend_score = max(0, min(100, trend_score))
+
+    # --- Faz 3.3: Son Yarış Bonusu ---
+    last_rank = ranks[0] if ranks else 0
+    if last_rank == 1:
+        trend_score = min(100, trend_score + 15)
+    elif last_rank == 2:
+        trend_score = min(100, trend_score + 8)
+    elif last_rank == 3:
+        trend_score = min(100, trend_score + 4)
+    elif last_rank >= 7:
+        trend_score = max(0, trend_score - 5)  # Geride bitirme cezası
+
+    # --- Faz 3.3: Momentum Çarpanı (son 3 yarış) ---
+    if len(ranks) >= 3:
+        last3 = ranks[:3]  # [en yeni, ..., en eski]
+        # Üst üste iyileşme: ranks azalıyor (last3[0] < last3[1] < last3[2])
+        if last3[0] < last3[1] < last3[2]:
+            trend_score = min(100, trend_score * 1.15)
+        # Üst üste kötüleşme: ranks artıyor
+        elif last3[0] > last3[1] > last3[2]:
+            trend_score = max(0, trend_score * 0.85)
     
     if trend_value > 0.5:
-        label = "Yükselişte 📈"
+        label = "Yukseliste"
     elif trend_value > 0.1:
-        label = "İyileşiyor"
+        label = "Iyilesiyot"
     elif trend_value < -0.5:
-        label = "Düşüşte 📉"
+        label = "Dususte"
     elif trend_value < -0.1:
         label = "Geriliyor"
     else:
@@ -3472,35 +3495,36 @@ def calculate_dynamic_weights(metrics, race_type='default'):
     race_type_lower = (race_type or 'default').lower()
 
     if any(k in race_type_lower for k in ['handikap', 'hk', 'handicap']):
-        # HANDIKAP: HP belirleyici, kilo ve derece kritik
-        w['hp_score']              = 0.15  # %8 → %15 (handikaplı koşunun özü)
-        w['weight_impact']         = 0.09  # %6 → %9  (sıklet etkisi artar)
-        w['agf_score']             = 0.07  # AGF aktif: piyasa sinyali değerli
-        w['degree_avg']            = 0.14  # Biraz düşür (HP ile kompanze)
-        w['form_trend']            = 0.10  # Düşür (HP dominant)
+        # HANDIKAP Faz 3.2: HP artık dar aralıkta (35-65), dominant etki yaratmamalı
+        # Form ve AGF öne çıkıyor — kazananlar genellikle formda veya piyasa fark etmiş
+        w['hp_score']              = 0.07  # %15 → %7  (HP artık dar aralık, dominant değil)
+        w['weight_impact']         = 0.09  # %6 → %9  (sıklet etkisi önemli)
+        w['agf_score']             = 0.10  # %7 → %10 (piyasa sinyali değerli)
+        w['degree_avg']            = 0.15  # Biraz yükselt (HP baskısı azaldı)
+        w['form_trend']            = 0.17  # %10 → %17 (kazananlar formda oluyor)
         w['trainer_score']         = 0.06  # K14: Antrenör win-rate (handikapta değerli)
-        print(f"[WEIGHTS] Handikap profili aktif → HP:%15 Kilo:%9 AGF:%7 Antrenör:%6")
+        print(f"[WEIGHTS] Handikap profili aktif (Faz3.2) → HP:%7 Form:%17 AGF:%10 Kilo:%9 Antrenor:%6")
 
     elif any(k in race_type_lower for k in ['maiden', 'mdn', 'md']):
         # MAİDEN: İdman ve pedigri en değerli, derece yok veya az
         w['pedigree']              = 0.18  # Pedigri max
         w['training_fitness']      = 0.12  # İdman kritik
         w['training_degree_score'] = 0.10  # İdman projeksiyon
-        w['agf_score']             = 0.10  # AGF piyasa beklentisi (data yok = piyasa bilir)
-        w['degree_avg']            = 0.08  # Az veri = düşür
-        w['form_trend']            = 0.06  # Az yarış = düşür
-        w['degree_stability']      = 0.03  # Az veri = düşür
+        w['agf_score']             = 0.15  # %10 → %15 (Faz 3.4: Maiden'da piyasa en iyi ongoru)
+        w['degree_avg']            = 0.06  # Az veri = dusur (Faz 3.4)
+        w['form_trend']            = 0.05  # Az yaris = dusur (Faz 3.4)
+        w['degree_stability']      = 0.02  # Az veri = dusur (Faz 3.4)
         w['trainer_score']         = 0.09  # K14: Antrenör kritik maiden'da (“at bilinmiyor, antrenör biliniyor”)
-        print(f"[WEIGHTS] Maiden profili aktif → Pedigri:%18 İdman:%22 AGF:%10 Antrenör:%9")
+        print(f"[WEIGHTS] Maiden profili aktif (Faz3.4) -> Pedigri:%18 Idman:%22 AGF:%15 Antrenor:%10")
 
-    elif any(k in race_type_lower for k in ['şartlı', 'sartli', 'şartli', 'kv', 'conditions']):
-        # ŞARTLI: Form ve hız dominant, AGF orta seviye
-        w['form_trend']            = 0.16  # Form kritik
-        w['degree_avg']            = 0.18  # Hız kritik
-        w['agf_score']             = 0.05  # AGF biraz aktif
-        w['hp_score']              = 0.04  # HP şartlıda az önemli
-        w['trainer_score']         = 0.05  # K14: Antrenör şartlıda orta önem
-        print(f"[WEIGHTS] Şartlı profili aktif → Form:%16 Hız:%18 AGF:%5 Antrenör:%5")
+    elif any(k in race_type_lower for k in ['sartli', 'kv', 'conditions']) or 'şartl' in race_type_lower:
+        # ŞARTLI/KV Faz 3.3: Form kazananları daha iyi buluyor
+        w['form_trend']            = 0.18  # %16 → %18 (form dominant)
+        w['degree_avg']            = 0.16  # %18 → %16 (form kadar önemli)
+        w['agf_score']             = 0.05
+        w['hp_score']              = 0.04
+        w['trainer_score']         = 0.05
+        print(f"[WEIGHTS] Sartli/KV profili aktif (Faz3.3) → Form:%18 Hiz:%16 AGF:%5 Antrenor:%5")
 
     elif any(k in race_type_lower for k in ['satış', 'satis', 'claiming']):
         # SATIŞ: Piyasa sinyali (AGF) çok önemli, belirsizlik yüksek
@@ -4063,25 +4087,25 @@ def analyze_race():
                     
                     bounce_score_val = calculate_bounce_score(races)
                     
-                    # FAZ 5.2 + FAZ 6.1: HP (Handikap) Puanı Hesabı — TERS ÇEVRİLMİŞ
-                    # Yüksek HP = ağır taşıma = DEZAVANTAJ → düşük skor
-                    # Düşük HP = hafif = AVANTAJ → yüksek skor
+                    # FAZ 5.2 + FAZ 6.1: HP (Handikap) Puanı Hesabı
+                    # Faz 3.2 Revizyonu:
+                    # TJK Handikap mantığı: HP yüksek = at daha ağır taşır = at güçlü SAYILIR
+                    # Ama daha fazla kilo taşıdığı için bu bir dezavantaj.
+                    # İki etki çelişiyor → sadece kilo etkisini (weight_impact) kullan,
+                    # HP'yi daha küçük bir "güç sinyali" olarak tut:
+                    #   - Grubun ortasına (50) yakın tut, hafif ödüllendirme
+                    #   - Handikap'ta HP ağırlığını düşür (dynamic weights'te hallolur)
                     raw_hp = str(original_horse.get('hp', '')).strip()
                     horse_hp = int(raw_hp) if raw_hp.isdigit() else (race_min_hp if valid_hps else 50)
                     if not valid_hps or race_max_hp == race_min_hp:
-                        hp_score_val = 50.0  # Yarışta hiç kimsede HP yoksa veya herkes eşitse
+                        hp_score_val = 50.0
                     else:
-                        # FAZ 6.1: Ters formül — düşük HP = yüksek skor
-                        hp_base = round(((race_max_hp - horse_hp) / hp_range) * 100, 1)
-                        # Mesafe etkileşimi: uzun mesafede HP farkı daha kritik
-                        try:
-                            dist_m = int(str(target_distance).replace(' ', '').replace('m', ''))
-                        except:
-                            dist_m = 1600
-                        # 1200m → 0.85x, 1600m → 1.0x, 2000m → 1.15x, 2400m → 1.30x
-                        dist_factor = 0.85 + max(0, (dist_m - 1200)) / 2666
-                        # Mesafe etkisini uygula (merkez 50'den sapma büyür/küçülür)
-                        hp_score_val = round(50 + (hp_base - 50) * dist_factor, 1)
+                        # Faz 3.2: HP'yi GÜÇ sinyali olarak kullan (yüksek HP = güçlü at),
+                        # ama çok geniş aralık verme → [35, 65] arasında tut
+                        # Formül: normalize 0-100, sonra 35-65 aralığına sıkıştır
+                        hp_norm = round(((horse_hp - race_min_hp) / hp_range) * 100, 1)
+                        # 35-65 aralığı: hp_score = 35 + hp_norm * 0.30
+                        hp_score_val = round(35 + hp_norm * 0.30, 1)
                         hp_score_val = max(0.0, min(100.0, hp_score_val))
 
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
