@@ -3495,15 +3495,14 @@ def calculate_dynamic_weights(metrics, race_type='default'):
     race_type_lower = (race_type or 'default').lower()
 
     if any(k in race_type_lower for k in ['handikap', 'hk', 'handicap']):
-        # HANDIKAP Faz 3.2b: HP = güç sinyali (onaylandı), geniş aralık [15-90]
-        # HP + Form birlikte dominant → kazananları bulmaya yardımcı
-        w['hp_score']              = 0.12  # %7 → %12 (HP güç sinyali kesinleşti)
-        w['weight_impact']         = 0.08  # Sıklet etkisi
-        w['agf_score']             = 0.10  # Piyasa sinyali değerli
-        w['degree_avg']            = 0.13  # Hız verisi
-        w['form_trend']            = 0.16  # Form/momentum kritik
-        w['trainer_score']         = 0.06  # Antrenör
-        print(f"[WEIGHTS] Handikap profili aktif (Faz3.2b) -> HP:%12 Form:%16 AGF:%10 Hiz:%13 Kilo:%8")
+        # HANDIKAP: HP + Form dominant, AGF KAPALI
+        w['hp_score']              = 0.12
+        w['weight_impact']         = 0.08
+        w['agf_score']             = 0.00  # AGF KAPALI (kullanici karari)
+        w['degree_avg']            = 0.15
+        w['form_trend']            = 0.18
+        w['trainer_score']         = 0.06
+        print(f"[WEIGHTS] Handikap -> HP:%12 Form:%18 AGF:OFF Hiz:%15 Kilo:%8")
 
     elif any(k in race_type_lower for k in ['maiden', 'mdn', 'md']):
         # MAİDEN: İdman ve pedigri en değerli, derece yok veya az
@@ -3517,23 +3516,45 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['trainer_score']         = 0.09  # K14: Antrenör kritik maiden'da (“at bilinmiyor, antrenör biliniyor”)
         print(f"[WEIGHTS] Maiden profili aktif (Faz3.4) -> Pedigri:%18 Idman:%22 AGF:%15 Antrenor:%10")
 
-    elif any(k in race_type_lower for k in ['sartli', 'kv', 'conditions']) or 'şartl' in race_type_lower:
-        # ŞARTLI/KV Faz 3.3: Form kazananları daha iyi buluyor
-        w['form_trend']            = 0.18  # %16 → %18 (form dominant)
-        w['degree_avg']            = 0.16  # %18 → %16 (form kadar önemli)
-        w['agf_score']             = 0.05
+    elif any(k in race_type_lower for k in ['sartli', 'conditions']) or 'şartl' in race_type_lower:
+        # SARTLI: Sadece Şartlı 1'de AGF aktif, diğerlerinde kapalı
+        is_sartli_1 = '1' in race_type_lower and not any(c in race_type_lower for c in ['10', '11', '12', '13', '14', '15'])
+        if is_sartli_1:
+            # ŞARTLI 1: AGF aktif (veri az, piyasa önemli)
+            w['form_trend']            = 0.14
+            w['degree_avg']            = 0.14
+            w['agf_score']             = 0.15  # AGF AKTIF (sadece şartlı 1)
+            w['pedigree']              = 0.10
+            w['training_fitness']      = 0.08
+            w['hp_score']              = 0.04
+            w['trainer_score']         = 0.07
+            print(f"[WEIGHTS] Sartli 1 -> Form:%14 Hiz:%14 AGF:%15 (AKTIF)")
+        else:
+            # ŞARTLI 2+: AGF kapalı, form ve hız dominant
+            w['form_trend']            = 0.18
+            w['degree_avg']            = 0.16
+            w['agf_score']             = 0.00  # AGF KAPALI
+            w['hp_score']              = 0.04
+            w['trainer_score']         = 0.05
+            print(f"[WEIGHTS] Sartli 2+ -> Form:%18 Hiz:%16 AGF:OFF")
+
+    elif 'kv' in race_type_lower:
+        # KV: Form ve hız dominant, AGF kapalı
+        w['form_trend']            = 0.18
+        w['degree_avg']            = 0.18
+        w['agf_score']             = 0.00  # AGF KAPALI
         w['hp_score']              = 0.04
         w['trainer_score']         = 0.05
-        print(f"[WEIGHTS] Sartli/KV profili aktif (Faz3.3) → Form:%18 Hiz:%16 AGF:%5 Antrenor:%5")
+        print(f"[WEIGHTS] KV -> Form:%18 Hiz:%18 AGF:OFF")
 
-    elif any(k in race_type_lower for k in ['satış', 'satis', 'claiming']):
-        # SATIŞ: Piyasa sinyali (AGF) çok önemli, belirsizlik yüksek
-        w['agf_score']             = 0.12  # AGF max: piyasa sinyali kritik
-        w['form_trend']            = 0.14
-        w['degree_avg']            = 0.15
+    elif any(k in race_type_lower for k in ['satiş', 'satis', 'claiming']):
+        # SATIS: AGF kapalı, form ve derece
+        w['agf_score']             = 0.00  # AGF KAPALI
+        w['form_trend']            = 0.16
+        w['degree_avg']            = 0.17
         w['jockey_score']          = 0.08
-        w['trainer_score']         = 0.05  # K14: Antrenör satışta da değerli (belirsizlik yüksek)
-        print(f"[WEIGHTS] Satış profili aktif → AGF:%12 Form:%14 Antrenör:%5")
+        w['trainer_score']         = 0.05
+        print(f"[WEIGHTS] Satis -> Form:%16 Hiz:%17 AGF:OFF")
 
     # ── SENARYO: MAİDEN (İlk koşu — hiç yarış verisi yok) ───────────────────
     if total_races == 0:
@@ -3650,9 +3671,68 @@ def calculate_data_confidence(metrics):
     return confidence, label
 
 
+def calculate_group_adjustment(horse_races, current_race_type):
+    """
+    Faz 3 Konsensüs: Atın geçmiş koştuğu gruplar ile mevcut koşu grubunu karşılaştır.
+    
+    Eğer at daha düşük gruplarda koşup başarılı olduysa → skor düşürülür
+    Eğer at aynı veya daha yüksek gruplarda başarılı olduysa → skor korunur/artırılır
+    
+    Returns:
+        float: Çarpan (0.80 - 1.15 arası)
+    """
+    if not horse_races:
+        return 1.0
+    
+    current_mult = get_class_multiplier(current_race_type)
+    
+    adjustments = []
+    for race in horse_races[:6]:
+        race_type = race.get('raceType', '') or race.get('group', '')
+        past_mult = get_class_multiplier(race_type)
+        try:
+            rank = int(re.sub(r'[^0-9]', '', race.get('rank', '0')) or 0)
+        except:
+            rank = 0
+        
+        if rank <= 0:
+            continue
+            
+        # Grup farkı: pozitif = geçmiş koşu daha kolay, negatif = daha zor
+        # current_mult büyükse mevcut koşu daha zor
+        group_diff = current_mult - past_mult
+        
+        if group_diff > 0.03:
+            # Mevcut koşu GEÇMİŞTEN DAHA ZOR → geçmiş başarı daha az değerli
+            if rank <= 3:
+                adjustments.append(0.90)  # Kolay grupta top3 → şimdi daha zor
+            else:
+                adjustments.append(0.85)  # Kolay grupta zaten kötü → daha da kötü
+        elif group_diff < -0.03:
+            # Mevcut koşu GEÇMİŞTEN DAHA KOLAY → geçmiş başarı daha değerli
+            if rank <= 3:
+                adjustments.append(1.15)  # Zor grupta top3 → burada daha iyi olmalı
+            else:
+                adjustments.append(1.00)  # Zor grupta kötüyse, kolay grupta da belirsiz
+        else:
+            # Aynı seviye → nötr
+            adjustments.append(1.0)
+    
+    if not adjustments:
+        return 1.0
+    
+    return round(np.mean(adjustments), 3)
+
+
 def calculate_master_score(metrics):
     """
-    FAZ 4.7: 11 katmanlı, tamamen dinamik ağırlıklı Master Tahmin Skoru.
+    FAZ 4.7 + Konsensüs: Dinamik ağırlıklı Master Tahmin Skoru.
+    
+    Faz 3 İyileştirmesi:
+    - Konsensüs entegrasyonu: Her katmanın skoru 50'nin üstündeyse "oy" sayılır
+    - Grup ayarlaması: Geçmiş koşuların grup seviyesi dikkate alınır
+    - Final = WeightedScore * 0.75 + ConsensusScore * 0.25
+    
     calculate_dynamic_weights() ile belirlenen ağırlıklar uygulanır.
 
     Returns:
@@ -3667,6 +3747,10 @@ def calculate_master_score(metrics):
 
     weighted_sum  = 0.0
     weight_total  = 0.0
+    
+    # Konsensüs: kaç katman bu atı 50'nin üstünde (pozitif sinyal) görüyor?
+    positive_layers = 0
+    total_layers = 0
 
     for key, weight in weights.items():
         if weight <= 0:
@@ -3674,9 +3758,32 @@ def calculate_master_score(metrics):
         value = metrics.get(key, 50.0)
         weighted_sum  += value * weight
         weight_total  += weight
+        
+        # Konsensüs sayımı: Her aktif katman için skor > 50 ise pozitif oy
+        total_layers += 1
+        if value > 55:      # 55+ = net pozitif sinyal
+            positive_layers += 1
 
-    master_score = round(weighted_sum / weight_total, 1) if weight_total > 0 else 50.0
-    return master_score, weights, confidence, confidence_label
+    base_score = round(weighted_sum / weight_total, 1) if weight_total > 0 else 50.0
+    
+    # Konsensüs skoru: 0-100 aralığında
+    consensus_ratio = positive_layers / max(total_layers, 1)
+    consensus_score = consensus_ratio * 100.0
+    
+    # Grup ayarlaması: geçmiş koşuların grup seviyesi etkisi
+    horse_races = metrics.get('_horse_races', [])
+    group_adj = calculate_group_adjustment(horse_races, race_type)
+    
+    # Final: Ağırlıklı Skor × %75 + Konsensüs × %25, sonra grup ayarla
+    final_score = (base_score * 0.75 + consensus_score * 0.25) * group_adj
+    final_score = max(0, min(100, round(final_score, 1)))
+    
+    # Debug log
+    print(f"    [CONSENSUS] layers={positive_layers}/{total_layers} "
+          f"consensus={consensus_score:.0f} group_adj={group_adj:.3f} "
+          f"base={base_score:.1f} final={final_score:.1f}")
+    
+    return final_score, weights, confidence, confidence_label
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -4132,6 +4239,7 @@ def analyze_race():
                         '_has_training':  training_data is not None,
                         '_has_pedigree':  False,  # Pe4.6 sonrası güncellenecek
                         '_race_type':     race_type,  # FAZ 6.2: Koşu tipine özel ağırlık profili
+                        '_horse_races':   races,       # Konsensüs: grup ayarlaması için geçmiş yarışlar
                     }
                     # FAZ 4.6: Pedigri (baba) skoru — cache'li TJK çekimi
                     sire_name = original_horse.get('father', '').strip()
