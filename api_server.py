@@ -3452,11 +3452,10 @@ def calculate_agf_score(agf_str, all_agf_values):
 
 def calculate_dynamic_weights(metrics, race_type='default'):
     """
-    FAZ 4.7: Her at için veri durumuna göre 11 katmanın ağırlıklarını
+    FAZ A + 4.7: Her at için veri durumuna göre katmanların ağırlıklarını
     tamamen dinamik hesaplar. Toplam her zaman 1.0 (%100) olur.
 
-    Temel kural: Veri yoksa → o katmanın ağırlığı sıfırlanır →
-    boşluk diğer aktif katmanlara orantılı dağıtılır.
+    ÖLÜ KATMANLAR: track_suit ve trainer_score devre dışı bırakıldı.
 
     Args:
         metrics (dict): PASS1'den gelen ham metrikler
@@ -3471,92 +3470,87 @@ def calculate_dynamic_weights(metrics, race_type='default'):
     has_pedigree_data = metrics.get('_has_pedigree', False)
     pedigree_weight   = float(metrics.get('pedigree_weight', 0.03))
 
-    # ── VARSAYİLAN TEMEL AĞİRLIKLAR ────────────────────────────────────────────────
+    # ══ FAZ A: TEMEL AĞIRLIKLAR (Ölü katmanlar sıfırlandı) ══════════════
     w = {
-        'degree_avg':            0.16,  # K1: Normalize Hız Skoru
-        'degree_trend':          0.07,  # K1b: Derece trendi
-        'degree_stability':      0.06,  # K10: İstikrar
-        'training_fitness':      0.05,  # K5a: İdman zamanlama
-        'training_degree_score': 0.05,  # K5b: İdman projeksiyon
-        'track_suit':            0.08,  # K3: Pist uyumu
-        'form_trend':            0.13,  # K4: Form & momentum
-        'distance_suit':         0.07,  # K2: Mesafe uyumu
-        'weight_impact':         0.06,  # K6: Sıklet etkisi
-        'jockey_score':          0.07,  # K7: Jokey analizi
-        'bounce_score':          0.06,  # K8: Dinlenme
-        'pace_score':            0.03,  # K9: Tempo senaryosu
-        'pedigree':              0.03,  # K11: Pedigri (baz=%3, dinamik yukarı gidebilir)
-        'hp_score':              0.08,  # FAZ 5.2 (K12): Handikap Sınıf Etkisi
-        'agf_score':             0.00,  # FAZ 6.2 (K13): AGF Piyasa Sinyali (koşu tipine göre aktif)
-        'trainer_score':         0.00,  # FAZ 6.2 (K14): Antrenör Win-Rate (koşu tipine göre aktif)
+        'degree_avg':            0.20,
+        'degree_trend':          0.08,
+        'degree_stability':      0.06,
+        'training_fitness':      0.06,
+        'training_degree_score': 0.05,
+        'track_suit':            0.00,  # DEVRE DISI
+        'form_trend':            0.18,
+        'distance_suit':         0.08,
+        'weight_impact':         0.06,
+        'jockey_score':          0.07,
+        'bounce_score':          0.08,
+        'pace_score':            0.03,
+        'pedigree':              0.03,
+        'hp_score':              0.08,
+        'agf_score':             0.00,
+        'trainer_score':         0.00,  # DEVRE DISI
     }
 
-    # ── FAZ 6.2: KOŞU TİPİNE ÖZEL AĞIRLIK PROFİLLERİ ──────────────────────────────
+    # ── KOŞU TİPİNE ÖZEL AĞIRLIK PROFİLLERİ ────────────────────
     race_type_lower = (race_type or 'default').lower()
 
     if any(k in race_type_lower for k in ['handikap', 'hk', 'handicap']):
-        # HANDIKAP: HP + Form dominant, AGF KAPALI
-        w['hp_score']              = 0.12
-        w['weight_impact']         = 0.08
-        w['agf_score']             = 0.00  # AGF KAPALI (kullanici karari)
-        w['degree_avg']            = 0.15
-        w['form_trend']            = 0.18
-        w['trainer_score']         = 0.06
-        print(f"[WEIGHTS] Handikap -> HP:%12 Form:%18 AGF:OFF Hiz:%15 Kilo:%8")
+        w['hp_score']              = 0.14
+        w['weight_impact']         = 0.09
+        w['degree_avg']            = 0.18
+        w['form_trend']            = 0.20
+        w['bounce_score']          = 0.09
+        w['distance_suit']         = 0.08
+        w['jockey_score']          = 0.08
+        print(f"[WEIGHTS] Handikap -> HP:%14 Form:%20 Hiz:%18 Kilo:%9")
 
     elif any(k in race_type_lower for k in ['maiden', 'mdn', 'md']):
-        # MAİDEN: İdman ve pedigri en değerli, derece yok veya az
-        w['pedigree']              = 0.18  # Pedigri max
-        w['training_fitness']      = 0.12  # İdman kritik
-        w['training_degree_score'] = 0.10  # İdman projeksiyon
-        w['agf_score']             = 0.15  # %10 → %15 (Faz 3.4: Maiden'da piyasa en iyi ongoru)
-        w['degree_avg']            = 0.06  # Az veri = dusur (Faz 3.4)
-        w['form_trend']            = 0.05  # Az yaris = dusur (Faz 3.4)
-        w['degree_stability']      = 0.02  # Az veri = dusur (Faz 3.4)
-        w['trainer_score']         = 0.09  # K14: Antrenör kritik maiden'da (“at bilinmiyor, antrenör biliniyor”)
-        print(f"[WEIGHTS] Maiden profili aktif (Faz3.4) -> Pedigri:%18 Idman:%22 AGF:%15 Antrenor:%10")
+        w['pedigree']              = 0.18
+        w['training_fitness']      = 0.14
+        w['training_degree_score'] = 0.10
+        w['agf_score']             = 0.20
+        w['degree_avg']            = 0.06
+        w['form_trend']            = 0.05
+        w['degree_stability']      = 0.02
+        w['jockey_score']          = 0.10
+        print(f"[WEIGHTS] Maiden -> Pedigri:%18 Idman:%24 AGF:%20 Jokey:%10")
 
     elif any(k in race_type_lower for k in ['sartli', 'conditions']) or 'şartl' in race_type_lower:
-        # SARTLI: Sadece Şartlı 1'de AGF aktif, diğerlerinde kapalı
         is_sartli_1 = '1' in race_type_lower and not any(c in race_type_lower for c in ['10', '11', '12', '13', '14', '15'])
         if is_sartli_1:
-            # ŞARTLI 1: AGF aktif (veri az, piyasa önemli)
-            w['form_trend']            = 0.14
-            w['degree_avg']            = 0.14
-            w['agf_score']             = 0.15  # AGF AKTIF (sadece şartlı 1)
-            w['pedigree']              = 0.10
-            w['training_fitness']      = 0.08
-            w['hp_score']              = 0.04
-            w['trainer_score']         = 0.07
-            print(f"[WEIGHTS] Sartli 1 -> Form:%14 Hiz:%14 AGF:%15 (AKTIF)")
-        else:
-            # ŞARTLI 2+: AGF kapalı, form ve hız dominant
-            w['form_trend']            = 0.18
+            w['form_trend']            = 0.16
             w['degree_avg']            = 0.16
-            w['agf_score']             = 0.00  # AGF KAPALI
+            w['agf_score']             = 0.15
+            w['pedigree']              = 0.10
+            w['training_fitness']      = 0.10
             w['hp_score']              = 0.04
-            w['trainer_score']         = 0.05
-            print(f"[WEIGHTS] Sartli 2+ -> Form:%18 Hiz:%16 AGF:OFF")
+            w['jockey_score']          = 0.09
+            print(f"[WEIGHTS] Sartli 1 -> Form:%16 Hiz:%16 AGF:%15")
+        else:
+            w['form_trend']            = 0.22
+            w['degree_avg']            = 0.20
+            w['hp_score']              = 0.05
+            w['bounce_score']          = 0.09
+            w['distance_suit']         = 0.09
+            w['jockey_score']          = 0.08
+            print(f"[WEIGHTS] Sartli 2+ -> Form:%22 Hiz:%20 Bounce:%9")
 
     elif 'kv' in race_type_lower:
-        # KV: Form ve hız dominant, AGF kapalı
-        w['form_trend']            = 0.18
-        w['degree_avg']            = 0.18
-        w['agf_score']             = 0.00  # AGF KAPALI
+        w['form_trend']            = 0.22
+        w['degree_avg']            = 0.22
         w['hp_score']              = 0.04
-        w['trainer_score']         = 0.05
-        print(f"[WEIGHTS] KV -> Form:%18 Hiz:%18 AGF:OFF")
+        w['bounce_score']          = 0.08
+        w['distance_suit']         = 0.08
+        w['jockey_score']          = 0.08
+        print(f"[WEIGHTS] KV -> Form:%22 Hiz:%22 Bounce:%8")
 
     elif any(k in race_type_lower for k in ['satiş', 'satis', 'claiming']):
-        # SATIS: AGF kapalı, form ve derece
-        w['agf_score']             = 0.00  # AGF KAPALI
-        w['form_trend']            = 0.16
-        w['degree_avg']            = 0.17
+        w['form_trend']            = 0.20
+        w['degree_avg']            = 0.20
         w['jockey_score']          = 0.08
-        w['trainer_score']         = 0.05
-        print(f"[WEIGHTS] Satis -> Form:%16 Hiz:%17 AGF:OFF")
+        w['bounce_score']          = 0.08
+        print(f"[WEIGHTS] Satis -> Form:%20 Hiz:%20 Bounce:%8")
 
-    # ── SENARYO: MAİDEN (İlk koşu — hiç yarış verisi yok) ───────────────────
+    # ── SENARYO: MAİDEN (İlk koşu — hiç yarış verisi yok) ──────────
     if total_races == 0:
         w['degree_avg']            = 0.0
         w['degree_trend']          = 0.0
@@ -3565,48 +3559,39 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['track_suit']            = 0.0
         w['distance_suit']         = 0.0
         w['bounce_score']          = 0.0
-        w['hp_score']              *= 0.50 # Maiden'da HP çok güvenilir değil, yarıya düşür
+        w['hp_score']              *= 0.50
         w['training_fitness']      = 0.25 if has_training else 0.0
         w['training_degree_score'] = 0.15 if has_training else 0.0
         w['jockey_score']          = 0.15
         w['pace_score']            = 0.05
         w['weight_impact']         = 0.05
-        w['pedigree']              = 0.20  # Tek referans: genetik
-        # Normaliza edilecek, toplam kontrol edilecek
+        w['pedigree']              = 0.20
 
-    # ── SENARYO: ÇOK AZ VERİ (1-2 yarış) ─────────────────────────────────
     elif total_races <= 2:
-        w['degree_avg']       *= 0.55  # Az veri = güven düşük
+        w['degree_avg']       *= 0.55
         w['form_trend']       *= 0.50
         w['degree_stability'] *= 0.30
         if has_training:
             w['training_fitness']      *= 1.40
             w['training_degree_score'] *= 1.30
-        w['pedigree'] = pedigree_weight  # Dinamik pedigri ağırlığı
-
-    else:
-        # ── SENARYO: NORMAL (3+ yarış) ─────────────────────────────────
-        # Pist tecrübesi yoksa pist katmanı kapat
-        if track_races == 0:
-            w['track_suit'] *= 0.3  # Hedef pistte hiç koşmamış
-        # Mesafe tecrübesi yoksa mesafe katmanı kapat
-        if dist_races == 0:
-            w['distance_suit'] *= 0.3  # Hedef mesafede hiç koşmamış
-        # Pedigri ağırlığını dinamik değerle güncelle
         w['pedigree'] = pedigree_weight
 
-    # ── İDMAN VERİSİ YOK → idman katmanlarını kapat ──────────────────
+    else:
+        if dist_races == 0:
+            w['distance_suit'] *= 0.3
+        w['pedigree'] = pedigree_weight
+
+    # ── İDMAN VERİSİ YOK → idman katmanlarını kapat ────────────────
     if not has_training:
         freed = w['training_fitness'] + w['training_degree_score']
         w['training_fitness']      = 0.0
         w['training_degree_score'] = 0.0
-        # Serbest ağırlığı derece + form'a dağıt
         w['degree_avg']   += freed * 0.50
         w['form_trend']   += freed * 0.25
         w['pedigree']     += freed * 0.15
         w['jockey_score'] += freed * 0.10
 
-    # ── TOPLAMI %100'e normalize et ────────────────────────────────
+    # ── TOPLAMI %100'e normalize et ─────────────────────────────────
     total = sum(w.values())
     if total > 0:
         w = {k: round(v / total, 4) for k, v in w.items()}
@@ -4175,19 +4160,16 @@ def analyze_race():
                     
                     bounce_score_val = calculate_bounce_score(races)
                     
-                    # FAZ 5.2 + FAZ 6.1: HP (Handikap) Puanı Hesabı
-                    # Faz 3.2b Kesinleştirildi: Yüksek HP = İYİ performans (kullanıcı onayı)
-                    # HP yükseldikçe at daha güçlü demektir → doğrusal ödüllendirme
-                    # Aralık: [15, 90] — en düşük HP'li at 15, en yüksek 90 alır
+                    # ═══ FAZ A.2: HP Puanı — KOŞU-İÇİ GÖRELİ (TAM ARALIK 0-100) ═══
+                    # Yüksek HP = güçlü at → doğrusal ödüllendirme
+                    # Eski dar [15-90] aralığı kaldırıldı → tam [0-100] normalizasyon
                     raw_hp = str(original_horse.get('hp', '')).strip()
                     horse_hp = int(raw_hp) if raw_hp.isdigit() else (race_min_hp if valid_hps else 50)
                     if not valid_hps or race_max_hp == race_min_hp:
                         hp_score_val = 50.0
                     else:
-                        # Normalize 0-100, sonra 15-90 aralığına map'le
-                        hp_norm = ((horse_hp - race_min_hp) / hp_range) * 100.0
-                        # 15-90 aralığı: hp_score = 15 + hp_norm * 0.75
-                        hp_score_val = round(15 + hp_norm * 0.75, 1)
+                        # TAM ARALIK: en düşük HP=0, en yüksek HP=100
+                        hp_score_val = round(((horse_hp - race_min_hp) / hp_range) * 100.0, 1)
                         hp_score_val = max(0.0, min(100.0, hp_score_val))
 
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
@@ -4545,46 +4527,52 @@ def analyze_race():
         # kaç katmanda Top-N'de olduğunu say → çoklu katmanda güçlü
         # olan atlar ödüllendirilir, tek katmanda parlayan cezalandırılır
         # ═══════════════════════════════════════════════════════════
+        # ═══ FAZ A.1: KONSENSÜS — Ölü katmanlar çıkarıldı, std kontrolü eklendi ═══
         _CONSENSUS_LAYERS = [
             'degree_avg', 'form_trend', 'hp_score', 'distance_suit',
-            'track_suit', 'training_fitness', 'jockey_score',
+            'training_fitness', 'jockey_score',
             'weight_impact', 'bounce_score', 'degree_stability',
+            # track_suit ÇIKARILDI (std=0, hep 50)
+            # trainer_score ÇIKARILDI (veri güvenilir değil)
         ]
         n_horses = len(analyzed_horses)
-        top_n = max(3, n_horses // 3)  # Top-N: at sayısının 1/3'ü (min 3)
+        top_n = max(3, n_horses // 3)
 
         if n_horses >= 3:
-            # Her at için konsensüs puanı hesapla
-            consensus_counts = {}  # horse_name -> kaç katmanda top-N
+            consensus_counts = {}
+            active_layer_count = 0
+
             for layer in _CONSENSUS_LAYERS:
-                # Bu katmandaki tüm atların skorlarını topla
                 layer_scores = []
                 for h in analyzed_horses:
                     mf = h.get('_mf', {})
                     score = mf.get(layer, 50.0) if mf else 50.0
                     layer_scores.append((h.get('name', ''), score))
-                
-                # Yüksekten düşüğe sırala
+
+                # std < 1 → bu katman atları ayırt edemiyor → ATLA
+                vals = [s for _, s in layer_scores]
+                layer_std = float(np.std(vals)) if len(vals) > 1 else 0.0
+                if layer_std < 1.0:
+                    print(f"    [CONSENSUS] {layer} ATLANACAK (std={layer_std:.2f})")
+                    continue
+
+                active_layer_count += 1
                 layer_scores.sort(key=lambda x: x[1], reverse=True)
-                
-                # Top-N'deki atları işaretle
+
                 for i, (name, _) in enumerate(layer_scores):
                     if name not in consensus_counts:
                         consensus_counts[name] = 0
                     if i < top_n:
                         consensus_counts[name] += 1
 
-            # Konsensüs çarpanı uygula
-            max_possible = len(_CONSENSUS_LAYERS)  # 10 katman
+            # Genişletilmiş çarpan: 0 katman → x0.75, tümü → x1.20
+            max_possible = max(active_layer_count, 1)
             for h in analyzed_horses:
                 name = h.get('name', '')
                 count = consensus_counts.get(name, 0)
-                ratio = count / max_possible  # 0.0 - 1.0 arası
-                
-                # Çarpan: 0 katmanda top-N → ×0.85, 5/10 → ×1.0, 10/10 → ×1.10
-                # Formül: 0.85 + ratio * 0.25
-                consensus_mult = 0.85 + ratio * 0.25
-                
+                ratio = count / max_possible
+                consensus_mult = 0.75 + ratio * 0.45
+
                 old_score = h.get('aiScore', 50)
                 new_score = round(old_score * consensus_mult, 1)
                 new_score = max(0, min(100, new_score))
@@ -4595,7 +4583,7 @@ def analyze_race():
                     'ratio': round(ratio, 2),
                     'multiplier': round(consensus_mult, 3),
                 }
-                print(f"    [RACE-CONSENSUS] {name}: {count}/{max_possible} katmanda Top-{top_n} "
+                print(f"    [CONSENSUS] {name}: {count}/{max_possible} aktif katmanda Top-{top_n} "
                       f"-> x{consensus_mult:.3f} ({old_score:.1f} -> {new_score:.1f})")
 
         # 5. Sıralama (Yüksek AI puanından düşüğe)
