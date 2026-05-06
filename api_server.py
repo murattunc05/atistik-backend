@@ -1549,18 +1549,15 @@ def calculate_degree_stats(races):
             'degreeScore': 50, 'trendScore': 50, 'stabilityScore': 50
         }
     
-    # FAZ 6.1: Recency-Weighted Derece Ortalaması
-    # Son 3 yarışa %70, diğerlerine %30 ağırlık → son form daha belirleyici
+    # FAZ B.2: Son yarış ağırlıklı derece ortalaması
     if len(degrees) <= 3:
-        # 3 veya daha az yarış varsa ağırlıklı ortalama (en sons en yüksek)
         recency_weights = [0.45, 0.35, 0.20][:len(degrees)]
         w_total = sum(recency_weights)
         avg_degree = sum(d * w for d, w in zip(degrees, recency_weights)) / w_total
     else:
-        # Son 3'e %70, kalanına %30
         recent_3 = degrees[:3]
         older = degrees[3:]
-        recent_weights = [0.30, 0.25, 0.15]  # toplam 0.70
+        recent_weights = [0.30, 0.25, 0.15]
         recent_avg = sum(d * w for d, w in zip(recent_3, recent_weights))
         older_weight_each = 0.30 / len(older) if older else 0
         older_avg = sum(d * older_weight_each for d in older)
@@ -1568,6 +1565,9 @@ def calculate_degree_stats(races):
     best_degree = min(degrees)
     worst_degree = max(degrees)
     std_dev = float(np.std(degrees)) if len(degrees) > 1 else 0
+
+    # FAZ B.2: Son 3 yarışın en iyi derecesi (PASS 2 normalizasyonunda kullanılacak)
+    recent_best = min(degrees[:3]) if degrees else None
     
     # Trend hesaplama: Son yarışlardaki iyileşme/kötüleşme
     trend_value = 0
@@ -1597,6 +1597,7 @@ def calculate_degree_stats(races):
         'avgDegree': round(avg_degree, 2),
         'bestDegree': round(best_degree, 2),
         'worstDegree': round(worst_degree, 2),
+        'recentBestDegree': round(recent_best, 2) if recent_best else None,  # FAZ B.2
         'avgDegreeFormatted': format_seconds_to_degree(avg_degree),
         'bestDegreeFormatted': format_seconds_to_degree(best_degree),
         'worstDegreeFormatted': format_seconds_to_degree(worst_degree),
@@ -2246,76 +2247,103 @@ def calculate_late_kick(races):
 
 def calculate_form_trend(races):
     """
-    Form Grafiği (Form Trend) - At gelişiyor mu, geriliyor mu?
-    Son 4 yarıştaki sıralamaların ağırlıklı ortalaması.
-    
-    İyileştirmeler (Faz 3.3):
-    - Son yarış bonusu: 1. bitirmek +15, 2. +8, 3. +4 puan ekler
-    - Momentum çarpanı: üst üste 3 iyileşme → ×1.15, üst üste 3 kötüleşme → ×0.85
+    FAZ B.1: Form Skoru — Son yarışlardaki GERÇEK performansı ölçer.
+
+    3 bileşen:
+    1. Placement Score: Son yarışlarda field-size'a göre performans (ana sinyal, %60)
+    2. Trend Score: İyileşme/kötüleşme eğilimi (trend, %25)
+    3. Momentum Bonus: Üst üste iyi/kötü sonuçlar (%15)
+
+    Çıktı aralığı: 0-100 (tam aralık)
     """
     if len(races) < 2:
         return 0.0, 50.0, "Stabil"
-    
-    ranks = []
+
+    # Son 6 yarıştan sıralama ve alan büyüklüğünü çıkar
+    race_data = []
     for race in races[:6]:
         try:
             rank = int(re.sub(r'[^0-9]', '', race.get('rank', '0')) or 0)
             if rank > 0:
-                ranks.append(rank)
+                # Alan büyüklüğü: field_size veya runners veya varsayılan 10
+                field = int(race.get('field_size') or race.get('runners') or 10)
+                field = max(field, rank)  # field en az rank kadar olmalı
+                race_data.append({'rank': rank, 'field': field})
         except:
             continue
-    
-    if len(ranks) < 2:
+
+    if len(race_data) < 2:
         return 0.0, 50.0, "Stabil"
-    
-    # Trend hesaplama: ranks[0] = en son yarış
-    # Eğer son yarışlar daha iyi (düşük rank) ise trend pozitif
-    y = np.array(ranks[::-1])  # Tersine çevir (eski -> yeni)
+
+    ranks = [r['rank'] for r in race_data]
+
+    # ── BİLEŞEN 1: Placement Score (%60) ──────────────────────
+    # Her yarışta performans = (field - rank) / (field - 1) × 100
+    # 1. bitiş = 100, sonuncu bitiş = 0
+    # Son yarışlara daha fazla ağırlık ver
+    recency_weights = [0.35, 0.25, 0.15, 0.10, 0.10, 0.05][:len(race_data)]
+    w_total = sum(recency_weights)
+
+    placement_score = 0.0
+    for i, rd in enumerate(race_data):
+        if rd['field'] <= 1:
+            perf = 50.0
+        else:
+            perf = ((rd['field'] - rd['rank']) / (rd['field'] - 1)) * 100.0
+        placement_score += perf * (recency_weights[i] / w_total)
+
+    # ── BİLEŞEN 2: Trend Score (%25) ──────────────────────────
+    # Linear regression: ranks azalıyorsa (iyileşme) pozitif
+    y = np.array(ranks[::-1])  # eski -> yeni
     x = np.arange(len(y))
-    
+    trend_value = 0.0
     if len(x) >= 2:
         slope, _ = np.polyfit(x, y, 1)
-        trend_value = -slope  # Negatif slope = sıralama düşüyor = iyileşme
-    else:
-        trend_value = 0
+        trend_value = -slope  # düşen sıralama = iyileşme = pozitif
 
-    # Trend skorunu 0-100 aralığına normalize et
-    trend_score = 50 + (trend_value * 15)
-    trend_score = max(0, min(100, trend_score))
+    # Trend'i 0-100'e map'le: -3 → 0, 0 → 50, +3 → 100
+    trend_score = 50 + (trend_value * 16.67)
+    trend_score = max(0.0, min(100.0, trend_score))
 
-    # --- Faz 3.3: Son Yarış Bonusu ---
-    last_rank = ranks[0] if ranks else 0
-    if last_rank == 1:
-        trend_score = min(100, trend_score + 15)
-    elif last_rank == 2:
-        trend_score = min(100, trend_score + 8)
-    elif last_rank == 3:
-        trend_score = min(100, trend_score + 4)
-    elif last_rank >= 7:
-        trend_score = max(0, trend_score - 5)  # Geride bitirme cezası
-
-    # --- Faz 3.3: Momentum Çarpanı (son 3 yarış) ---
+    # ── BİLEŞEN 3: Momentum Bonus (%15) ──────────────────────
+    momentum_score = 50.0
     if len(ranks) >= 3:
-        last3 = ranks[:3]  # [en yeni, ..., en eski]
-        # Üst üste iyileşme: ranks azalıyor (last3[0] < last3[1] < last3[2])
+        last3 = ranks[:3]
         if last3[0] < last3[1] < last3[2]:
-            trend_score = min(100, trend_score * 1.15)
-        # Üst üste kötüleşme: ranks artıyor
+            momentum_score = 85.0  # üst üste iyileşme
         elif last3[0] > last3[1] > last3[2]:
-            trend_score = max(0, trend_score * 0.85)
-    
+            momentum_score = 15.0  # üst üste kötüleşme
+        elif last3[0] <= 3:
+            momentum_score = 75.0  # son 3 yarışta podyum
+        elif last3[0] == 1:
+            momentum_score = 90.0  # son yarışta galibiyet
+
+    # Son yarış bonusu
+    last_rank = ranks[0]
+    if last_rank == 1:
+        momentum_score = min(100, momentum_score + 20)
+    elif last_rank == 2:
+        momentum_score = min(100, momentum_score + 10)
+    elif last_rank == 3:
+        momentum_score = min(100, momentum_score + 5)
+
+    # ── BİRLEŞTİR ────────────────────────────────────────────
+    final_score = placement_score * 0.60 + trend_score * 0.25 + momentum_score * 0.15
+    final_score = round(max(0.0, min(100.0, final_score)), 1)
+
+    # Label
     if trend_value > 0.5:
         label = "Yukseliste"
     elif trend_value > 0.1:
-        label = "Iyilesiyot"
+        label = "Iyilesiyor"
     elif trend_value < -0.5:
         label = "Dususte"
     elif trend_value < -0.1:
         label = "Geriliyor"
     else:
         label = "Stabil"
-    
-    return round(trend_value, 2), round(trend_score, 1), label
+
+    return round(trend_value, 2), final_score, label
 
 def calculate_consistency(races):
     """
@@ -4447,34 +4475,34 @@ def analyze_race():
             
             analyzed_horses.append(h)
 
-        # === DERECE NORMİZASYONU + MASTER SKOR YENİDEN HESAP ===
-        # Koşu içi göreceli derece normalizasyonu: En hızlı at = 100, en yavaş = 0
-        # Bu normalize skor degree_avg metriğine yazılır ve FAZ 4.7
-        # calculate_ai_score() yeniden çağrılarak master skor üretilir.
-        # (Eski sabit *0.65 / *0.35 override kaldırıldı — FAZ 4.7 Bug Fix)
-        avg_degrees = []
+        # ═══ FAZ B.2: DERECE NORMALİZASYONU — RECENT BEST DEGREE ═══
+        # Kariyer avgDegree yerine son 3 yarışın en iyi derecesi (recentBestDegree)
+        # kullanılır. Bu, "deneyimli ama yavaşlayan" atların haksız avantajını kaldırır.
+        # Koşu içi göreceli: en hızlı recent = 100, en yavaş = 0
+        recent_degrees = []
         for h in analyzed_horses:
             ds = h.get('degreeStats', {})
-            if ds and ds.get('avgDegree'):
-                avg_degrees.append(ds['avgDegree'])
+            rb = ds.get('recentBestDegree') or ds.get('avgDegree')
+            if rb:
+                recent_degrees.append(rb)
 
-        if avg_degrees:
-            best_avg  = min(avg_degrees)  # En düşük ortalama = en iyi derece
-            worst_avg = max(avg_degrees)
-            degree_range = worst_avg - best_avg if worst_avg > best_avg else 1
+        if recent_degrees:
+            best_recent  = min(recent_degrees)
+            worst_recent = max(recent_degrees)
+            degree_range = worst_recent - best_recent if worst_recent > best_recent else 1
 
             for h in analyzed_horses:
                 ds = h.get('degreeStats', {})
-                if ds and ds.get('avgDegree'):
-                    # 0-100 normalize: düşük derece = yüksek skor
-                    normalized = 100 - ((ds['avgDegree'] - best_avg) / degree_range * 100)
+                rb = ds.get('recentBestDegree') or ds.get('avgDegree')
+                if rb:
+                    # 0-100 normalize: düşük derece (hızlı) = yüksek skor
+                    normalized = 100 - ((rb - best_recent) / degree_range * 100)
                     normalized = round(max(0, min(100, normalized)), 1)
                     h['degreeStats']['degreeScore'] = normalized
 
-                    # FAZ 4.7 Bug Fix: metrics'i güncelle ve master skoru yeniden hesapla
                     mf = h.get('_mf')
                     if mf:
-                        mf['degree_avg'] = normalized  # Koşu içi normalize derece skoru
+                        mf['degree_avg'] = normalized
                         new_score = calculate_ai_score(mf)
                         h['aiScore']    = new_score
                         h['prediction'] = generate_prediction(new_score, mf)
