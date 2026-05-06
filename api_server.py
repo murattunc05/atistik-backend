@@ -3619,6 +3619,22 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['pedigree']     += freed * 0.15
         w['jockey_score'] += freed * 0.10
 
+    # ── FAZ B.4: AGF VERİSİ YOK → AGF ağırlığını dağıt ─────────────
+    # AGF=50 nötr değer demek (veri yok veya koşu başlamadı).
+    # Maiden'da %20 ağırlıkla bu çok büyük → sıfırla ve dağıt.
+    agf_val = metrics.get('agf_score', 50.0)
+    if abs(agf_val - 50.0) < 1.0 and w.get('agf_score', 0) > 0.01:
+        freed_agf = w['agf_score']
+        w['agf_score'] = 0.0
+        # Dağıt: pedigri %40, jokey %30, idman %30
+        w['pedigree']     += freed_agf * 0.40
+        w['jockey_score'] += freed_agf * 0.30
+        if has_training:
+            w['training_fitness'] += freed_agf * 0.30
+        else:
+            w['hp_score']  += freed_agf * 0.15
+            w['bounce_score'] += freed_agf * 0.15
+
     # ── TOPLAMI %100'e normalize et ─────────────────────────────────
     total = sum(w.values())
     if total > 0:
@@ -3686,13 +3702,13 @@ def calculate_data_confidence(metrics):
 
 def calculate_group_adjustment(horse_races, current_race_type):
     """
-    Faz 3 Konsensüs: Atın geçmiş koştuğu gruplar ile mevcut koşu grubunu karşılaştır.
+    FAZ B.3: Grup Ayarlaması (Daraltılmış Aralık)
     
-    Eğer at daha düşük gruplarda koşup başarılı olduysa → skor düşürülür
-    Eğer at aynı veya daha yüksek gruplarda başarılı olduysa → skor korunur/artırılır
+    Atın geçmiş koştuğu gruplar ile mevcut koşu grubunu karşılaştır.
+    0.94-1.06 aralığında — çok agresif çarpanlar sıralamayı bozuyordu.
     
     Returns:
-        float: Çarpan (0.80 - 1.15 arası)
+        float: Çarpan (0.94 - 1.06 arası)
     """
     if not horse_races:
         return 1.0
@@ -3711,24 +3727,21 @@ def calculate_group_adjustment(horse_races, current_race_type):
         if rank <= 0:
             continue
             
-        # Grup farkı: pozitif = geçmiş koşu daha kolay, negatif = daha zor
-        # current_mult büyükse mevcut koşu daha zor
         group_diff = current_mult - past_mult
         
         if group_diff > 0.03:
-            # Mevcut koşu GEÇMİŞTEN DAHA ZOR → geçmiş başarı daha az değerli
+            # Mevcut koşu geçmişten DAHA ZOR
             if rank <= 3:
-                adjustments.append(0.90)  # Kolay grupta top3 → şimdi daha zor
+                adjustments.append(0.97)  # Kolay grupta top3 → hafif düşür
             else:
-                adjustments.append(0.85)  # Kolay grupta zaten kötü → daha da kötü
+                adjustments.append(0.94)  # Kolay grupta kötü → biraz düşür
         elif group_diff < -0.03:
-            # Mevcut koşu GEÇMİŞTEN DAHA KOLAY → geçmiş başarı daha değerli
+            # Mevcut koşu geçmişten DAHA KOLAY
             if rank <= 3:
-                adjustments.append(1.15)  # Zor grupta top3 → burada daha iyi olmalı
+                adjustments.append(1.06)  # Zor grupta top3 → ödülllendir
             else:
-                adjustments.append(1.00)  # Zor grupta kötüyse, kolay grupta da belirsiz
+                adjustments.append(1.0)   # Zor grupta kötü → nötr
         else:
-            # Aynı seviye → nötr
             adjustments.append(1.0)
     
     if not adjustments:
