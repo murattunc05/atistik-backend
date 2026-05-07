@@ -3798,6 +3798,418 @@ def calculate_master_score(metrics):
 # ══════════════════════════════════════════════════════════════════
 
 # AGF ML'den hariç (kullanıcı kararı)
+# ============================================================================
+# ALGORITHM V4 SHADOW MODE
+# ============================================================================
+
+_V4_METRIC_KEYS = [
+    'degree_avg', 'degree_trend', 'degree_stability',
+    'form_trend', 'distance_suit',
+    'training_fitness', 'training_degree_score',
+    'weight_impact', 'jockey_score', 'bounce_score',
+    'pace_score', 'pedigree', 'hp_score',
+]
+
+_V4_MIN_SAMPLE_RACES = {
+    'exact': 8,
+    'subtype_distance_field': 8,
+    'subtype': 12,
+    'category': 25,
+    'global': 0,
+}
+
+_V4_WEIGHT_PROFILES = {
+    'SART3': {
+        'level': 'subtype',
+        'sample_races': 5,
+        'status': 'candidate_shadow',
+        'weights': {
+            'training_degree_score': 20.2,
+            'training_fitness': 16.6,
+            'form_trend': 15.7,
+            'bounce_score': 14.2,
+            'weight_impact': 7.8,
+            'degree_avg': 6.0,
+            'jockey_score': 5.2,
+            'degree_stability': 3.5,
+            'hp_score': 3.2,
+            'pace_score': 2.5,
+            'degree_trend': 1.9,
+            'pedigree': 1.7,
+            'distance_suit': 1.5,
+        },
+    },
+    'SART5': {
+        'level': 'subtype',
+        'sample_races': 3,
+        'status': 'candidate_shadow',
+        'weights': {
+            'jockey_score': 25.2,
+            'pedigree': 16.1,
+            'degree_avg': 12.3,
+            'training_degree_score': 10.7,
+            'hp_score': 9.7,
+            'weight_impact': 7.1,
+            'training_fitness': 6.0,
+            'bounce_score': 4.7,
+            'degree_stability': 3.0,
+            'distance_suit': 2.3,
+            'form_trend': 1.8,
+            'degree_trend': 1.2,
+        },
+    },
+    'SARTLI': {
+        'level': 'category',
+        'sample_races': 38,
+        'status': 'eligible_shadow',
+        'weights': {
+            'pace_score': 32.6,
+            'bounce_score': 11.9,
+            'jockey_score': 10.4,
+            'degree_avg': 10.1,
+            'distance_suit': 7.4,
+            'pedigree': 6.7,
+            'form_trend': 6.0,
+            'weight_impact': 5.5,
+            'training_fitness': 5.2,
+            'hp_score': 1.5,
+            'degree_trend': 0.9,
+            'degree_stability': 0.9,
+            'training_degree_score': 0.9,
+        },
+    },
+    'HANDIKAP': {
+        'level': 'category',
+        'sample_races': 0,
+        'status': 'candidate_shadow',
+        'weights': {
+            'distance_suit': 18.0,
+            'pace_score': 15.0,
+            'weight_impact': 14.0,
+            'hp_score': 13.0,
+            'training_degree_score': 10.0,
+            'degree_avg': 8.0,
+            'form_trend': 8.0,
+            'bounce_score': 5.0,
+            'jockey_score': 4.0,
+            'pedigree': 3.0,
+            'training_fitness': 2.0,
+        },
+    },
+    'MAIDEN': {
+        'level': 'category',
+        'sample_races': 0,
+        'status': 'candidate_shadow',
+        'weights': {
+            'jockey_score': 20.0,
+            'hp_score': 16.0,
+            'pedigree': 14.0,
+            'training_fitness': 13.0,
+            'training_degree_score': 12.0,
+            'degree_trend': 8.0,
+            'pace_score': 6.0,
+            'distance_suit': 5.0,
+            'form_trend': 4.0,
+            'degree_avg': 2.0,
+        },
+    },
+    'KV': {
+        'level': 'category',
+        'sample_races': 0,
+        'status': 'candidate_shadow',
+        'weights': {
+            'degree_avg': 22.0,
+            'form_trend': 22.0,
+            'bounce_score': 12.0,
+            'jockey_score': 10.0,
+            'distance_suit': 10.0,
+            'pace_score': 8.0,
+            'training_fitness': 6.0,
+            'training_degree_score': 5.0,
+            'weight_impact': 3.0,
+            'hp_score': 2.0,
+        },
+    },
+    'SATIS': {
+        'level': 'category',
+        'sample_races': 0,
+        'status': 'candidate_shadow',
+        'weights': {
+            'form_trend': 22.0,
+            'degree_avg': 20.0,
+            'jockey_score': 12.0,
+            'bounce_score': 10.0,
+            'weight_impact': 8.0,
+            'distance_suit': 8.0,
+            'pace_score': 7.0,
+            'training_fitness': 5.0,
+            'training_degree_score': 4.0,
+            'hp_score': 4.0,
+        },
+    },
+    'GRUP': {
+        'level': 'category',
+        'sample_races': 0,
+        'status': 'candidate_shadow',
+        'weights': {
+            'degree_avg': 24.0,
+            'form_trend': 20.0,
+            'pace_score': 14.0,
+            'jockey_score': 12.0,
+            'hp_score': 10.0,
+            'distance_suit': 8.0,
+            'bounce_score': 6.0,
+            'training_fitness': 3.0,
+            'training_degree_score': 3.0,
+        },
+    },
+    'GLOBAL': {
+        'level': 'global',
+        'sample_races': 0,
+        'status': 'fallback_shadow',
+        'weights': {
+            'hp_score': 18.6,
+            'degree_avg': 15.9,
+            'distance_suit': 15.5,
+            'pedigree': 12.2,
+            'pace_score': 11.3,
+            'training_degree_score': 9.8,
+            'form_trend': 5.7,
+            'jockey_score': 3.9,
+            'degree_trend': 3.8,
+            'training_fitness': 1.5,
+            'weight_impact': 1.0,
+            'bounce_score': 0.7,
+            'degree_stability': 0.1,
+        },
+    },
+}
+
+
+def _v4_fold_text(value):
+    text = str(value or '').upper()
+    replacements = {
+        'Ş': 'S', 'Þ': 'S', 'Åž': 'S', 'ÅŸ': 'S',
+        'İ': 'I', 'Ä°': 'I', 'Ä±': 'I',
+        'Ğ': 'G', 'Äž': 'G', 'ÄŸ': 'G',
+        'Ü': 'U', 'Ãœ': 'U', 'Ã¼': 'U',
+        'Ö': 'O', 'Ã–': 'O', 'Ã¶': 'O',
+        'Ç': 'C', 'Ã‡': 'C', 'Ã§': 'C',
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return text
+
+
+def _v4_distance_bucket(distance):
+    try:
+        meters = int(float(str(distance or '').replace(',', '.')))
+    except (ValueError, TypeError):
+        return 'unknown'
+    if meters <= 1200:
+        return 'sprint'
+    if meters <= 1800:
+        return 'mid'
+    return 'long'
+
+
+def _v4_field_bucket(field_size):
+    try:
+        size = int(field_size or 0)
+    except (ValueError, TypeError):
+        return 'unknown'
+    if size <= 7:
+        return 'small'
+    if size <= 11:
+        return 'medium'
+    return 'large'
+
+
+def _v4_track_bucket(track):
+    folded = _v4_fold_text(track)
+    if 'KUM' in folded:
+        return 'Kum'
+    if 'CIM' in folded:
+        return 'Cim'
+    if 'SENTETIK' in folded:
+        return 'Sentetik'
+    return 'Unknown'
+
+
+def extract_v4_race_profile(race_type='', distance='', track='', field_size=0):
+    folded = _v4_fold_text(race_type)
+    category = 'GLOBAL'
+    subtype = 'GLOBAL'
+
+    if any(k in folded for k in ['HANDIKAP', 'HANDICAP', ' HK']):
+        category = 'HANDIKAP'
+        subtype = 'HANDIKAP'
+        import re as _re
+        match = _re.search(r'(\d+)', folded)
+        if match:
+            subtype = f"HANDIKAP{match.group(1)}"
+    elif any(k in folded for k in ['MAIDEN', 'MDN']):
+        category = 'MAIDEN'
+        subtype = 'MAIDEN'
+    elif 'SARTLI' in folded or 'SARTL' in folded:
+        category = 'SARTLI'
+        subtype = 'SARTLI'
+        import re as _re
+        match = _re.search(r'(\d+)', folded)
+        if match:
+            subtype = f"SART{match.group(1)}"
+    elif 'KV' in folded:
+        category = 'KV'
+        subtype = 'KV'
+        import re as _re
+        match = _re.search(r'KV\s*[-/]?\s*(\d+)', folded)
+        if match:
+            subtype = f"KV{match.group(1)}"
+    elif any(k in folded for k in ['SATIS', 'CLAIMING']):
+        category = 'SATIS'
+        subtype = 'SATIS'
+    elif any(k in folded for k in ['GRUP', ' G1', ' G2', ' G3']):
+        category = 'GRUP'
+        subtype = 'GRUP'
+
+    distance_bucket = _v4_distance_bucket(distance)
+    field_bucket = _v4_field_bucket(field_size)
+    track_bucket = _v4_track_bucket(track)
+
+    return {
+        'category': category,
+        'subtype': subtype,
+        'distanceBucket': distance_bucket,
+        'fieldBucket': field_bucket,
+        'track': track_bucket,
+        'profileKey': f"{subtype}|{distance_bucket}|{field_bucket}|{track_bucket}",
+    }
+
+
+def _v4_normalize_weights(raw_weights):
+    weights = {k: float(raw_weights.get(k, 0.0)) for k in _V4_METRIC_KEYS}
+    total = sum(v for v in weights.values() if v > 0)
+    if total <= 0:
+        return {k: round(1.0 / len(_V4_METRIC_KEYS), 4) for k in _V4_METRIC_KEYS}
+    return {k: round(max(v, 0.0) / total, 4) for k, v in weights.items()}
+
+
+def resolve_v4_profile_weights(profile):
+    subtype = profile.get('subtype', 'GLOBAL')
+    category = profile.get('category', 'GLOBAL')
+    distance_bucket = profile.get('distanceBucket', 'unknown')
+    field_bucket = profile.get('fieldBucket', 'unknown')
+    track_bucket = profile.get('track', 'Unknown')
+
+    candidates = [
+        (f"{subtype}|{distance_bucket}|{field_bucket}|{track_bucket}", 'exact'),
+        (f"{subtype}|{distance_bucket}|{field_bucket}", 'subtype_distance_field'),
+        (subtype, 'subtype'),
+        (category, 'category'),
+        ('GLOBAL', 'global'),
+    ]
+
+    selected_key = 'GLOBAL'
+    fallback_level = 'global'
+    selected = _V4_WEIGHT_PROFILES['GLOBAL']
+    for key, level in candidates:
+        if key in _V4_WEIGHT_PROFILES:
+            selected_key = key
+            fallback_level = level
+            selected = _V4_WEIGHT_PROFILES[key]
+            break
+
+    sample_races = int(selected.get('sample_races', 0))
+    min_required = _V4_MIN_SAMPLE_RACES.get(fallback_level, 0)
+    eligible = sample_races >= min_required
+    weights = _v4_normalize_weights(selected.get('weights', {}))
+
+    if eligible:
+        confidence_score = 0.75 if fallback_level != 'global' else 0.45
+        confidence_label = 'eligible-shadow'
+    elif sample_races > 0:
+        confidence_score = round(max(0.20, min(0.60, sample_races / max(min_required, 1))), 2)
+        confidence_label = 'candidate-shadow'
+    else:
+        confidence_score = 0.20
+        confidence_label = 'fallback-shadow'
+
+    return {
+        'selectedKey': selected_key,
+        'fallbackLevel': fallback_level,
+        'sampleRaces': sample_races,
+        'minRequired': min_required,
+        'eligible': eligible,
+        'status': selected.get('status', 'fallback_shadow'),
+        'confidenceScore': confidence_score,
+        'confidenceLabel': confidence_label,
+        'weights': weights,
+        'weightsPct': {k: round(v * 100, 1) for k, v in weights.items() if v > 0},
+    }
+
+
+def calculate_v4_shadow_score(metrics, weights):
+    weighted_sum = 0.0
+    total = 0.0
+    for key, weight in weights.items():
+        if weight <= 0:
+            continue
+        try:
+            value = float(metrics.get(key, 50.0))
+        except (ValueError, TypeError):
+            value = 50.0
+        weighted_sum += value * weight
+        total += weight
+    if total <= 0:
+        return 50.0
+    return round(max(0.0, min(100.0, weighted_sum / total)), 1)
+
+
+def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
+    """Attach v4 fields without changing aiScore/rank/winProbability."""
+    profile = extract_v4_race_profile(
+        race_type=race_type,
+        distance=distance,
+        track=track,
+        field_size=len(analyzed_horses),
+    )
+    resolved = resolve_v4_profile_weights(profile)
+    weights = resolved['weights']
+
+    scored = []
+    for horse in analyzed_horses:
+        metrics = horse.get('_mf', {}) or {}
+        v4_score = calculate_v4_shadow_score(metrics, weights) if metrics else 0.0
+        horse['v4Score'] = v4_score
+        horse['v4Mode'] = 'shadow'
+        horse['v4Profile'] = {
+            **profile,
+            'selectedKey': resolved['selectedKey'],
+            'fallbackLevel': resolved['fallbackLevel'],
+        }
+        horse['v4Weights'] = resolved['weightsPct']
+        horse['v4Confidence'] = {
+            'score': resolved['confidenceScore'],
+            'label': resolved['confidenceLabel'],
+            'sampleRaces': resolved['sampleRaces'],
+            'minRequired': resolved['minRequired'],
+            'eligible': resolved['eligible'],
+            'status': resolved['status'],
+        }
+        scored.append(horse)
+
+    scored.sort(key=lambda h: h.get('v4Score', 0), reverse=True)
+    for index, horse in enumerate(scored):
+        horse['v4Rank'] = index + 1
+
+    print(
+        f"[V4 SHADOW] profile={profile.get('profileKey')} "
+        f"selected={resolved['selectedKey']} level={resolved['fallbackLevel']} "
+        f"sample={resolved['sampleRaces']}/{resolved['minRequired']}"
+    )
+
+
+# AGF is intentionally excluded from the ML feature list.
 _ML_FEATURE_KEYS = [
     "degree_avg", "degree_trend", "degree_stability",
     "form_trend", "track_suit", "distance_suit",
@@ -4628,6 +5040,16 @@ def analyze_race():
                       f"-> x{consensus_mult:.3f} ({old_score:.1f} -> {new_score:.1f})")
 
         # 5. Sıralama (Yüksek AI puanından düşüğe)
+        try:
+            apply_v4_shadow_mode(
+                analyzed_horses,
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+            )
+        except Exception as _v4_err:
+            print(f"[V4 SHADOW] Hesaplama hatasi, mevcut algoritma ile devam: {_v4_err}")
+
         analyzed_horses.sort(key=lambda x: x['aiScore'], reverse=True)
         
         # 6. Sıralama numaraları ekle
@@ -4710,6 +5132,12 @@ def analyze_race():
                     'horse_name': _h_name,
                     'ai_score':   _h.get('aiScore', 0),
                     'rank_pred':  _h.get('rank', 0),
+                    'v4_score':   _h.get('v4Score', 0),
+                    'v4_rank':    _h.get('v4Rank', 0),
+                    'v4_mode':    _h.get('v4Mode', 'shadow'),
+                    'v4_profile': _h.get('v4Profile', {}),
+                    'v4_weights': _h.get('v4Weights', {}),
+                    'v4_confidence': _h.get('v4Confidence', {}),
                     'race_type':  race_type or '',
                     'distance':   target_distance or '',
                     'track':      target_track or '',
