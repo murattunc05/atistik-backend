@@ -4165,6 +4165,55 @@ def calculate_v4_shadow_score(metrics, weights):
     return round(max(0.0, min(100.0, weighted_sum / total)), 1)
 
 
+def resolve_v4_decision(profile, resolved):
+    """Classify v4 output for rollout tracking. It never enables ranking yet."""
+    category = profile.get('category', 'GLOBAL')
+    subtype = profile.get('subtype', 'GLOBAL')
+    fallback_level = resolved.get('fallbackLevel', 'global')
+    confidence_label = resolved.get('confidenceLabel', 'fallback-shadow')
+
+    if category == 'HANDIKAP':
+        return {
+            'mode': 'disabled',
+            'useForRanking': False,
+            'reason': 'HANDIKAP profile failed 08.05.2026 shadow test; keep old ranking.',
+        }
+
+    if category == 'SARTLI' and subtype == 'SART3':
+        return {
+            'mode': 'shadow_only',
+            'useForRanking': False,
+            'reason': 'SART3 candidate regressed in 08.05.2026 shadow test; needs weight revision.',
+        }
+
+    if category == 'SARTLI' and subtype == 'SART5':
+        return {
+            'mode': 'shadow_only',
+            'useForRanking': False,
+            'reason': 'SART5 showed positive signal but sample is too small for visible ranking.',
+        }
+
+    if category == 'SARTLI' and confidence_label == 'eligible-shadow':
+        return {
+            'mode': 'candidate',
+            'useForRanking': False,
+            'reason': 'SARTLI eligible shadow profile improved 08.05.2026; candidate for controlled rollout.',
+        }
+
+    if category in ['MAIDEN', 'KV', 'SATIS', 'GRUP']:
+        return {
+            'mode': 'shadow_only',
+            'useForRanking': False,
+            'reason': f'{category} profile remains under observation; not enough stable evidence.',
+        }
+
+    return {
+        'mode': 'shadow_only',
+        'useForRanking': False,
+        'reason': f'Fallback level {fallback_level}; observe only.',
+    }
+
+
 def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
     """Attach v4 fields without changing aiScore/rank/winProbability."""
     profile = extract_v4_race_profile(
@@ -4174,6 +4223,7 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
         field_size=len(analyzed_horses),
     )
     resolved = resolve_v4_profile_weights(profile)
+    decision = resolve_v4_decision(profile, resolved)
     weights = resolved['weights']
 
     scored = []
@@ -4182,6 +4232,9 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
         v4_score = calculate_v4_shadow_score(metrics, weights) if metrics else 0.0
         horse['v4Score'] = v4_score
         horse['v4Mode'] = 'shadow'
+        horse['v4DecisionMode'] = decision['mode']
+        horse['v4UseForRanking'] = decision['useForRanking']
+        horse['v4Reason'] = decision['reason']
         horse['v4Profile'] = {
             **profile,
             'selectedKey': resolved['selectedKey'],
@@ -4205,7 +4258,8 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
     print(
         f"[V4 SHADOW] profile={profile.get('profileKey')} "
         f"selected={resolved['selectedKey']} level={resolved['fallbackLevel']} "
-        f"sample={resolved['sampleRaces']}/{resolved['minRequired']}"
+        f"sample={resolved['sampleRaces']}/{resolved['minRequired']} "
+        f"decision={decision['mode']}"
     )
 
 
@@ -5135,6 +5189,9 @@ def analyze_race():
                     'v4_score':   _h.get('v4Score', 0),
                     'v4_rank':    _h.get('v4Rank', 0),
                     'v4_mode':    _h.get('v4Mode', 'shadow'),
+                    'v4_decision_mode': _h.get('v4DecisionMode', 'shadow_only'),
+                    'v4_use_for_ranking': _h.get('v4UseForRanking', False),
+                    'v4_reason': _h.get('v4Reason', ''),
                     'v4_profile': _h.get('v4Profile', {}),
                     'v4_weights': _h.get('v4Weights', {}),
                     'v4_confidence': _h.get('v4Confidence', {}),
