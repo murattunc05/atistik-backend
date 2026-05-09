@@ -3802,12 +3802,14 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
+_V4_VERSION = "4.1"
+
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
     'form_trend', 'distance_suit',
     'training_fitness', 'training_degree_score',
     'weight_impact', 'jockey_score', 'bounce_score',
-    'pace_score', 'pedigree', 'hp_score',
+    'pace_score', 'pedigree', 'hp_score', 'agf_score',
 ]
 
 _V4_MIN_SAMPLE_RACES = {
@@ -3863,19 +3865,18 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 38,
         'status': 'eligible_shadow',
         'weights': {
-            'pace_score': 32.6,
-            'bounce_score': 11.9,
-            'jockey_score': 10.4,
-            'degree_avg': 10.1,
-            'distance_suit': 7.4,
-            'pedigree': 6.7,
+            'weight_impact': 18.0,
+            'training_degree_score': 14.0,
+            'degree_avg': 12.0,
+            'pace_score': 12.0,
+            'training_fitness': 10.0,
+            'bounce_score': 8.0,
+            'distance_suit': 7.0,
             'form_trend': 6.0,
-            'weight_impact': 5.5,
-            'training_fitness': 5.2,
-            'hp_score': 1.5,
-            'degree_trend': 0.9,
-            'degree_stability': 0.9,
-            'training_degree_score': 0.9,
+            'jockey_score': 4.0,
+            'hp_score': 4.0,
+            'agf_score': 3.0,
+            'degree_trend': 2.0,
         },
     },
     'HANDIKAP': {
@@ -3883,17 +3884,17 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 0,
         'status': 'candidate_shadow',
         'weights': {
-            'distance_suit': 18.0,
-            'pace_score': 15.0,
-            'weight_impact': 14.0,
-            'hp_score': 13.0,
-            'training_degree_score': 10.0,
-            'degree_avg': 8.0,
-            'form_trend': 8.0,
-            'bounce_score': 5.0,
+            'pace_score': 20.0,
+            'degree_avg': 16.0,
+            'distance_suit': 12.0,
+            'weight_impact': 10.0,
+            'bounce_score': 10.0,
+            'training_degree_score': 8.0,
+            'degree_stability': 7.0,
+            'form_trend': 6.0,
+            'hp_score': 5.0,
             'jockey_score': 4.0,
-            'pedigree': 3.0,
-            'training_fitness': 2.0,
+            'pedigree': 2.0,
         },
     },
     'MAIDEN': {
@@ -4165,6 +4166,27 @@ def calculate_v4_shadow_score(metrics, weights):
     return round(max(0.0, min(100.0, weighted_sum / total)), 1)
 
 
+def calculate_v4_data_quality(scored_horses):
+    scores = []
+    for horse in scored_horses:
+        try:
+            scores.append(float(horse.get('v4Score', 0.0) or 0.0))
+        except (ValueError, TypeError):
+            scores.append(0.0)
+
+    runner_count = len(scores)
+    zero_count = sum(1 for score in scores if score <= 0.0)
+    valid_count = runner_count - zero_count
+    all_zero = runner_count > 0 and valid_count == 0
+
+    return {
+        'zeroScoreCount': zero_count,
+        'validRunnerCount': valid_count,
+        'allZeroRace': all_zero,
+        'lowDataRace': all_zero or valid_count < 3,
+    }
+
+
 def resolve_v4_decision(profile, resolved):
     """Classify v4 output for rollout tracking. It never enables ranking yet."""
     category = profile.get('category', 'GLOBAL')
@@ -4230,6 +4252,7 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
     for horse in analyzed_horses:
         metrics = horse.get('_mf', {}) or {}
         v4_score = calculate_v4_shadow_score(metrics, weights) if metrics else 0.0
+        horse['v4Version'] = _V4_VERSION
         horse['v4Score'] = v4_score
         horse['v4Mode'] = 'shadow'
         horse['v4DecisionMode'] = decision['mode']
@@ -4251,6 +4274,10 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
         }
         scored.append(horse)
 
+    data_quality = calculate_v4_data_quality(scored)
+    for horse in scored:
+        horse['v4DataQuality'] = data_quality
+
     scored.sort(key=lambda h: h.get('v4Score', 0), reverse=True)
     for index, horse in enumerate(scored):
         horse['v4Rank'] = index + 1
@@ -4259,7 +4286,8 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
         f"[V4 SHADOW] profile={profile.get('profileKey')} "
         f"selected={resolved['selectedKey']} level={resolved['fallbackLevel']} "
         f"sample={resolved['sampleRaces']}/{resolved['minRequired']} "
-        f"decision={decision['mode']}"
+        f"decision={decision['mode']} version={_V4_VERSION} "
+        f"valid={data_quality['validRunnerCount']} zero={data_quality['zeroScoreCount']}"
     )
 
 
@@ -5188,6 +5216,7 @@ def analyze_race():
                     'rank_pred':  _h.get('rank', 0),
                     'v4_score':   _h.get('v4Score', 0),
                     'v4_rank':    _h.get('v4Rank', 0),
+                    'v4_version': _h.get('v4Version', _V4_VERSION),
                     'v4_mode':    _h.get('v4Mode', 'shadow'),
                     'v4_decision_mode': _h.get('v4DecisionMode', 'shadow_only'),
                     'v4_use_for_ranking': _h.get('v4UseForRanking', False),
@@ -5195,6 +5224,7 @@ def analyze_race():
                     'v4_profile': _h.get('v4Profile', {}),
                     'v4_weights': _h.get('v4Weights', {}),
                     'v4_confidence': _h.get('v4Confidence', {}),
+                    'v4_data_quality': _h.get('v4DataQuality', {}),
                     'race_type':  race_type or '',
                     'distance':   target_distance or '',
                     'track':      target_track or '',
