@@ -1673,7 +1673,10 @@ def get_class_multiplier(group_info):
     g = group_info.strip().upper()
     
     # Açık Yarış / Grup yarışları (en zorlu)
-    if any(k in g for k in ['GRUP', 'GROUP', 'G1', 'G2', 'G3', 'AÇIK', 'ACIK', 'LİSTED', 'LISTED']):
+    if (
+        any(k in g for k in ['GRUP', 'GROUP', 'G1', 'G2', 'G3', 'AÇIK', 'ACIK', 'LİSTED', 'LISTED'])
+        or re.search(r'\bG\s*[-/]?\s*[123]\b', g)
+    ):
         return 1.10
     
     # Kısa Vade (KV) yarışları — numara bazlı ayrıntı
@@ -4096,7 +4099,10 @@ def extract_v4_race_profile(race_type='', distance='', track='', field_size=0):
     elif any(k in folded for k in ['SATIS', 'CLAIMING']):
         category = 'SATIS'
         subtype = 'SATIS'
-    elif any(k in folded for k in ['GRUP', ' G1', ' G2', ' G3']):
+    elif (
+        any(k in folded for k in ['GRUP', 'GROUP', ' G1', ' G2', ' G3'])
+        or re.search(r'\bG\s*[-/]?\s*[123]\b', folded)
+    ):
         category = 'GRUP'
         subtype = 'GRUP'
 
