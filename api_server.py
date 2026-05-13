@@ -61,11 +61,14 @@ load_ml_model()
 @app.route('/api/ml-status', methods=['GET'])
 def ml_status():
     """ML model yükleme durumunu döner (teşhis endpoint'i)."""
+    prediction_stats = _prediction_file_stats() if '_prediction_file_stats' in globals() else {}
     return jsonify({
         'model_loaded': _ml_model is not None,
         'feature_count': len(_ml_feature_cols),
         'load_error': _ml_load_error,
         'mode': 'hybrid' if _ml_model else 'rules_only',
+        'predictions': prediction_stats,
+        'github_backup_configured': bool(globals().get('_GITHUB_TOKEN') and globals().get('_GITHUB_ML_REPO')),
     })
 
 
@@ -333,6 +336,38 @@ _gh_lock = _threading.Lock()
 _gh_file_sha = None
 
 
+def _prediction_file_stats(path=None):
+    """Return lightweight predictions.jsonl diagnostics without exposing data."""
+    target = path or _PREDICTIONS_PATH
+    stats = {
+        'exists': _os.path.exists(target),
+        'bytes': 0,
+        'lines': 0,
+        'valid_json_lines': 0,
+        'labeled_lines': 0,
+    }
+    if not stats['exists']:
+        return stats
+
+    stats['bytes'] = _os.path.getsize(target)
+    try:
+        with open(target, 'r', encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                stats['lines'] += 1
+                try:
+                    entry = _json.loads(line)
+                    stats['valid_json_lines'] += 1
+                    if isinstance(entry, dict) and entry.get('finish_pos') is not None:
+                        stats['labeled_lines'] += 1
+                except Exception:
+                    pass
+    except Exception as exc:
+        stats['error'] = str(exc)
+    return stats
+
+
 def _gh_headers():
     return {
         'Authorization': f'token {_GITHUB_TOKEN}',
@@ -349,11 +384,12 @@ def github_restore():
     global _gh_file_sha
     if not _GITHUB_TOKEN or not _GITHUB_ML_REPO:
         print("[GH-BACKUP] GITHUB_TOKEN veya GITHUB_ML_REPO tanımlı değil, restore atlanıyor.")
-        return
+        return False
 
-    # Eğer dosya zaten var ve boş değilse restore etme
-    if _os.path.exists(_PREDICTIONS_PATH) and _os.path.getsize(_PREDICTIONS_PATH) > 10:
-        print(f"[GH-BACKUP] predictions.jsonl zaten mevcut ({_os.path.getsize(_PREDICTIONS_PATH)} bytes), restore atlanıyor.")
+    local_stats = _prediction_file_stats()
+    # Eğer dosya zaten gerçek JSON kayıtları içeriyorsa restore etme.
+    if local_stats['valid_json_lines'] > 0:
+        print(f"[GH-BACKUP] predictions.jsonl zaten mevcut ({local_stats['valid_json_lines']} kayıt), restore atlanıyor.")
         # Yine de SHA'yı al (sonraki update için gerekli)
         try:
             url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
@@ -362,7 +398,7 @@ def github_restore():
                 _gh_file_sha = r.json().get('sha')
         except Exception:
             pass
-        return
+        return False
 
     try:
         url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
@@ -376,8 +412,9 @@ def github_restore():
             with open(_PREDICTIONS_PATH, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-            line_count = content.count('\n')
-            print(f"[GH-BACKUP] ✅ Restore başarılı: {line_count} satır GitHub'dan indirildi.")
+            restored_stats = _prediction_file_stats()
+            print(f"[GH-BACKUP] ✅ Restore başarılı: {restored_stats['valid_json_lines']} kayıt GitHub'dan indirildi.")
+            return True
         elif r.status_code == 404:
             print("[GH-BACKUP] GitHub'da predictions.jsonl bulunamadı (ilk çalıştırma).")
         else:
@@ -385,9 +422,10 @@ def github_restore():
 
     except Exception as e:
         print(f"[GH-BACKUP] Restore exception: {e}")
+    return False
 
 
-def github_backup():
+def github_backup(force=False):
     """
     predictions.jsonl'ı GitHub'a yükler/günceller.
     Arka planda (thread) çalışır — ana isteği bloklamaz.
@@ -405,6 +443,11 @@ def github_backup():
 
                 with open(_PREDICTIONS_PATH, 'r', encoding='utf-8') as f:
                     content = f.read()
+
+                local_stats = _prediction_file_stats()
+                if not force and local_stats['valid_json_lines'] == 0:
+                    print("[GH-BACKUP] Boş predictions.jsonl yedeklenmedi.")
+                    return
 
                 encoded = _b64.b64encode(content.encode('utf-8')).decode('utf-8')
                 url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
@@ -431,8 +474,7 @@ def github_backup():
 
                 if r.status_code in (200, 201):
                     _gh_file_sha = r.json().get('content', {}).get('sha')
-                    line_count = content.count('\n')
-                    print(f"[GH-BACKUP] ✅ Backup başarılı: {line_count} satır GitHub'a yüklendi.")
+                    print(f"[GH-BACKUP] ✅ Backup başarılı: {local_stats['valid_json_lines']} kayıt GitHub'a yüklendi.")
                 else:
                     print(f"[GH-BACKUP] ⚠️ Backup hatası: HTTP {r.status_code} — {r.text[:200]}")
 
@@ -444,6 +486,24 @@ def github_backup():
 
 # Sunucu başlarken otomatik restore
 github_restore()
+
+
+@app.route('/api/ml-restore', methods=['POST'])
+def ml_restore():
+    """GitHub yedeğinden predictions.jsonl dosyasını manuel geri yükler."""
+    try:
+        before = _prediction_file_stats()
+        restored = github_restore()
+        after = _prediction_file_stats()
+        return jsonify({
+            'success': True,
+            'restored': bool(restored),
+            'github_backup_configured': bool(_GITHUB_TOKEN and _GITHUB_ML_REPO),
+            'before': before,
+            'after': after,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # TJK ayarları
 TARGET_URL = "https://www.tjk.org/TR/YarisSever/Query/Data/Atlar"
