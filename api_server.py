@@ -376,6 +376,32 @@ def _gh_headers():
     }
 
 
+def _github_file_text(data):
+    """Read GitHub contents response, including files where API omits content."""
+    raw_content = (data.get('content') or '').strip()
+    if raw_content:
+        return _b64.b64decode(raw_content).decode('utf-8')
+
+    download_url = data.get('download_url')
+    if download_url:
+        r = requests.get(download_url, headers=_gh_headers(), timeout=30)
+        if r.status_code == 200:
+            return r.text
+        print(f"[GH-BACKUP] download_url okunamadı: HTTP {r.status_code}")
+
+    git_url = data.get('git_url')
+    if git_url:
+        r = requests.get(git_url, headers=_gh_headers(), timeout=30)
+        if r.status_code == 200:
+            blob = r.json()
+            blob_content = (blob.get('content') or '').strip()
+            if blob_content:
+                return _b64.b64decode(blob_content).decode('utf-8')
+        print(f"[GH-BACKUP] git blob okunamadı: HTTP {r.status_code}")
+
+    return ''
+
+
 def github_restore():
     """
     Sunucu başlangıcında predictions.jsonl'ı GitHub'dan indirir.
@@ -406,7 +432,7 @@ def github_restore():
 
         if r.status_code == 200:
             data = r.json()
-            content = _b64.b64decode(data['content']).decode('utf-8')
+            content = _github_file_text(data)
             _gh_file_sha = data.get('sha')
 
             with open(_PREDICTIONS_PATH, 'w', encoding='utf-8') as f:
@@ -529,7 +555,7 @@ def ml_backup_status():
         }
         if r.status_code == 200:
             data = r.json()
-            content = _b64.b64decode(data.get('content', '')).decode('utf-8')
+            content = _github_file_text(data)
             remote.update({
                 'size': data.get('size', 0),
                 'sha': data.get('sha', ''),
