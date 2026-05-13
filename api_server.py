@@ -334,6 +334,7 @@ _PREDICTIONS_PATH = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl
 _gh_lock = _threading.Lock()
 # Son backup SHA'sı — güncelleme için gerekli
 _gh_file_sha = None
+_gh_last_read_method = None
 
 
 def _prediction_file_stats(path=None):
@@ -378,27 +379,49 @@ def _gh_headers():
 
 def _github_file_text(data):
     """Read GitHub contents response, including files where API omits content."""
+    global _gh_last_read_method
+    _gh_last_read_method = None
+
+    # For files over 1 MB GitHub's contents API can omit the content field.
+    # Ask the same endpoint for raw bytes first; this is the most reliable
+    # restore path for private backup repos when a token is configured.
+    try:
+        raw_url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
+        raw_headers = _gh_headers()
+        raw_headers['Accept'] = 'application/vnd.github.raw+json'
+        r = requests.get(raw_url, headers=raw_headers, timeout=30)
+        if r.status_code == 200 and r.text.strip():
+            _gh_last_read_method = 'contents_raw'
+            return r.text
+        print(f"[GH-BACKUP] raw contents okunamadı: HTTP {r.status_code}")
+    except Exception as exc:
+        print(f"[GH-BACKUP] raw contents exception: {exc}")
+
     raw_content = (data.get('content') or '').strip()
     if raw_content:
+        _gh_last_read_method = 'contents_base64'
         return _b64.b64decode(raw_content).decode('utf-8')
 
     download_url = data.get('download_url')
     if download_url:
         r = requests.get(download_url, headers=_gh_headers(), timeout=30)
         if r.status_code == 200:
+            _gh_last_read_method = 'download_url'
             return r.text
         print(f"[GH-BACKUP] download_url okunamadı: HTTP {r.status_code}")
 
-    git_url = data.get('git_url')
+    git_url = data.get('git_url') or f"{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/git/blobs/{data.get('sha', '')}"
     if git_url:
         r = requests.get(git_url, headers=_gh_headers(), timeout=30)
         if r.status_code == 200:
             blob = r.json()
             blob_content = (blob.get('content') or '').strip()
             if blob_content:
+                _gh_last_read_method = 'git_blob'
                 return _b64.b64decode(blob_content).decode('utf-8')
         print(f"[GH-BACKUP] git blob okunamadı: HTTP {r.status_code}")
 
+    _gh_last_read_method = 'empty'
     return ''
 
 
@@ -439,7 +462,7 @@ def github_restore():
                 f.write(content)
 
             restored_stats = _prediction_file_stats()
-            print(f"[GH-BACKUP] ✅ Restore başarılı: {restored_stats['valid_json_lines']} kayıt GitHub'dan indirildi.")
+            print(f"[GH-BACKUP] ✅ Restore başarılı: {restored_stats['valid_json_lines']} kayıt GitHub'dan indirildi (method={_gh_last_read_method}).")
             return True
         elif r.status_code == 404:
             print("[GH-BACKUP] GitHub'da predictions.jsonl bulunamadı (ilk çalıştırma).")
@@ -559,6 +582,7 @@ def ml_backup_status():
             remote.update({
                 'size': data.get('size', 0),
                 'sha': data.get('sha', ''),
+                'read_method': _gh_last_read_method,
                 'line_count': len([line for line in content.splitlines() if line.strip()]),
                 'valid_json_lines': 0,
             })
