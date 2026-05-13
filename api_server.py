@@ -505,6 +505,52 @@ def ml_restore():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+@app.route('/api/ml-backup-status', methods=['GET'])
+def ml_backup_status():
+    """GitHub backup hedefini ve remote predictions.jsonl durumunu döner."""
+    result = {
+        'success': True,
+        'github_backup_configured': bool(_GITHUB_TOKEN and _GITHUB_ML_REPO),
+        'repo': _GITHUB_ML_REPO or '',
+        'file': _GITHUB_FILE,
+        'local': _prediction_file_stats(),
+        'remote': None,
+    }
+    if not _GITHUB_TOKEN or not _GITHUB_ML_REPO:
+        return jsonify(result)
+
+    try:
+        url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
+        r = requests.get(url, headers=_gh_headers(), timeout=15)
+        remote = {
+            'http_status': r.status_code,
+            'exists': r.status_code == 200,
+        }
+        if r.status_code == 200:
+            data = r.json()
+            content = _b64.b64decode(data.get('content', '')).decode('utf-8')
+            remote.update({
+                'size': data.get('size', 0),
+                'sha': data.get('sha', ''),
+                'line_count': len([line for line in content.splitlines() if line.strip()]),
+                'valid_json_lines': 0,
+            })
+            for line in content.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    _json.loads(line)
+                    remote['valid_json_lines'] += 1
+                except Exception:
+                    pass
+        else:
+            remote['error'] = r.text[:200]
+        result['remote'] = remote
+    except Exception as e:
+        result['remote'] = {'error': str(e)}
+    return jsonify(result)
+
 # TJK ayarları
 TARGET_URL = "https://www.tjk.org/TR/YarisSever/Query/Data/Atlar"
 REFERER_URL = "https://www.tjk.org/TR/YarisSever/Query/Page/Atlar?QueryParameter_OLDUFLG=on"
