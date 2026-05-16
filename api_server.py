@@ -5848,7 +5848,9 @@ def submit_results():
         data = request.json
         def _clean_name(s):
             """At isminden newline ve sonrasını temizle: 'AĞASAÇAN\n (1)' → 'AĞASAÇAN'"""
-            return str(s).split('\n')[0].strip().upper()
+            text = str(s).split('\n')[0].strip().upper()
+            text = re.sub(r'\s*\(\s*\d+\s*\)\s*$', '', text)
+            return re.sub(r'\s+', ' ', text).strip()
 
         race_id_in  = str(data.get('race_id', '')).strip()
         race_date   = str(data.get('race_date', '')).strip()   # FAZ 7.4: fallback
@@ -5873,7 +5875,7 @@ def submit_results():
                     entry = _json.loads(line)
                     if str(entry.get('race_id', '')) == race_id_in:
                         race_id_hits += 1
-                        name_key = entry.get('horse_name', '').strip().upper()
+                        name_key = _clean_name(entry.get('horse_name', ''))
                         if name_key in incoming:
                             pos = incoming[name_key]
                             entry['finish_pos'] = pos
@@ -5898,7 +5900,7 @@ def submit_results():
                         entry = _json.loads(line)
                         entry_date = str(entry.get('race_date', ''))
                         entry_no   = str(entry.get('race_no', ''))
-                        name_key   = entry.get('horse_name', '').strip().upper()
+                        name_key   = _clean_name(entry.get('horse_name', ''))
 
                         # race_date eşleşiyor VE (race_no eşleşiyor VEYA boş) VE horse_name listede
                         date_match = entry_date == race_date
@@ -5936,7 +5938,7 @@ def submit_results():
                         entry = _json.loads(line)
                         all_entries.append(entry)
                         rid = str(entry.get('race_id', ''))
-                        name = entry.get('horse_name', '').strip().upper()
+                        name = _clean_name(entry.get('horse_name', ''))
                         if rid not in race_groups:
                             race_groups[rid] = {'names': set(), 'count': 0}
                         race_groups[rid]['names'].add(name)
@@ -5959,7 +5961,7 @@ def submit_results():
                 for entry in all_entries:
                     if isinstance(entry, dict):
                         if str(entry.get('race_id', '')) == best_rid:
-                            name_key = entry.get('horse_name', '').strip().upper()
+                            name_key = _clean_name(entry.get('horse_name', ''))
                             if name_key in incoming:
                                 pos = incoming[name_key]
                                 entry['finish_pos'] = pos
