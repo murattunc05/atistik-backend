@@ -219,7 +219,7 @@ def auto_label():
 
                 # Detay sayfasından tarihe göre bitiş pozisyonu al
                 detail_url = urljoin(TARGET_URL, detail_link).replace('&amp;', '&')
-                det_resp = requests.get(detail_url, headers=HEADERS, timeout=12)
+                det_resp = requests.get(detail_url, headers=HEADERS, timeout=12, verify=False)
                 if det_resp.status_code != 200:
                     race_errors.append(f'{h_name}: detay HTTP {det_resp.status_code}')
                     continue
@@ -824,7 +824,7 @@ def fetch_race_results():
                 detail_url = urljoin(TARGET_URL, detail_link)
                 detail_url = detail_url.replace('&amp;', '&')
 
-                resp = requests.get(detail_url, headers=HEADERS, timeout=12)
+                resp = requests.get(detail_url, headers=HEADERS, timeout=12, verify=False)
                 if resp.status_code != 200:
                     errors.append(f'{horse_name}: HTTP {resp.status_code}')
                     continue
@@ -944,7 +944,7 @@ def get_horse_details():
         detail_url = urljoin(TARGET_URL, relative_url)
         detail_url = detail_url.replace("&amp;", "&")
         
-        response = requests.get(detail_url, headers=HEADERS, timeout=10)
+        response = requests.get(detail_url, headers=HEADERS, timeout=10, verify=False)
         
         if response.status_code != 200:
             return jsonify({
@@ -1822,7 +1822,7 @@ def fetch_horse_details_safe(horse_data, target_distance=None):
             
         full_url = urljoin(TARGET_URL, detail_link).replace("&amp;", "&")
         
-        response = requests.get(full_url, headers=HEADERS, timeout=15)
+        response = requests.get(full_url, headers=HEADERS, timeout=15, verify=False)
         if response.status_code != 200:
             return None
             
