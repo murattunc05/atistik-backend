@@ -4652,12 +4652,24 @@ def calculate_v4_data_quality(scored_horses):
         1 for horse in scored_horses
         if horse.get('detailFetchStatus') not in (None, '', 'ok', 'empty_history')
     )
+    source_flags = [horse.get('metricSourceFlags', {}) or {} for horse in scored_horses]
+    training_source_count = sum(1 for flags in source_flags if flags.get('hasTraining'))
+    agf_source_count = sum(1 for flags in source_flags if flags.get('hasAgf'))
+    pedigree_source_count = sum(1 for flags in source_flags if flags.get('hasPedigree'))
+    trainer_source_count = sum(1 for flags in source_flags if flags.get('hasTrainer'))
 
     return {
         'zeroScoreCount': zero_count,
         'validRunnerCount': valid_count,
         'missingMetricsCount': missing_metrics_count,
         'detailFetchFailedCount': detail_fetch_failed_count,
+        'sourceCoverage': {
+            'trainingCount': training_source_count,
+            'agfCount': agf_source_count,
+            'pedigreeCount': pedigree_source_count,
+            'trainerCount': trainer_source_count,
+            'runnerCount': runner_count,
+        },
         'allZeroRace': all_zero,
         'lowDataRace': all_zero or valid_count < 3 or detail_fetch_failed_count > runner_count * 0.4,
     }
@@ -5186,6 +5198,12 @@ def analyze_race():
 
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
                     original_horse['_raw_hp'] = raw_hp if raw_hp else '-';
+                    raw_agf = str(original_horse.get('agf', '')).replace(',', '.').strip()
+                    try:
+                        has_valid_agf = float(raw_agf) > 0
+                    except (ValueError, TypeError):
+                        has_valid_agf = False
+                    agf_score_val = calculate_agf_score(original_horse.get('agf', ''), valid_agf_values)
 
                     metrics_pass1 = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
@@ -5205,7 +5223,7 @@ def analyze_race():
                         'pedigree': 50.0,                       # FAZ 4.6: pedigri skoru (placeholder)
                         'pedigree_weight': 0.03,                # FAZ 4.6: dinamik ağırlık (placeholder)
                         'hp_score': hp_score_val,               # FAZ 5.2: Handikap Puanı normalizasyonu
-                        'agf_score': calculate_agf_score(original_horse.get('agf', ''), valid_agf_values),  # FAZ 6.2: AGF piyasa sinyali
+                        'agf_score': agf_score_val,             # FAZ 6.2: AGF piyasa sinyali
                         'trainer_score': 50.0,                  # FAZ 6.2: Antrenör skoru (aşağıda güncellenecek)
                         # FAZ 4.7: calculate_dynamic_weights için meta alanlar
                         '_total_races':   len(races),
@@ -5234,6 +5252,24 @@ def analyze_race():
                     trainer_stats_val = fetch_trainer_stats(trainer_name_val) if trainer_name_val else None
                     trainer_score_val = calculate_trainer_score(trainer_stats_val)
                     metrics_pass1['trainer_score'] = trainer_score_val
+                    metric_source_flags = {
+                        'hasTraining': training_data is not None,
+                        'hasTrainingTimes': bool(training_data and training_data.get('times')),
+                        'trainingMatchedName': training_data.get('horseName') if training_data else None,
+                        'trainingDate': training_data.get('trainingDate') if training_data else None,
+                        'hasAgf': has_valid_agf,
+                        'rawAgf': raw_agf or None,
+                        'validAgfCountInRace': len(valid_agf_values),
+                        'agfNeutral': abs(float(agf_score_val) - 50.0) < 1.0,
+                        'hasSireName': bool(sire_name),
+                        'hasPedigree': bool(sire_stats and sire_stats.get('data_quality') != 'NONE'),
+                        'pedigreeDataQuality': sire_stats.get('data_quality', 'NONE') if sire_stats else 'NONE',
+                        'pedigreeOffspringRaces': sire_stats.get('total_offspring_races', 0) if sire_stats else 0,
+                        'hasTrainerName': bool(trainer_name_val),
+                        'hasTrainer': bool(trainer_stats_val and trainer_stats_val.get('data_quality') != 'NONE'),
+                        'trainerDataQuality': trainer_stats_val.get('data_quality', 'NONE') if trainer_stats_val else 'NONE',
+                        'trainerRaceCount': trainer_stats_val.get('total_races', 0) if trainer_stats_val else 0,
+                    }
 
                     ai_score_pass1 = calculate_ai_score(metrics_pass1)
 
@@ -5323,6 +5359,7 @@ def analyze_race():
                         'filteredRaceCount': len(filtered_races),
                         'detailFetchStatus': detail_fetch_status,
                         'featuresReliable': True,
+                        'metricSourceFlags': metric_source_flags,
                         'scoreBreakdown': {
                             'weightImpactScore': weight_impact_score,
                             'jockeyScore': jockey_score_val,
@@ -5388,6 +5425,18 @@ def analyze_race():
                         'filteredRaceCount': 0,
                         'detailFetchStatus': 'unrecoverable',
                         'featuresReliable': False,
+                        'metricSourceFlags': {
+                            'hasTraining': False,
+                            'hasTrainingTimes': False,
+                            'hasAgf': False,
+                            'validAgfCountInRace': len(valid_agf_values),
+                            'hasSireName': bool(original_horse.get('father', '').strip()),
+                            'hasPedigree': False,
+                            'pedigreeDataQuality': 'NONE',
+                            'hasTrainerName': bool(original_horse.get('trainer', '').strip()),
+                            'hasTrainer': False,
+                            'trainerDataQuality': 'NONE',
+                        },
                         '_runningStyle': 'TAKİPÇİ',
                         '_essScore': 50.0,
                         '_metrics_pass1': {},
@@ -5712,6 +5761,7 @@ def analyze_race():
                     'field_size': len(analyzed_horses),
                     'detail_fetch_status': _h.get('detailFetchStatus', ''),
                     'features_reliable': bool(_m),
+                    'metric_source_flags': _h.get('metricSourceFlags', {}),
                     'finish_pos': None,
                     'is_winner':  None,
                     'ts':         int(time.time()),
