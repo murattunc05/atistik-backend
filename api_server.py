@@ -2,13 +2,14 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlparse
 import prediction_logic
 import concurrent.futures
 import pandas as pd
 import numpy as np
 import time
 import re
+import urllib3
 
 app = Flask(__name__)
 CORS(app)  # Flutter'dan gelen isteklere izin ver
@@ -1295,6 +1296,241 @@ def get_daily_races():
         }), 500
 
 
+TJK_DAILY_PAGE_URL = "https://www.tjk.org/TR/YarisSever/Info/Page/GunlukYarisProgrami"
+TJK_DAILY_CITY_URL = "https://www.tjk.org/TR/YarisSever/Info/Sehir/GunlukYarisProgrami"
+TJK_DAILY_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": TJK_DAILY_PAGE_URL,
+}
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+def _clean_daily_text(value):
+    return re.sub(r'\s+', ' ', value or '').strip()
+
+
+def _tjk_daily_get(url, **kwargs):
+    """Fetch TJK daily-program HTML through the backend-only scraper path."""
+    response = requests.get(
+        url,
+        headers=TJK_DAILY_HEADERS,
+        timeout=kwargs.pop('timeout', 20),
+        verify=False,
+        **kwargs,
+    )
+    return response
+
+
+def _parse_daily_cities(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    cities = []
+    seen = set()
+
+    for link in soup.select('a[href*="SehirId"]'):
+        href = link.get('href') or ''
+        parsed = urlparse(urljoin(TJK_DAILY_PAGE_URL, href))
+        params = parse_qs(parsed.query)
+        city_id = (params.get('SehirId') or [''])[0]
+        city_name = (params.get('SehirAdi') or [''])[0]
+        display_name = city_name or _clean_daily_text(link.get_text(' ', strip=True))
+
+        if not city_id or not display_name or city_id in seen:
+            continue
+
+        cities.append({'id': city_id, 'name': _clean_daily_text(display_name)})
+        seen.add(city_id)
+
+    return cities
+
+
+def _parse_daily_horses(table):
+    horses = []
+
+    for row in table.select('tr'):
+        if row.select('th') or not row.select('td'):
+            continue
+
+        no_cell = row.select_one('.gunluk-GunlukYarisProgrami-SiraId')
+        name_cell = row.select_one('.gunluk-GunlukYarisProgrami-AtAdi')
+        name_anchor = None
+        if name_cell:
+            for anchor in name_cell.find_all('a', href=True, recursive=False):
+                if 'AtKosuBilgileri' in anchor.get('href', ''):
+                    name_anchor = anchor
+                    break
+        no = _clean_daily_text(no_cell.get_text(' ', strip=True)) if no_cell else ''
+        if name_anchor:
+            name = _clean_daily_text(name_anchor.get_text(' ', strip=True))
+        elif name_cell:
+            direct_text = ''.join(str(item) for item in name_cell.find_all(string=True, recursive=False))
+            name = _clean_daily_text(direct_text)
+        else:
+            name = ''
+        detail_link = name_anchor.get('href', '') if name_anchor else ''
+
+        if not no or not name:
+            continue
+
+        def cell_text(selector):
+            cell = row.select_one(selector)
+            return _clean_daily_text(cell.get_text(' ', strip=True)) if cell else ''
+
+        origin = cell_text('.gunluk-GunlukYarisProgrami-Baba')
+        father = origin
+        mother = ''
+        if ' - ' in origin:
+            parts = origin.split(' - ', 1)
+            father = parts[0].strip()
+            mother = parts[1].split('/')[0].strip()
+
+        best_rating = cell_text('.gunluk-GunlukYarisProgrami-DERECE').split(' ')[0]
+
+        horses.append({
+            'no': no,
+            'name': name,
+            'jockey': cell_text('.gunluk-GunlukYarisProgrami-JokeAdi'),
+            'weight': cell_text('.gunluk-GunlukYarisProgrami-Kilo'),
+            'age': cell_text('.gunluk-GunlukYarisProgrami-Yas'),
+            'owner': cell_text('.gunluk-GunlukYarisProgrami-SahipAdi'),
+            'last6': cell_text('.gunluk-GunlukYarisProgrami-Son6Yaris'),
+            'father': father,
+            'mother': mother,
+            'trainer': cell_text('.gunluk-GunlukYarisProgrami-AntronorAdi'),
+            'hp': cell_text('.gunluk-GunlukYarisProgrami-Hc'),
+            'kgs': cell_text('.gunluk-GunlukYarisProgrami-KGS'),
+            's20': cell_text('.gunluk-GunlukYarisProgrami-s20') or cell_text('.gunluk-GunlukYarisProgrami-S20'),
+            'bestRating': best_rating,
+            'agf': cell_text('.gunluk-GunlukYarisProgrami-AGFORAN'),
+            'detailLink': detail_link,
+        })
+
+    return horses
+
+
+def _parse_daily_races(html, city_id, city_name):
+    soup = BeautifulSoup(html, 'html.parser')
+
+    time_map = {}
+    tabs_ul = soup.find('ul', class_=lambda c: c and 'races-tabs' in (' '.join(c) if isinstance(c, list) else c))
+    if tabs_ul:
+        for a_tag in tabs_ul.find_all('a', href=True):
+            frag_match = re.search(r'#(\d+)', a_tag.get('href', ''))
+            if not frag_match:
+                continue
+            lines = [line.strip() for line in a_tag.get_text(separator='\n', strip=True).splitlines() if line.strip()]
+            if len(lines) >= 2:
+                time_map[frag_match.group(1)] = lines[1]
+
+    races = []
+    for rd in soup.select('div.race-details'):
+        race_no_el = rd.select_one('h3.race-no')
+        race_config_el = rd.select_one('h3.race-config')
+
+        race_no = ''
+        race_id = ''
+        race_time = ''
+        if race_no_el:
+            anchor = race_no_el.find('a', href=True)
+            if anchor:
+                frag = re.search(r'#(\d+)', anchor.get('href', ''))
+                if frag:
+                    race_id = frag.group(1)
+                    race_time = time_map.get(race_id, '')
+            no_match = re.search(r'(\d+)\.', race_no_el.get_text(' ', strip=True))
+            if no_match:
+                race_no = no_match.group(1)
+
+        race_name = ''
+        distance = ''
+        track_type = ''
+        if race_config_el:
+            config_text = _clean_daily_text(race_config_el.get_text(' ', strip=True))
+            dist_match = re.search(r'\b(\d{3,4})\b', config_text)
+            if dist_match:
+                distance = dist_match.group(1)
+            track_match = re.search(r'\b(Çim|Cim|Kum|Sentetik)\b', config_text, re.IGNORECASE)
+            if track_match:
+                track_type = track_match.group(1)
+                if track_type.lower().endswith('im'):
+                    track_type = 'Çim'
+                else:
+                    track_type = track_type.capitalize()
+            type_match = re.search(r'^(.+?)\s*,', config_text)
+            if type_match:
+                race_name = type_match.group(1).strip()
+
+        prize = ''
+        parent_pane = rd.find_parent('div', id=True)
+        if parent_pane:
+            for h3_el in parent_pane.find_all('h3'):
+                if 'kramiye' in h3_el.get_text(' ', strip=True).lower():
+                    dl_el = h3_el.find_next_sibling('dl')
+                    if dl_el:
+                        prize_match = re.search(r'1\.\)\s*([\d.,]+)', dl_el.get_text(' ', strip=True))
+                        if prize_match:
+                            prize = prize_match.group(1).replace('.', '').replace(',', '') + ' TL'
+                    break
+
+        if race_no:
+            races.append({
+                'time': race_time,
+                'raceNo': race_no,
+                'raceNumber': race_no,
+                'city': city_name or city_id,
+                'raceName': race_name,
+                'raceType': race_name,
+                'distance': distance,
+                'trackType': track_type,
+                'track': track_type,
+                'prize': prize,
+                'raceId': race_id,
+                'horses': [],
+            })
+
+    horse_tables = [table for table in soup.select('table') if table.select('.gunluk-GunlukYarisProgrami-AtAdi')]
+    for index, table in enumerate(horse_tables[:len(races)]):
+        races[index]['horses'] = _parse_daily_horses(table)
+
+    return races
+
+
+def _load_daily_program(date_param, requested_city_id=None, requested_city_name=None):
+    main_response = _tjk_daily_get(
+        TJK_DAILY_PAGE_URL,
+        params={'QueryParameter_Tarih': date_param},
+    )
+    main_response.raise_for_status()
+
+    cities = _parse_daily_cities(main_response.text)
+    if not cities:
+        return [], [], requested_city_id or '', requested_city_name or ''
+
+    selected = None
+    if requested_city_id:
+        selected = next((city for city in cities if city['id'] == requested_city_id), None)
+    if selected is None:
+        selected = cities[0]
+
+    city_id = selected['id']
+    city_name = requested_city_name or selected['name']
+    city_response = _tjk_daily_get(
+        TJK_DAILY_CITY_URL,
+        params={
+            'SehirId': city_id,
+            'QueryParameter_Tarih': date_param,
+            'SehirAdi': city_name,
+            'Era': 'today',
+        },
+    )
+    city_response.raise_for_status()
+
+    races = _parse_daily_races(city_response.text, city_id, city_name)
+    return cities, races, city_id, city_name
+
+
 @app.route('/api/compare-horses', methods=['POST'])
 def compare_horses():
     """Atları karşılaştır ve kazanma olasılıklarını hesapla"""
@@ -1334,10 +1570,27 @@ def daily_program():
     """TJK Günlük Yarış Programı"""
     try:
         date_param = request.args.get('date')  # Format: dd/MM/yyyy
-        city_id = request.args.get('cityId', '1') # Default İstanbul
+        city_id = request.args.get('cityId')
+        city_name = request.args.get('cityName')
         
         if not date_param:
             return jsonify({'success': False, 'error': 'Date parameter is required'}), 400
+
+        cities, races, selected_city_id, selected_city_name = _load_daily_program(
+            date_param,
+            requested_city_id=city_id,
+            requested_city_name=city_name,
+        )
+
+        return jsonify({
+            'success': True,
+            'races': races,
+            'count': len(races),
+            'cities': cities,
+            'cityId': selected_city_id,
+            'cityName': selected_city_name,
+            'date': date_param,
+        })
 
         # TJK Headers
         headers = {
