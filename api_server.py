@@ -1805,6 +1805,21 @@ def health_check():
     """Sunucu sağlık kontrolü"""
     return jsonify({'status': 'ok', 'message': 'TJK API Server çalışıyor'})
 
+def _empty_horse_details(horse_data, reason='no_history'):
+    """Return a usable neutral detail payload when TJK history is unavailable."""
+    return {
+        'name': horse_data.get('name'),
+        'jockey': horse_data.get('jockey', ''),
+        'weight': horse_data.get('weight', ''),
+        'races': [],
+        'filteredRaces': [],
+        'degreeStats': calculate_degree_stats([]),
+        'totalRaceCount': 0,
+        'filteredRaceCount': 0,
+        'detailFetchStatus': reason,
+    }
+
+
 def fetch_horse_details_safe(horse_data, target_distance=None):
     """
     Güvenli bir şekilde at detaylarını çeker (Hata yönetimi ile).
@@ -1818,26 +1833,37 @@ def fetch_horse_details_safe(horse_data, target_distance=None):
     try:
         detail_link = horse_data.get('detailLink')
         if not detail_link:
-            return None
+            return _empty_horse_details(horse_data, 'missing_detail_link')
             
         full_url = urljoin(TARGET_URL, detail_link).replace("&amp;", "&")
         
-        response = requests.get(full_url, headers=HEADERS, timeout=15, verify=False)
-        if response.status_code != 200:
-            return None
+        response = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = requests.get(full_url, headers=HEADERS, timeout=20, verify=False)
+                if response.status_code == 200:
+                    break
+                last_error = f'http_{response.status_code}'
+            except Exception as req_err:
+                last_error = f'request_error:{req_err}'
+                time.sleep(0.4 * (attempt + 1))
+
+        if response is None or response.status_code != 200:
+            return _empty_horse_details(horse_data, last_error or 'http_error')
             
         soup = BeautifulSoup(response.text, 'html.parser')
         data_div = soup.find('div', id='dataDiv')
         if not data_div:
-            return None
+            return _empty_horse_details(horse_data, 'missing_data_div')
             
         race_table = data_div.find('table', id='queryTable')
         if not race_table:
-            return None
+            return _empty_horse_details(horse_data, 'empty_history')
             
         table_body = race_table.find('tbody', id='tbody0')
         if not table_body:
-            return None
+            return _empty_horse_details(horse_data, 'empty_history')
             
         rows = table_body.find_all('tr')
         all_races = []       # Tüm yarışlar
@@ -1924,12 +1950,13 @@ def fetch_horse_details_safe(horse_data, target_distance=None):
             'filteredRaces': filtered_races,
             'degreeStats': degree_stats,
             'totalRaceCount': len(all_races),
-            'filteredRaceCount': len(filtered_races)
+            'filteredRaceCount': len(filtered_races),
+            'detailFetchStatus': 'ok' if all_races else 'empty_history',
         }
         
     except Exception as e:
         print(f"Error fetching details for {horse_data.get('name')}: {e}")
-        return None
+        return _empty_horse_details(horse_data, f'exception:{type(e).__name__}')
 
 
 def calculate_degree_stats(races):
@@ -4620,12 +4647,19 @@ def calculate_v4_data_quality(scored_horses):
     zero_count = sum(1 for score in scores if score <= 0.0)
     valid_count = runner_count - zero_count
     all_zero = runner_count > 0 and valid_count == 0
+    missing_metrics_count = sum(1 for horse in scored_horses if not horse.get('_mf'))
+    detail_fetch_failed_count = sum(
+        1 for horse in scored_horses
+        if horse.get('detailFetchStatus') not in (None, '', 'ok', 'empty_history')
+    )
 
     return {
         'zeroScoreCount': zero_count,
         'validRunnerCount': valid_count,
+        'missingMetricsCount': missing_metrics_count,
+        'detailFetchFailedCount': detail_fetch_failed_count,
         'allZeroRace': all_zero,
-        'lowDataRace': all_zero or valid_count < 3,
+        'lowDataRace': all_zero or valid_count < 3 or detail_fetch_failed_count > runner_count * 0.4,
     }
 
 
@@ -5032,7 +5066,7 @@ def analyze_race():
         intermediate_horses = []  # [{ original_horse, horse_data, style, ess, ... }]
         
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             future_to_horse = {executor.submit(fetch_horse_details_safe, horse, target_distance): horse for horse in horses}
             
             for future in concurrent.futures.as_completed(future_to_horse):
@@ -5097,10 +5131,11 @@ def analyze_race():
                     print(f"[DEBUG] At: {horse_name_clean}, Training: YOK")
                 training_fitness, training_label, days_since, training_best_time, training_best_distance = calculate_training_fitness(training_data)
                 
-                if horse_data and horse_data.get('races'):
-                    races = horse_data['races']
+                if horse_data is not None:
+                    races = horse_data.get('races', [])
                     filtered_races = horse_data.get('filteredRaces', [])
                     degree_stats = horse_data.get('degreeStats', {})
+                    detail_fetch_status = horse_data.get('detailFetchStatus', 'ok')
                     
                     # 2. Gelişmiş Metrikler — Derece bazlı
                     trend_value, trend_score, trend_label = calculate_form_trend(races)
@@ -5286,6 +5321,8 @@ def analyze_race():
                         'bestTime': best_time,
                         'raceCount': len(races),
                         'filteredRaceCount': len(filtered_races),
+                        'detailFetchStatus': detail_fetch_status,
+                        'featuresReliable': True,
                         'scoreBreakdown': {
                             'weightImpactScore': weight_impact_score,
                             'jockeyScore': jockey_score_val,
@@ -5349,6 +5386,8 @@ def analyze_race():
                         'stats': {},
                         'raceCount': 0,
                         'filteredRaceCount': 0,
+                        'detailFetchStatus': 'unrecoverable',
+                        'featuresReliable': False,
                         '_runningStyle': 'TAKİPÇİ',
                         '_essScore': 50.0,
                         '_metrics_pass1': {},
@@ -5671,11 +5710,13 @@ def analyze_race():
                     'distance':   target_distance or '',
                     'track':      target_track or '',
                     'field_size': len(analyzed_horses),
+                    'detail_fetch_status': _h.get('detailFetchStatus', ''),
+                    'features_reliable': bool(_m),
                     'finish_pos': None,
                     'is_winner':  None,
                     'ts':         int(time.time()),
                     'features': {
-                        k: _m.get(k, 50.0)
+                        k: _m.get(k) if _m else None
                         for k in [
                             'degree_avg','degree_trend','degree_stability',
                             'form_trend','track_suit','distance_suit',
