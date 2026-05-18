@@ -4241,7 +4241,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.3"
+_V4_VERSION = "4.4"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -4358,22 +4358,23 @@ _V4_WEIGHT_PROFILES = {
     },
     'MAIDEN': {
         'level': 'category',
-        'sample_races': 0,
+        'sample_races': 16,
         'status': 'candidate_shadow',
         'weights': {
-            'hp_score': 27.0,
-            'form_trend': 13.0,
-            'distance_suit': 9.0,
-            'bounce_score': 7.0,
-            'training_degree_score': 7.0,
-            'training_fitness': 6.0,
-            'weight_impact': 5.0,
-            'pace_score': 5.0,
-            'pedigree': 5.0,
-            'agf_score': 5.0,
-            'degree_avg': 4.0,
-            'jockey_score': 4.0,
-            'degree_trend': 3.0,
+            'hp_score': 31.2,
+            'training_degree_score': 11.1,
+            'form_trend': 10.3,
+            'jockey_score': 7.1,
+            'weight_impact': 6.8,
+            'distance_suit': 6.0,
+            'degree_avg': 6.0,
+            'bounce_score': 5.9,
+            'pedigree': 5.4,
+            'degree_stability': 3.7,
+            'degree_trend': 3.4,
+            'training_fitness': 2.1,
+            'pace_score': 1.0,
+            'agf_score': 0.0,
         },
     },
     'KV': {
