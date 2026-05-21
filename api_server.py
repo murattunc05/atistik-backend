@@ -4241,7 +4241,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.4"
+_V4_VERSION = "4.5"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -4340,40 +4340,43 @@ _V4_WEIGHT_PROFILES = {
     },
     'HANDIKAP': {
         'level': 'category',
-        'sample_races': 0,
-        'status': 'candidate_shadow',
+        'sample_races': 31,
+        'status': 'eligible_shadow',
         'weights': {
-            'degree_avg': 24.0,
-            'pace_score': 18.0,
-            'weight_impact': 14.0,
-            'jockey_score': 11.0,
-            'bounce_score': 9.0,
-            'training_degree_score': 6.0,
-            'distance_suit': 5.0,
-            'form_trend': 5.0,
-            'degree_stability': 3.0,
-            'hp_score': 3.0,
-            'pedigree': 2.0,
+            'form_trend': 29.5,
+            'pace_score': 16.4,
+            'degree_avg': 13.3,
+            'bounce_score': 7.9,
+            'weight_impact': 6.9,
+            'training_fitness': 6.7,
+            'jockey_score': 5.2,
+            'distance_suit': 4.7,
+            'pedigree': 2.8,
+            'hp_score': 2.7,
+            'degree_stability': 2.0,
+            'training_degree_score': 1.6,
+            'degree_trend': 0.3,
+            'agf_score': 0.0,
         },
     },
     'MAIDEN': {
         'level': 'category',
-        'sample_races': 16,
-        'status': 'candidate_shadow',
+        'sample_races': 27,
+        'status': 'eligible_shadow',
         'weights': {
-            'hp_score': 31.2,
-            'training_degree_score': 11.1,
-            'form_trend': 10.3,
-            'jockey_score': 7.1,
-            'weight_impact': 6.8,
-            'distance_suit': 6.0,
-            'degree_avg': 6.0,
-            'bounce_score': 5.9,
-            'pedigree': 5.4,
-            'degree_stability': 3.7,
-            'degree_trend': 3.4,
-            'training_fitness': 2.1,
-            'pace_score': 1.0,
+            'hp_score': 28.0,
+            'form_trend': 20.2,
+            'jockey_score': 13.4,
+            'pedigree': 8.3,
+            'degree_avg': 8.1,
+            'degree_stability': 5.0,
+            'distance_suit': 4.6,
+            'training_degree_score': 3.8,
+            'degree_trend': 3.7,
+            'bounce_score': 2.0,
+            'pace_score': 1.4,
+            'weight_impact': 1.0,
+            'training_fitness': 0.5,
             'agf_score': 0.0,
         },
     },
@@ -4685,9 +4688,9 @@ def resolve_v4_decision(profile, resolved):
 
     if category == 'HANDIKAP':
         return {
-            'mode': 'disabled',
+            'mode': 'shadow_only',
             'useForRanking': False,
-            'reason': 'HANDIKAP profile failed 08.05.2026 shadow test; keep old ranking.',
+            'reason': 'HANDIKAP v4.5 full-rank profile is under shadow observation; visible ranking stays old.',
         }
 
     if category == 'SARTLI' and subtype == 'SART3':
