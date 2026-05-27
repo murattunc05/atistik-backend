@@ -4241,7 +4241,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.5"
+_V4_VERSION = "4.6"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -4262,8 +4262,8 @@ _V4_MIN_SAMPLE_RACES = {
 _V4_WEIGHT_PROFILES = {
     'SART3': {
         'level': 'subtype',
-        'sample_races': 5,
-        'status': 'candidate_shadow',
+        'sample_races': 12,
+        'status': 'eligible_shadow',
         'weights': {
             'training_degree_score': 20.2,
             'training_fitness': 16.6,
@@ -4282,8 +4282,8 @@ _V4_WEIGHT_PROFILES = {
     },
     'SART4': {
         'level': 'subtype',
-        'sample_races': 5,
-        'status': 'candidate_shadow',
+        'sample_races': 21,
+        'status': 'eligible_shadow',
         'weights': {
             'training_fitness': 35.0,
             'agf_score': 16.0,
@@ -4302,8 +4302,8 @@ _V4_WEIGHT_PROFILES = {
     },
     'SART5': {
         'level': 'subtype',
-        'sample_races': 3,
-        'status': 'candidate_shadow',
+        'sample_races': 12,
+        'status': 'eligible_shadow',
         'weights': {
             'jockey_score': 25.2,
             'pedigree': 16.1,
@@ -4321,7 +4321,7 @@ _V4_WEIGHT_PROFILES = {
     },
     'SARTLI': {
         'level': 'category',
-        'sample_races': 38,
+        'sample_races': 63,
         'status': 'eligible_shadow',
         'weights': {
             'weight_impact': 18.0,
@@ -4340,8 +4340,8 @@ _V4_WEIGHT_PROFILES = {
     },
     'HANDIKAP': {
         'level': 'category',
-        'sample_races': 31,
-        'status': 'eligible_shadow',
+        'sample_races': 55,
+        'status': 'visible_controlled',
         'weights': {
             'form_trend': 29.5,
             'pace_score': 16.4,
@@ -4361,7 +4361,7 @@ _V4_WEIGHT_PROFILES = {
     },
     'MAIDEN': {
         'level': 'category',
-        'sample_races': 27,
+        'sample_races': 45,
         'status': 'eligible_shadow',
         'weights': {
             'hp_score': 28.0,
@@ -4382,8 +4382,8 @@ _V4_WEIGHT_PROFILES = {
     },
     'KV': {
         'level': 'category',
-        'sample_races': 0,
-        'status': 'candidate_shadow',
+        'sample_races': 26,
+        'status': 'visible_controlled',
         'weights': {
             'jockey_score': 22.0,
             'form_trend': 18.0,
@@ -4403,7 +4403,7 @@ _V4_WEIGHT_PROFILES = {
     },
     'SATIS': {
         'level': 'category',
-        'sample_races': 0,
+        'sample_races': 7,
         'status': 'candidate_shadow',
         'weights': {
             'form_trend': 22.0,
@@ -4420,7 +4420,7 @@ _V4_WEIGHT_PROFILES = {
     },
     'GRUP': {
         'level': 'category',
-        'sample_races': 0,
+        'sample_races': 3,
         'status': 'candidate_shadow',
         'weights': {
             'degree_avg': 24.0,
@@ -4679,8 +4679,26 @@ def calculate_v4_data_quality(scored_horses):
     }
 
 
+def calculate_softmax_probabilities(scores, temperature=18.0):
+    numeric_scores = []
+    for score in scores:
+        try:
+            numeric_scores.append(float(score or 0.0))
+        except (ValueError, TypeError):
+            numeric_scores.append(0.0)
+
+    if not any(score > 0 for score in numeric_scores):
+        return [0.0 for _ in numeric_scores]
+
+    import math
+    max_score = max(numeric_scores)
+    exp_scores = [math.exp((score - max_score) / temperature) for score in numeric_scores]
+    exp_total = sum(exp_scores) or 1.0
+    return [round((exp_score / exp_total) * 100, 1) for exp_score in exp_scores]
+
+
 def resolve_v4_decision(profile, resolved):
-    """Classify v4 output for rollout tracking. It never enables ranking yet."""
+    """Classify v4 output for rollout tracking and controlled visible ranking."""
     category = profile.get('category', 'GLOBAL')
     subtype = profile.get('subtype', 'GLOBAL')
     fallback_level = resolved.get('fallbackLevel', 'global')
@@ -4688,9 +4706,16 @@ def resolve_v4_decision(profile, resolved):
 
     if category == 'HANDIKAP':
         return {
-            'mode': 'shadow_only',
-            'useForRanking': False,
-            'reason': 'HANDIKAP v4.5 full-rank profile is under shadow observation; visible ranking stays old.',
+            'mode': 'visible_controlled',
+            'useForRanking': True,
+            'reason': 'HANDIKAP v4.6 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
+        }
+
+    if category == 'KV':
+        return {
+            'mode': 'visible_controlled',
+            'useForRanking': True,
+            'reason': 'KV v4.6 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
         }
 
     if category == 'SARTLI' and subtype == 'SART3':
@@ -4714,7 +4739,7 @@ def resolve_v4_decision(profile, resolved):
             'reason': 'SARTLI eligible shadow profile improved 08.05.2026; candidate for controlled rollout.',
         }
 
-    if category in ['MAIDEN', 'KV', 'SATIS', 'GRUP']:
+    if category in ['MAIDEN', 'SATIS', 'GRUP']:
         return {
             'mode': 'shadow_only',
             'useForRanking': False,
@@ -4729,7 +4754,7 @@ def resolve_v4_decision(profile, resolved):
 
 
 def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
-    """Attach v4 fields without changing aiScore/rank/winProbability."""
+    """Attach v4 fields, and use v4 as visible ranking only for controlled rollout groups."""
     profile = extract_v4_race_profile(
         race_type=race_type,
         distance=distance,
@@ -4774,11 +4799,43 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
     for index, horse in enumerate(scored):
         horse['v4Rank'] = index + 1
 
+    legacy_order = sorted(scored, key=lambda h: h.get('aiScore', 0), reverse=True)
+    legacy_probs = calculate_softmax_probabilities(
+        [horse.get('aiScore', 0) for horse in legacy_order],
+        temperature=18.0,
+    )
+    for index, horse in enumerate(legacy_order):
+        legacy_score = horse.get('aiScore', 0)
+        horse['legacyScore'] = legacy_score
+        horse['legacyRank'] = index + 1
+        horse['legacyWinProbability'] = legacy_probs[index] if index < len(legacy_probs) else 0.0
+        horse['legacyWinProbabilityLabel'] = (
+            f"%{horse['legacyWinProbability']:.1f} eski algoritma kazanma ihtimali"
+        )
+
+    use_visible_v4 = bool(decision['useForRanking']) and not data_quality['lowDataRace']
+    if decision['useForRanking'] and not use_visible_v4:
+        fallback_reason = ' v4 visible fallback disabled because race data quality is low.'
+        decision['reason'] = f"{decision['reason']}{fallback_reason}"
+
+    for horse in scored:
+        horse['v4AppliedForRanking'] = use_visible_v4
+        horse['v4UseForRanking'] = use_visible_v4
+        horse['v4Reason'] = decision['reason']
+        if use_visible_v4:
+            v4_score = horse.get('v4Score', 0)
+            horse['aiScore'] = v4_score
+            horse['v4Mode'] = 'visible'
+            metrics = horse.get('_mf', {}) or {}
+            if metrics:
+                horse['prediction'] = generate_prediction(v4_score, metrics)
+                horse['insight'] = generate_insight(horse.get('name', ''), metrics, v4_score)
+
     print(
-        f"[V4 SHADOW] profile={profile.get('profileKey')} "
+        f"[V4 ROLLOUT] profile={profile.get('profileKey')} "
         f"selected={resolved['selectedKey']} level={resolved['fallbackLevel']} "
         f"sample={resolved['sampleRaces']}/{resolved['minRequired']} "
-        f"decision={decision['mode']} version={_V4_VERSION} "
+        f"decision={decision['mode']} visible={use_visible_v4} version={_V4_VERSION} "
         f"valid={data_quality['validRunnerCount']} zero={data_quality['zeroScoreCount']}"
     )
 
@@ -5677,15 +5734,10 @@ def analyze_race():
         # Temperature parametresi ayrışımı kontrol eder:
         #   Düşük T → kazanan daha net öne çıkar
         #   Yüksek T → dağılım daha eşit
-        import math
         _scores = [h.get('aiScore', 0) for h in analyzed_horses]
-        if any(s > 0 for s in _scores):
-            _temp = 18.0  # FAZ 6.2: Artırıldı (12→18) — daha yumuşak dağılım, sıralama ayrışımı iyileşti
-            _max_s = max(_scores)
-            _exp_scores = [math.exp((s - _max_s) / _temp) for s in _scores]
-            _exp_total  = sum(_exp_scores)
-            for h, exp_s in zip(analyzed_horses, _exp_scores):
-                win_prob = round((exp_s / _exp_total) * 100, 1)
+        _win_probs = calculate_softmax_probabilities(_scores, temperature=18.0)
+        if any(prob > 0 for prob in _win_probs):
+            for h, win_prob in zip(analyzed_horses, _win_probs):
                 h['winProbability'] = win_prob          # %  kazanma ihtimali
                 h['winProbabilityLabel'] = (
                     f'%{win_prob:.1f} kazanma ihtimali'
@@ -5748,12 +5800,16 @@ def analyze_race():
                     'horse_name': _h_name,
                     'ai_score':   _h.get('aiScore', 0),
                     'rank_pred':  _h.get('rank', 0),
+                    'legacy_score': _h.get('legacyScore', _h.get('aiScore', 0)),
+                    'legacy_rank': _h.get('legacyRank', _h.get('rank', 0)),
+                    'legacy_win_probability': _h.get('legacyWinProbability'),
                     'v4_score':   _h.get('v4Score', 0),
                     'v4_rank':    _h.get('v4Rank', 0),
                     'v4_version': _h.get('v4Version', _V4_VERSION),
                     'v4_mode':    _h.get('v4Mode', 'shadow'),
                     'v4_decision_mode': _h.get('v4DecisionMode', 'shadow_only'),
                     'v4_use_for_ranking': _h.get('v4UseForRanking', False),
+                    'v4_applied_for_ranking': _h.get('v4AppliedForRanking', False),
                     'v4_reason': _h.get('v4Reason', ''),
                     'v4_profile': _h.get('v4Profile', {}),
                     'v4_weights': _h.get('v4Weights', {}),
