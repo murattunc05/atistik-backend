@@ -1,0 +1,122 @@
+name: Atistik Daily Automation
+
+on:
+  schedule:
+    # 10:30 Europe/Istanbul
+    - cron: "30 7 * * *"
+    # 22:45 Europe/Istanbul
+    - cron: "45 19 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Automation mode"
+        required: true
+        default: "analyze-dry-run"
+        type: choice
+        options:
+          - analyze-dry-run
+          - analyze
+          - results-dry-run
+          - results
+          - replay-results
+      date:
+        description: "Run date: YYYY-MM-DD, DD.MM.YYYY, or DD/MM/YYYY. Empty = today in Istanbul."
+        required: false
+        default: ""
+      replay_race_id:
+        description: "Optional race_id for replay-results"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atistik-daily-automation
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ATISTIK_BACKEND_URL: ${{ secrets.ATISTIK_BACKEND_URL }}
+      ML_DATA_REPO: ${{ secrets.ML_DATA_REPO }}
+      ML_DATA_TOKEN: ${{ secrets.ML_DATA_TOKEN }}
+      REPLAY_RACE_ID: ${{ inputs.replay_race_id }}
+
+    steps:
+      - name: Checkout backend repo
+        uses: actions/checkout@v4
+
+      - name: Checkout ML data repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.ML_DATA_REPO }}
+          token: ${{ secrets.ML_DATA_TOKEN }}
+          path: ml-data
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve mode and date
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODE="${{ inputs.mode }}"
+          if [[ -z "$MODE" ]]; then
+            if [[ "${{ github.event.schedule }}" == "30 7 * * *" ]]; then
+              MODE="analyze"
+            elif [[ "${{ github.event.schedule }}" == "45 19 * * *" ]]; then
+              MODE="results"
+            else
+              MODE="analyze-dry-run"
+            fi
+          fi
+
+          RUN_DATE="${{ inputs.date }}"
+          if [[ -z "$RUN_DATE" ]]; then
+            RUN_DATE="$(TZ=Europe/Istanbul date +%Y-%m-%d)"
+          fi
+
+          MAX_ATTEMPTS="1"
+          if [[ "$MODE" == "results" ]]; then
+            MAX_ATTEMPTS="5"
+          fi
+
+          BACKEND_URL="${ATISTIK_BACKEND_URL:-https://atistik-backend.onrender.com}"
+
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "date=$RUN_DATE" >> "$GITHUB_OUTPUT"
+          echo "max_attempts=$MAX_ATTEMPTS" >> "$GITHUB_OUTPUT"
+          echo "backend_url=$BACKEND_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Run automation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python automation/atistik_daily_job.py \
+            --mode "${{ steps.resolve.outputs.mode }}" \
+            --date "${{ steps.resolve.outputs.date }}" \
+            --backend-url "${{ steps.resolve.outputs.backend_url }}" \
+            --data-dir "$GITHUB_WORKSPACE/ml-data" \
+            --max-attempts "${{ steps.resolve.outputs.max_attempts }}"
+
+      - name: Commit automation reports
+        shell: bash
+        working-directory: ml-data
+        run: |
+          set -euo pipefail
+          git config user.name "atistik-automation"
+          git config user.email "atistik-automation@users.noreply.github.com"
+          git add automation
+          if git diff --cached --quiet; then
+            echo "No automation report changes."
+          else
+            git commit -m "Atistik automation ${{ steps.resolve.outputs.mode }} ${{ steps.resolve.outputs.date }}"
+            git push
+          fi
