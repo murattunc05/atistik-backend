@@ -4220,6 +4220,10 @@ def calculate_dynamic_weights(metrics, race_type='default'):
     dist_races        = metrics.get('_dist_races', 0)
     has_pedigree_data = metrics.get('_has_pedigree', False)
     has_trainer_data  = metrics.get('_has_trainer', False)
+    has_agf_data      = metrics.get('_has_agf', False)
+    has_hp_data       = metrics.get('_has_hp', False)
+    has_weight_data   = metrics.get('_has_weight', False)
+    has_jockey_data   = metrics.get('_has_jockey', False)
     pedigree_weight   = float(metrics.get('pedigree_weight', 0.03))
 
     # ══ FAZ A: TEMEL AĞIRLIKLAR (Ölü katmanlar sıfırlandı) ══════════════
@@ -4360,8 +4364,36 @@ def calculate_dynamic_weights(metrics, race_type='default'):
     # ── FAZ B.4: AGF VERİSİ YOK → AGF ağırlığını dağıt ─────────────
     # AGF=50 nötr değer demek (veri yok veya koşu başlamadı).
     # Maiden'da %20 ağırlıkla bu çok büyük → sıfırla ve dağıt.
+    unavailable = set()
+    if total_races == 0:
+        unavailable.update([
+            'degree_avg', 'degree_trend', 'degree_stability',
+            'form_trend', 'track_suit', 'distance_suit',
+            'bounce_score', 'pace_score', 'weight_impact',
+        ])
+    else:
+        if track_races == 0:
+            unavailable.add('track_suit')
+        if dist_races == 0:
+            unavailable.add('distance_suit')
+
+    if not has_training:
+        unavailable.update(['training_fitness', 'training_degree_score'])
+    if not has_pedigree_data:
+        unavailable.add('pedigree')
+    if not has_trainer_data:
+        unavailable.add('trainer_score')
+    if not has_agf_data:
+        unavailable.add('agf_score')
+    if not has_hp_data:
+        unavailable.add('hp_score')
+    if not has_weight_data:
+        unavailable.add('weight_impact')
+    if not has_jockey_data and abs(float(metrics.get('jockey_score', 50.0) or 50.0) - 50.0) < 1.0:
+        unavailable.add('jockey_score')
+
     agf_val = metrics.get('agf_score', 50.0)
-    if abs(agf_val - 50.0) < 1.0 and w.get('agf_score', 0) > 0.01:
+    if not has_agf_data and abs(agf_val - 50.0) < 1.0 and w.get('agf_score', 0) > 0.01:
         freed_agf = w['agf_score']
         w['agf_score'] = 0.0
         # Dağıt: pedigri %40, jokey %30, idman %30
@@ -4374,6 +4406,17 @@ def calculate_dynamic_weights(metrics, race_type='default'):
             w['bounce_score'] += freed_agf * 0.15
 
     # ── TOPLAMI %100'e normalize et ─────────────────────────────────
+    freed_missing = 0.0
+    for key in unavailable:
+        freed_missing += w.get(key, 0.0)
+        w[key] = 0.0
+
+    eligible = [key for key, value in w.items() if value > 0 and key not in unavailable]
+    eligible_total = sum(w[key] for key in eligible)
+    if freed_missing > 0 and eligible_total > 0:
+        for key in eligible:
+            w[key] += freed_missing * (w[key] / eligible_total)
+
     total = sum(w.values())
     if total > 0:
         w = {k: round(v / total, 4) for k, v in w.items()}
@@ -5626,12 +5669,14 @@ def analyze_race():
                     _jockey_races = [r for r in races if jockey_match(r.get('jockey', ''), _cur_jockey)]
                     _jockey_wins = sum(1 for r in _jockey_races if r.get('rank') == '1')
                     _jockey_stats_pre = {
-                        'totalRaces': len(_jockey_races) if _jockey_races else len(races),
-                        'wins': _jockey_wins if _jockey_races else sum(1 for r in races if r.get('rank') == '1'),
-                    } if _cur_jockey else None
+                        'totalRaces': len(_jockey_races),
+                        'wins': _jockey_wins,
+                    } if _cur_jockey and _jockey_races else None
                     _last_jockey_race = races[0].get('jockey', '').strip() if races else ''
                     _jockey_changed_pre = bool(_cur_jockey and _last_jockey_race and not jockey_match(_cur_jockey, _last_jockey_race))
                     _training_jockey = training_data.get('trainingJockey', '') if training_data else ''
+                    _jockey_training_match = bool(_cur_jockey and _training_jockey and jockey_match(_training_jockey, _cur_jockey))
+                    has_jockey_source = bool(_jockey_stats_pre or _jockey_changed_pre or _jockey_training_match)
                     jockey_score_val = calculate_jockey_score(_jockey_stats_pre, _jockey_changed_pre, _training_jockey, _cur_jockey)
                     
                     bounce_score_val = calculate_bounce_score(races)
@@ -5640,6 +5685,7 @@ def analyze_race():
                     # Yüksek HP = güçlü at → doğrusal ödüllendirme
                     # Eski dar [15-90] aralığı kaldırıldı → tam [0-100] normalizasyon
                     raw_hp = str(original_horse.get('hp', '')).strip()
+                    has_valid_hp = raw_hp.isdigit()
                     horse_hp = int(raw_hp) if raw_hp.isdigit() else (race_min_hp if valid_hps else 50)
                     if not valid_hps or race_max_hp == race_min_hp:
                         hp_score_val = 50.0
@@ -5653,6 +5699,7 @@ def analyze_race():
                     raw_agf = str(original_horse.get('agf', '')).strip()
                     has_valid_agf = parse_agf_percent(raw_agf) is not None
                     agf_score_val = calculate_agf_score(original_horse.get('agf', ''), valid_agf_values)
+                    has_weight_source = bool(current_weight and last_weight)
 
                     metrics_pass1 = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
@@ -5680,6 +5727,10 @@ def analyze_race():
                         '_dist_races':    len(filtered_races),
                         '_has_training':  training_data is not None,
                         '_has_pedigree':  False,  # Pe4.6 sonrası güncellenecek
+                        '_has_agf':       has_valid_agf,
+                        '_has_hp':        has_valid_hp,
+                        '_has_weight':    has_weight_source,
+                        '_has_jockey':    has_jockey_source,
                         '_race_type':     race_type,  # FAZ 6.2: Koşu tipine özel ağırlık profili
                         '_horse_races':   races,       # Konsensüs: grup ayarlaması için geçmiş yarışlar
                     }
@@ -5748,16 +5799,12 @@ def analyze_race():
 
 
                     jockey_wins = sum(1 for r in jockey_races if r.get('rank') == '1')
-                    if len(jockey_races) == 0 and _cur_jockey:
-                        jockey_races = races
-                        jockey_wins = sum(1 for r in races if r.get('rank') == '1')
-                    
                     jockey_stats = {
                         'name': _cur_jockey,
                         'totalRaces': len(jockey_races),
                         'wins': jockey_wins,
                         'winRate': round(jockey_wins / len(jockey_races) * 100) if jockey_races else 0
-                    } if _cur_jockey else None
+                    } if _cur_jockey and jockey_races else None
                     
                     last_jockey = races[0].get('jockey', '').strip() if races else ''
                     jockey_changed = _cur_jockey and last_jockey and not jockey_match(_cur_jockey, last_jockey)
@@ -6064,16 +6111,31 @@ def analyze_race():
         if n_horses >= 3:
             consensus_counts = {}
             active_layer_count = 0
+            consensus_weight_cache = {
+                h.get('name', ''): calculate_dynamic_weights(
+                    h.get('_mf', {}), race_type=h.get('_mf', {}).get('_race_type', 'default')
+                )
+                for h in analyzed_horses
+                if h.get('_mf')
+            }
 
             for layer in _CONSENSUS_LAYERS:
                 layer_scores = []
                 for h in analyzed_horses:
                     mf = h.get('_mf', {})
-                    score = mf.get(layer, 50.0) if mf else 50.0
+                    if not mf:
+                        continue
+                    layer_weights = consensus_weight_cache.get(h.get('name', ''), {})
+                    if layer_weights.get(layer, 0.0) <= 0:
+                        continue
+                    score = mf.get(layer, 50.0)
                     layer_scores.append((h.get('name', ''), score))
 
                 # std < 1 → bu katman atları ayırt edemiyor → ATLA
                 vals = [s for _, s in layer_scores]
+                if len(vals) < 2:
+                    print(f"    [CONSENSUS] {layer} ATLANACAK (aktif veri yok)")
+                    continue
                 layer_std = float(np.std(vals)) if len(vals) > 1 else 0.0
                 if layer_std < 1.0:
                     print(f"    [CONSENSUS] {layer} ATLANACAK (std={layer_std:.2f})")
