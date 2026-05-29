@@ -68,10 +68,11 @@ jobs:
           set -euo pipefail
 
           MODE="${{ inputs.mode }}"
+          SCHEDULE="${{ github.event.schedule }}"
           if [[ -z "$MODE" ]]; then
-            if [[ "${{ github.event.schedule }}" == "30 7 * * *" ]]; then
+            if [[ "$SCHEDULE" == "30 7 * * *" ]]; then
               MODE="analyze"
-            elif [[ "${{ github.event.schedule }}" == "45 19 * * *" ]]; then
+            elif [[ "$SCHEDULE" == "45 19 * * *" ]]; then
               MODE="results"
             else
               MODE="analyze-dry-run"
@@ -80,7 +81,16 @@ jobs:
 
           RUN_DATE="${{ inputs.date }}"
           if [[ -z "$RUN_DATE" ]]; then
-            RUN_DATE="$(TZ=Europe/Istanbul date +%Y-%m-%d)"
+            # GitHub scheduled jobs may start late. If the 22:45 Istanbul
+            # results job starts after midnight, it still belongs to the
+            # previous race day.
+            LOCAL_HOUR="$(TZ=Europe/Istanbul date +%H)"
+            LOCAL_HOUR_NUM=$((10#$LOCAL_HOUR))
+            if [[ "$SCHEDULE" == "45 19 * * *" && "$LOCAL_HOUR_NUM" -lt 6 ]]; then
+              RUN_DATE="$(TZ=Europe/Istanbul date -d 'yesterday' +%Y-%m-%d)"
+            else
+              RUN_DATE="$(TZ=Europe/Istanbul date +%Y-%m-%d)"
+            fi
           fi
 
           MAX_ATTEMPTS="1"

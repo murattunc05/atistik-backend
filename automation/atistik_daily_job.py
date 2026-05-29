@@ -38,6 +38,8 @@ DEFAULT_CONFIG = {
     "minSubmitMatchRatio": 0.60,
     "minSubmitMatchedHorses": 3,
     "requestTimeoutSeconds": 180,
+    "analyzeMaxAttempts": 3,
+    "analyzeRetryDelaySeconds": 12,
 }
 
 
@@ -289,6 +291,8 @@ def analyze_race(
     race: dict[str, Any],
     timeout: int,
     dry_run: bool,
+    max_attempts: int,
+    retry_delay_seconds: int,
 ) -> dict[str, Any]:
     valid, reasons = validate_race(race)
     summary = {
@@ -327,15 +331,32 @@ def analyze_race(
         "raceDate": date_dot(day),
         "raceNo": summary["raceNo"],
     }
-    response = http_json(
-        "POST",
-        endpoint(base_url, "/api/analyze-race"),
-        payload=payload,
-        timeout=timeout,
-    )
+    response: dict[str, Any] = {}
+    retry_errors = []
+    for attempt in range(1, max(1, max_attempts) + 1):
+        response = http_json(
+            "POST",
+            endpoint(base_url, "/api/analyze-race"),
+            payload=payload,
+            timeout=timeout,
+        )
+        if response.get("success"):
+            break
+        retry_errors.append(
+            {
+                "attempt": attempt,
+                "http_status": response.get("http_status"),
+                "error": response.get("error", "analyze failed"),
+            }
+        )
+        if attempt < max(1, max_attempts):
+            time.sleep(max(0, retry_delay_seconds))
+
     if not response.get("success"):
         summary["status"] = "failed"
         summary["error"] = response.get("error", "analyze failed")
+        summary["attempts"] = max(1, max_attempts)
+        summary["retryErrors"] = retry_errors
         summary["response"] = response
         return summary
 
@@ -356,6 +377,8 @@ def analyze_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
     dry_run = args.mode == "analyze-dry-run"
     cities = args.cities or config.get("cities") or DEFAULT_CITIES
     timeout = int(config.get("requestTimeoutSeconds", 180))
+    analyze_attempts = int(config.get("analyzeMaxAttempts", 3))
+    analyze_retry_delay = int(config.get("analyzeRetryDelaySeconds", 12))
     started = now_utc_iso()
 
     report: dict[str, Any] = {
@@ -401,7 +424,15 @@ def analyze_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
 
         for race in races:
             race["city"] = city_entry["city"]
-            race_result = analyze_race(args.backend_url, args.day, race, timeout, dry_run)
+            race_result = analyze_race(
+                args.backend_url,
+                args.day,
+                race,
+                timeout,
+                dry_run,
+                analyze_attempts,
+                analyze_retry_delay,
+            )
             city_entry["races"].append(race_result)
             status = race_result["status"]
             if status == "ready":
@@ -415,6 +446,13 @@ def analyze_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
         report["cities"].append(city_entry)
 
     report["finishedAt"] = now_utc_iso()
+    totals = report["totals"]
+    if totals["failed"] and totals["analyzed"]:
+        report["status"] = "partial_success"
+    elif totals["failed"]:
+        report["status"] = "failed"
+    else:
+        report["status"] = "completed"
     return report
 
 
@@ -474,9 +512,11 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             "mode": args.mode,
             "dryRun": dry_run,
             "date": date_iso(args.day),
-            "status": "failed",
+            "status": "skipped",
+            "reason": "analysis_manifest_missing",
             "error": f"analysis manifest not found: {analysis_path}",
             "races": [],
+            "totals": {"checked": 0, "found": 0, "submitted": 0, "pending": 0, "failed": 0},
         }
 
     report: dict[str, Any] = {
@@ -873,7 +913,13 @@ def main() -> int:
 
     if report.get("status") == "failed":
         return 1
-    if int(report.get("totals", {}).get("failed", 0) or 0) > 0 and args.mode == "analyze":
+    totals = report.get("totals", {})
+    if (
+        args.mode == "analyze"
+        and int(totals.get("failed", 0) or 0) > 0
+        and int(totals.get("analyzed", 0) or 0) == 0
+        and int(totals.get("racesFound", 0) or 0) > 0
+    ):
         return 1
     return 0
 
