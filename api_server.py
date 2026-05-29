@@ -3883,37 +3883,51 @@ def calculate_pedigree_weight(horse_races, target_track, target_distance):
 
 
 
+def parse_agf_percent(agf_str):
+    """Extract the AGF percentage from TJK strings like '%17(3)' or '%7(7) %6(7)'."""
+    text = str(agf_str or '').replace(',', '.')
+    match = re.search(r'%\s*(\d+(?:\.\d+)?)', text)
+    if match:
+        try:
+            return max(0.0, float(match.group(1)))
+        except (ValueError, TypeError):
+            return None
+
+    # Fallback for already-normalized numeric AGF values.
+    try:
+        value = float(text.strip())
+        return max(0.0, value)
+    except (ValueError, TypeError):
+        return None
+
+
 def calculate_agf_score(agf_str, all_agf_values):
     """
-    FAZ 6.2: AGF (Asgari Ganyan Fiyatı) verisini 0-100 skoruna çevirir.
-    Düşük AGF = piyasa favorisi = yüksek kazanma ihtimali → yüksek skor.
+    FAZ 6.2: AGF yüzdesini 0-100 skoruna çevirir.
+    Yüksek AGF yüzdesi = piyasanın daha çok tuttuğu at → yüksek skor.
 
     Args:
-        agf_str (str): Atın AGF değeri (str, örn. '2.50')
+        agf_str (str): Atın AGF değeri (str, örn. '%17(3)')
         all_agf_values (list): Koşudaki tüm geçerli AGF değerlerinin listesi
 
     Returns:
         float: 0-100 arası AGF skoru
     """
-    try:
-        agf_val = float(str(agf_str).replace(',', '.').strip())
-        if agf_val <= 0:
-            return 50.0
-    except (ValueError, TypeError):
+    agf_val = parse_agf_percent(agf_str)
+    if agf_val is None:
         return 50.0
 
     if not all_agf_values or len(all_agf_values) < 2:
         return 50.0
 
-    min_agf = min(all_agf_values)   # En düşük = en fazla favorilenen
-    max_agf = max(all_agf_values)   # En yüksek = en az favorilenen
+    min_agf = min(all_agf_values)
+    max_agf = max(all_agf_values)
 
     agf_range = max_agf - min_agf
     if agf_range <= 0:
         return 50.0
 
-    # Ters normalize: düşük AGF → yüksek skor
-    raw_score = ((max_agf - agf_val) / agf_range) * 100
+    raw_score = ((agf_val - min_agf) / agf_range) * 100
     return round(max(0.0, min(100.0, raw_score)), 1)
 
 
@@ -5221,13 +5235,9 @@ def analyze_race():
         # FAZ 6.2: AGF Normalizasyonu (Pass 1 öncesi hazırlık)
         valid_agf_values = []
         for h in horses:
-            agf_str = str(h.get('agf', '')).replace(',', '.').strip()
-            try:
-                agf_val = float(agf_str)
-                if agf_val > 0:
-                    valid_agf_values.append(agf_val)
-            except (ValueError, TypeError):
-                pass
+            agf_val = parse_agf_percent(h.get('agf', ''))
+            if agf_val is not None:
+                valid_agf_values.append(agf_val)
         print(f"[AGF] {len(valid_agf_values)} at için geçerli AGF verisi bulundu")
 
         # PASS 1: Paralel veri çekme + stil belirleme
@@ -5354,11 +5364,8 @@ def analyze_race():
 
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
                     original_horse['_raw_hp'] = raw_hp if raw_hp else '-';
-                    raw_agf = str(original_horse.get('agf', '')).replace(',', '.').strip()
-                    try:
-                        has_valid_agf = float(raw_agf) > 0
-                    except (ValueError, TypeError):
-                        has_valid_agf = False
+                    raw_agf = str(original_horse.get('agf', '')).strip()
+                    has_valid_agf = parse_agf_percent(raw_agf) is not None
                     agf_score_val = calculate_agf_score(original_horse.get('agf', ''), valid_agf_values)
 
                     metrics_pass1 = {
