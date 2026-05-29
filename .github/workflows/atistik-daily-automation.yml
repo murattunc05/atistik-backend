@@ -2,8 +2,8 @@ name: Atistik Daily Automation
 
 on:
   schedule:
-    # 10:30 Europe/Istanbul
-    - cron: "30 7 * * *"
+    # 09:30 Europe/Istanbul
+    - cron: "30 6 * * *"
     # 22:45 Europe/Istanbul
     - cron: "45 19 * * *"
   workflow_dispatch:
@@ -74,7 +74,7 @@ jobs:
           MODE="${{ inputs.mode }}"
           SCHEDULE="${{ github.event.schedule }}"
           if [[ -z "$MODE" ]]; then
-            if [[ "$SCHEDULE" == "30 7 * * *" ]]; then
+            if [[ "$SCHEDULE" == "30 6 * * *" ]]; then
               MODE="analyze"
             elif [[ "$SCHEDULE" == "45 19 * * *" ]]; then
               MODE="results"
