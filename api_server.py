@@ -4698,44 +4698,97 @@ def calculate_softmax_probabilities(scores, temperature=18.0):
 
 
 def attach_sort_metrics(analyzed_horses):
-    """Expose direct metric values for client-side ranking lenses."""
+    """Expose data-backed metric values for client-side ranking lenses.
+
+    The scoring engine uses 50 as a neutral fallback when a source is missing.
+    Ranking filters should not present that neutral fallback as real data.
+    """
+    metric_keys = [
+        'form', 'degree', 'training', 'trainingFitness', 'pace',
+        'distance', 'hp', 'jockey', 'pedigree', 'weight',
+    ]
+
+    def as_float(value):
+        try:
+            return round(float(value), 1)
+        except (ValueError, TypeError):
+            return None
+
+    def as_int(value, default=0):
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
+    def raw_hp_is_valid(value):
+        return str(value or '').strip().isdigit()
+
     for horse in analyzed_horses:
         metrics = horse.get('_mf', {}) or {}
         training_info = horse.get('trainingInfo') or {}
         pace_info = horse.get('paceInfo') or {}
         pedigree_info = horse.get('pedigreeInfo') or {}
+        degree_stats = horse.get('degreeStats') or {}
+        jockey_stats = horse.get('jockeyStats') or {}
 
-        def metric_value(key, fallback=None):
-            value = metrics.get(key, fallback)
-            try:
-                return round(float(value), 1)
-            except (ValueError, TypeError):
-                return None
+        race_count = as_int(horse.get('raceCount'))
+        filtered_count = as_int(horse.get('filteredRaceCount'), as_int(metrics.get('_dist_races')))
+        has_training = isinstance(training_info, dict) and bool(training_info.get('hasData'))
+        has_training_times = has_training and bool(training_info.get('times'))
+        degree_race_count = as_int(degree_stats.get('raceCount'))
+        has_degree = degree_race_count > 0 and bool(
+            degree_stats.get('recentBestDegree') or degree_stats.get('avgDegree')
+        )
+        has_pedigree = (
+            isinstance(pedigree_info, dict)
+            and pedigree_info.get('dataQuality') != 'NONE'
+            and as_int(pedigree_info.get('totalOffspringRaces')) > 0
+        )
+        has_jockey = isinstance(jockey_stats, dict) and as_int(jockey_stats.get('totalRaces')) > 0
+        has_hp = raw_hp_is_valid(horse.get('rawHp'))
+        has_weight = horse.get('weightChange') is not None
+
+        training_degree = as_float(
+            training_info.get('trainingDegreeScore') if isinstance(training_info, dict) else None
+        )
+        training_fitness = as_float(
+            training_info.get('fitnessScore') if isinstance(training_info, dict) else None
+        )
+        # If race-degree projection is neutral because the horse has no race degree,
+        # use the direct fitness signal instead of exposing another fake 50.
+        training_sort = training_degree
+        if training_sort is None or (abs(training_sort - 50.0) < 0.01 and not has_degree):
+            training_sort = training_fitness
 
         horse['sortMetrics'] = {
             'overall': round(float(horse.get('aiScore', 0) or 0), 1),
-            'form': metric_value('form_trend'),
-            'degree': metric_value('degree_avg'),
-            'training': metric_value(
-                'training_degree_score',
-                training_info.get('trainingDegreeScore') if isinstance(training_info, dict) else None,
-            ),
-            'trainingFitness': metric_value(
-                'training_fitness',
-                training_info.get('fitnessScore') if isinstance(training_info, dict) else None,
-            ),
-            'pace': metric_value(
-                'pace_score',
-                pace_info.get('paceScore') if isinstance(pace_info, dict) else None,
-            ),
-            'distance': metric_value('distance_suit'),
-            'hp': metric_value('hp_score', horse.get('hpScore')),
-            'jockey': metric_value('jockey_score'),
-            'pedigree': metric_value(
-                'pedigree',
-                pedigree_info.get('pedigreeScore') if isinstance(pedigree_info, dict) else None,
-            ),
-            'weight': metric_value('weight_impact'),
+            'form': as_float(metrics.get('form_trend')) if race_count >= 2 else None,
+            'degree': as_float(degree_stats.get('degreeScore') or metrics.get('degree_avg')) if has_degree else None,
+            'training': training_sort if has_training_times else None,
+            'trainingFitness': training_fitness if has_training_times else None,
+            'pace': as_float(pace_info.get('paceScore') if isinstance(pace_info, dict) else metrics.get('pace_score')) if race_count > 0 else None,
+            'distance': as_float(metrics.get('distance_suit')) if filtered_count > 0 else None,
+            'hp': as_float(horse.get('hpScore')) if has_hp else None,
+            'jockey': as_float(metrics.get('jockey_score')) if has_jockey else None,
+            'pedigree': as_float(pedigree_info.get('pedigreeScore')) if has_pedigree else None,
+            'weight': as_float(metrics.get('weight_impact')) if has_weight else None,
+        }
+
+    for key in metric_keys:
+        values = [
+            horse.get('sortMetrics', {}).get(key)
+            for horse in analyzed_horses
+            if horse.get('sortMetrics', {}).get(key) is not None
+        ]
+        if len(values) >= 2 and max(values) - min(values) < 0.1:
+            for horse in analyzed_horses:
+                horse.get('sortMetrics', {})[key] = None
+
+    for horse in analyzed_horses:
+        metrics = horse.get('sortMetrics', {})
+        horse['sortMetricAvailability'] = {
+            key: metrics.get(key) is not None
+            for key in metric_keys
         }
 
 
