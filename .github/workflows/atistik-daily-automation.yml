@@ -130,6 +130,15 @@ jobs:
           set -euo pipefail
           git config user.name "atistik-automation"
           git config user.email "atistik-automation@users.noreply.github.com"
+
+          if ! git diff --quiet -- automation || [[ -n "$(git ls-files --others --exclude-standard automation)" ]]; then
+            git stash push --include-untracked --message "automation-report" -- automation
+            git pull --rebase origin main
+            git stash pop
+          else
+            git pull --rebase origin main
+          fi
+
           git add automation
           if git diff --cached --quiet; then
             echo "No automation report changes."
