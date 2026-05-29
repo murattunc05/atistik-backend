@@ -4697,6 +4697,48 @@ def calculate_softmax_probabilities(scores, temperature=18.0):
     return [round((exp_score / exp_total) * 100, 1) for exp_score in exp_scores]
 
 
+def attach_sort_metrics(analyzed_horses):
+    """Expose direct metric values for client-side ranking lenses."""
+    for horse in analyzed_horses:
+        metrics = horse.get('_mf', {}) or {}
+        training_info = horse.get('trainingInfo') or {}
+        pace_info = horse.get('paceInfo') or {}
+        pedigree_info = horse.get('pedigreeInfo') or {}
+
+        def metric_value(key, fallback=None):
+            value = metrics.get(key, fallback)
+            try:
+                return round(float(value), 1)
+            except (ValueError, TypeError):
+                return None
+
+        horse['sortMetrics'] = {
+            'overall': round(float(horse.get('aiScore', 0) or 0), 1),
+            'form': metric_value('form_trend'),
+            'degree': metric_value('degree_avg'),
+            'training': metric_value(
+                'training_degree_score',
+                training_info.get('trainingDegreeScore') if isinstance(training_info, dict) else None,
+            ),
+            'trainingFitness': metric_value(
+                'training_fitness',
+                training_info.get('fitnessScore') if isinstance(training_info, dict) else None,
+            ),
+            'pace': metric_value(
+                'pace_score',
+                pace_info.get('paceScore') if isinstance(pace_info, dict) else None,
+            ),
+            'distance': metric_value('distance_suit'),
+            'hp': metric_value('hp_score', horse.get('hpScore')),
+            'jockey': metric_value('jockey_score'),
+            'pedigree': metric_value(
+                'pedigree',
+                pedigree_info.get('pedigreeScore') if isinstance(pedigree_info, dict) else None,
+            ),
+            'weight': metric_value('weight_impact'),
+        }
+
+
 def resolve_v4_decision(profile, resolved):
     """Classify v4 output for rollout tracking and controlled visible ranking."""
     category = profile.get('category', 'GLOBAL')
@@ -5723,6 +5765,8 @@ def analyze_race():
         except Exception as _v4_err:
             print(f"[V4 SHADOW] Hesaplama hatasi, mevcut algoritma ile devam: {_v4_err}")
 
+        attach_sort_metrics(analyzed_horses)
+
         analyzed_horses.sort(key=lambda x: x['aiScore'], reverse=True)
         
         # 6. Sıralama numaraları ekle
@@ -5815,6 +5859,7 @@ def analyze_race():
                     'v4_weights': _h.get('v4Weights', {}),
                     'v4_confidence': _h.get('v4Confidence', {}),
                     'v4_data_quality': _h.get('v4DataQuality', {}),
+                    'sort_metrics': _h.get('sortMetrics', {}),
                     'race_type':  race_type or '',
                     'distance':   target_distance or '',
                     'track':      target_track or '',
