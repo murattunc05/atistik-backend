@@ -27,6 +27,10 @@ on:
         description: "Optional race_id for replay-results"
         required: false
         default: ""
+      max_attempts:
+        description: "Optional result retry attempts. Empty = scheduled results use 5, manual runs use 1."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -94,7 +98,10 @@ jobs:
           fi
 
           MAX_ATTEMPTS="1"
-          if [[ "$MODE" == "results" ]]; then
+          INPUT_MAX_ATTEMPTS="${{ inputs.max_attempts }}"
+          if [[ -n "$INPUT_MAX_ATTEMPTS" ]]; then
+            MAX_ATTEMPTS="$INPUT_MAX_ATTEMPTS"
+          elif [[ "$MODE" == "results" && -n "$SCHEDULE" ]]; then
             MAX_ATTEMPTS="5"
           fi
 
