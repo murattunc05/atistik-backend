@@ -2874,6 +2874,91 @@ def calculate_track_suitability(races, target_track):
     
     return round(score, 1), label
 
+
+def _track_key(value):
+    folded = _v4_fold_text(value)
+    compact = folded.strip()
+    if compact.startswith('K:') or compact == 'K':
+        return 'kum'
+    if compact.startswith('C:') or compact == 'C':
+        return 'cim'
+    if compact.startswith('S:') or compact == 'S':
+        return 'sentetik'
+    if 'SENTETIK' in folded:
+        return 'sentetik'
+    if 'KUM' in folded:
+        return 'kum'
+    if 'CIM' in folded:
+        return 'cim'
+    return ''
+
+
+def _rank_average_score(ranks):
+    if not ranks:
+        return 50.0
+    avg_rank = float(np.mean(ranks))
+    return max(0.0, min(100.0, 100.0 - (avg_rank - 1.0) * 12.0))
+
+
+def _confidence_blend(score, sample_size, full_sample=5):
+    confidence = min(1.0, max(0.0, float(sample_size or 0) / float(full_sample)))
+    return 50.0 + (float(score) - 50.0) * confidence
+
+
+def calculate_track_suitability(races, target_track):
+    """Data-backed track suitability score."""
+    if not races or not target_track:
+        return 50.0, "Bilinmiyor"
+
+    target_key = _track_key(target_track)
+    if not target_key:
+        return 50.0, "Bilinmiyor"
+
+    matching_races = []
+    other_races = []
+    for race in races:
+        race_track_key = _track_key(race.get('track', ''))
+        try:
+            rank = int(re.sub(r'[^0-9]', '', race.get('rank', '0')) or 0)
+            if rank > 0:
+                if race_track_key == target_key:
+                    matching_races.append(rank)
+                elif race_track_key:
+                    other_races.append(rank)
+        except Exception:
+            continue
+
+    if not matching_races:
+        return 50.0, "Veri Yok"
+
+    avg_match = np.mean(matching_races)
+    absolute_score = _rank_average_score(matching_races)
+    if other_races:
+        avg_other = np.mean(other_races)
+        if avg_match <= avg_other:
+            improvement = (avg_other - avg_match) / max(avg_other, 1) * 100
+            relative_score = 50 + min(50, improvement)
+        else:
+            decline = (avg_match - avg_other) / max(avg_match, 1) * 100
+            relative_score = 50 - min(50, decline)
+        score = relative_score * 0.65 + absolute_score * 0.35
+    else:
+        score = absolute_score
+
+    score = _confidence_blend(score, len(matching_races), full_sample=5)
+    track_type = "Cim" if target_key == "cim" else "Kum" if target_key == "kum" else "Sentetik"
+    if score >= 80:
+        label = f"{track_type} Ustasi"
+    elif score >= 60:
+        label = f"{track_type} Uyumlu"
+    elif score >= 40:
+        label = "Notr"
+    else:
+        label = f"{track_type} Zorlanir"
+
+    return round(score, 1), label
+
+
 def calculate_distance_suitability(races, target_distance):
     """
     Mesafe Uzmanlığı - Bu at 1200m (Sprint) atı mı, 2000m (Uzun) atı mı?
@@ -3404,6 +3489,95 @@ def calculate_pace_score(horse_style, pace_scenario):
 # ══════════════════════════════════════════════════════════════════
 
 _trainer_cache = {}  # { 'ANTRENOR_ADI_UPPER': { ...stats... } }
+_trainer_id_cache = {}
+
+
+def _to_int(value):
+    try:
+        return int(re.sub(r'[^0-9]', '', str(value or '')) or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _trainer_abbrev_parts(trainer_name):
+    folded = _v4_fold_text(trainer_name).replace('.', ' ')
+    parts = [p for p in re.split(r'\s+', folded) if p]
+    if len(parts) >= 2:
+        return _trainer_hint(parts[0]), _trainer_hint(parts[-1])
+    return '', _trainer_hint(parts[0]) if parts else ''
+
+
+def _trainer_hint(value):
+    text = re.split(r'[^A-Z]+', _v4_fold_text(value))[0]
+    return text.strip()
+
+
+def _resolve_trainer_ids(trainer_name):
+    trainer_key = _v4_fold_text(trainer_name).strip()
+    if not trainer_key:
+        return []
+    if trainer_key in _trainer_id_cache:
+        return _trainer_id_cache[trainer_key]
+
+    first_hint, surname_hint = _trainer_abbrev_parts(trainer_name)
+    search_terms = []
+    if surname_hint:
+        search_terms.append(surname_hint)
+    if trainer_key:
+        search_terms.append(trainer_key)
+
+    matches = []
+    seen = set()
+    for term in search_terms:
+        try:
+            for page in range(1, 6):
+                response = requests.get(
+                    "https://www.tjk.org/TR/YarisSever/Query/ParameterQuery",
+                    params={
+                        'parameterName': 'AntronorId',
+                        'filter': term,
+                        'page': page,
+                        'parentParameterName': '',
+                        'parentParameterValue': '',
+                    },
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                    timeout=10,
+                )
+                if response.status_code != 200:
+                    continue
+                payload = response.json()
+                for entity in payload.get('entities', []):
+                    entity_id = entity.get('id') or entity.get('Id')
+                    entity_text = entity.get('text') or entity.get('Name') or ''
+                    folded_text = _v4_fold_text(entity_text)
+                    if not entity_id or entity_id in seen:
+                        continue
+                    text_parts = [p for p in re.split(r'\s+', folded_text) if p]
+                    last_name = _trainer_hint(text_parts[-1]) if text_parts else ''
+                    surname_ok = not surname_hint or last_name.startswith(surname_hint) or surname_hint in last_name
+                    first_ok = not first_hint or any(_trainer_hint(p).startswith(first_hint) for p in text_parts[:-1])
+                    exact_ok = trainer_key and trainer_key.replace(' ', '') in folded_text.replace(' ', '')
+                    if (surname_ok and first_ok) or exact_ok:
+                        matches.append({'id': entity_id, 'name': entity_text})
+                        seen.add(entity_id)
+                if payload.get('totalCount', 0) <= page * 20:
+                    break
+        except Exception:
+            continue
+        if matches:
+            break
+
+    unique_names = {}
+    for match in matches:
+        unique_names.setdefault(_v4_fold_text(match.get('name', '')).strip(), []).append(match)
+    if len(unique_names) > 1:
+        _trainer_id_cache[trainer_key] = []
+        return []
+    _trainer_id_cache[trainer_key] = matches[:3]
+    return _trainer_id_cache[trainer_key]
 
 
 def fetch_trainer_stats(trainer_name):
@@ -3517,6 +3691,90 @@ def fetch_trainer_stats(trainer_name):
         return None
 
 
+def fetch_trainer_stats(trainer_name):
+    """
+    Fetch trainer yearly stats from TJK AntrenorIstatistikleri.
+    Daily programs often use abbreviated names, so we resolve AntronorId first.
+    """
+    global _trainer_cache
+
+    trainer_key = _v4_fold_text(trainer_name).strip()
+    if not trainer_key:
+        return None
+    if trainer_key in _trainer_cache:
+        print(f"[TRAINER CACHE] {trainer_key} onbellekten alindi")
+        return _trainer_cache[trainer_key]
+
+    trainer_ids = _resolve_trainer_ids(trainer_name)
+    if not trainer_ids:
+        result = {
+            'trainer_name': trainer_name,
+            'resolved_name': None,
+            'total_races': 0,
+            'total_wins': 0,
+            'win_rate': 0.0,
+            'place_rate': 0.0,
+            'data_quality': 'NONE',
+        }
+        _trainer_cache[trainer_key] = result
+        return result
+
+    current_year = time.localtime().tm_year
+    year_min = current_year - 2
+    total_races = 0
+    total_wins = 0
+    total_places = 0
+    resolved_names = []
+
+    for item in trainer_ids:
+        try:
+            response = requests.get(
+                "https://www.tjk.org/TR/Kurumsal/Query/Grouped/AntrenorIstatistikleri",
+                params={'1': '1', 'QueryParameter_AntrenorId': item['id']},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept-Language": "tr-TR,tr;q=0.9",
+                },
+                timeout=12,
+            )
+            if response.status_code != 200:
+                continue
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for row in soup.select('table tbody tr'):
+                cells = [' '.join(td.get_text(' ', strip=True).split()) for td in row.find_all('td')]
+                if len(cells) < 9:
+                    continue
+                city = _v4_fold_text(cells[1])
+                year = _to_int(cells[2])
+                if 'TUM' not in city or year < year_min or year > current_year:
+                    continue
+                races = _to_int(cells[3])
+                wins = _to_int(cells[4])
+                second = _to_int(cells[5])
+                third = _to_int(cells[6])
+                total_races += races
+                total_wins += wins
+                total_places += wins + second + third
+                resolved_names.append(cells[0])
+        except Exception as e:
+            print(f"[TRAINER] Istatistik hatasi ({trainer_name}): {e}")
+            continue
+
+    data_quality = 'NONE' if total_races == 0 else ('LOW' if total_races < 30 else 'HIGH')
+    result = {
+        'trainer_name': trainer_name,
+        'resolved_name': resolved_names[0] if resolved_names else trainer_name,
+        'total_races': total_races,
+        'total_wins': total_wins,
+        'win_rate': round(total_wins / total_races, 3) if total_races else 0.0,
+        'place_rate': round(total_places / total_races, 3) if total_races else 0.0,
+        'data_quality': data_quality,
+    }
+    _trainer_cache[trainer_key] = result
+    print(f"[TRAINER] {trainer_name}: {total_races} kosu, {total_wins} birincilik, oran={result['win_rate']:.1%}")
+    return result
+
+
 def calculate_trainer_score(trainer_stats):
     """
     FAZ 6.2: Antrenörün galibiyet oranını 0-100 aralığında puanlar.
@@ -3528,6 +3786,7 @@ def calculate_trainer_score(trainer_stats):
         return 50.0  # Veri yok → nötr
 
     win_rate = trainer_stats.get('win_rate', 0.0)
+    place_rate = trainer_stats.get('place_rate', 0.0)
     total    = trainer_stats.get('total_races', 0)
 
     # Az veri → orta skora çek
@@ -3553,7 +3812,8 @@ def calculate_trainer_score(trainer_stats):
         base = 28
 
     # Az veriyse orta (50) değerine doğru çek
-    score = base * confidence_factor + 50.0 * (1 - confidence_factor)
+    place_bonus = max(-8.0, min(8.0, (place_rate - 0.30) * 35.0))
+    score = (base + place_bonus) * confidence_factor + 50.0 * (1 - confidence_factor)
     return round(max(0.0, min(100.0, score)), 1)
 
 
@@ -3592,10 +3852,11 @@ def fetch_sire_offspring_stats(sire_name):
 
     try:
         base_url = "https://www.tjk.org/TR/YarisSever/Query/Page/KosuSorgulama"
+        current_year = time.localtime().tm_year
         params = {
-            'QueryParameter_BabaIsmi': sire_name.strip(),
-            'QueryParameter_Tarih_Start': '01.01.2022',
-            'QueryParameter_Tarih_End':   '31.12.2025',
+            'QueryParameter_BabaAdi': sire_name.strip(),
+            'QueryParameter_Tarih_Start': f'01.01.{current_year - 2}',
+            'QueryParameter_Tarih_End':   f'31.12.{current_year}',
             'QueryParameter_SehirId':     '-1',
         }
         headers = {
@@ -3682,6 +3943,7 @@ def fetch_sire_offspring_stats(sire_name):
                 else:
                     pist_key = 'diger'
 
+                pist_key = _track_key(pist_str) or pist_key
                 if pist_key not in track_counts:
                     track_counts[pist_key] = {'races': 0}
                 track_counts[pist_key]['races'] += 1
@@ -3698,6 +3960,7 @@ def fetch_sire_offspring_stats(sire_name):
                 print(f"[PEDIGREE] Satır hatası: {row_err}")
                 continue
 
+        total_wins = total_races
         data_quality = 'NONE' if total_races == 0 else ('LOW' if total_races < 20 else 'HIGH')
 
         # Track profile dict oluştur (win_rate = 0 placeholder — detay çekmiyoruz)
@@ -3753,7 +4016,12 @@ def calculate_pedigree_score(sire_stats, target_track, target_distance):
         general_score = 52.0  # Az veri: nötüre yakın
 
     # ─ 2. Pist Profili ─────────────────────────────────────────────
+    general_score = 45.0 + min(25.0, np.log1p(max(total, 0)) * 6.0)
+    if data_quality == 'LOW':
+        general_score = 45.0 + min(15.0, np.log1p(max(total, 0)) * 4.0)
+
     track_profile = sire_stats.get('track_profile', {})
+    target_track_key = _track_key(target_track)
     target_track_lower = (target_track or '').lower()
 
     if 'çim' in target_track_lower:
@@ -3766,6 +4034,7 @@ def calculate_pedigree_score(sire_stats, target_track, target_distance):
         target_key = None
 
     pist_score = 50.0  # nötr
+    target_key = _track_key(target_track) or target_key
     track_compat_label = 'Bilinmiyor'
 
     if target_key and track_profile:
@@ -3837,7 +4106,7 @@ def calculate_pedigree_score(sire_stats, target_track, target_distance):
     if data_quality == 'LOW':
         score = score * 0.6 + 50 * 0.4
 
-    return round(max(0, min(100, score)), 1), track_compat_label, dist_compat_label
+    return float(round(max(0, min(100, score)), 1)), track_compat_label, dist_compat_label
 
 
 def calculate_pedigree_weight(horse_races, target_track, target_distance):
@@ -3852,6 +4121,7 @@ def calculate_pedigree_weight(horse_races, target_track, target_distance):
         return 0.20  # Maiden / veri yok → maksimum pedigri ağırlığı
 
     target_track_lower = (target_track or '').lower()
+    target_track_key = _track_key(target_track)
     try:
         target_dist = int(re.sub(r'[^0-9]', '', str(target_distance)))
     except:
@@ -3859,7 +4129,7 @@ def calculate_pedigree_weight(horse_races, target_track, target_distance):
 
     track_races_count = sum(
         1 for r in horse_races
-        if target_track_lower and target_track_lower in r.get('track', '').lower()
+        if target_track_key and _track_key(r.get('track', '')) == target_track_key
     )
 
     if track_races_count == 0:
@@ -3949,6 +4219,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
     track_races       = metrics.get('_track_races', 0)
     dist_races        = metrics.get('_dist_races', 0)
     has_pedigree_data = metrics.get('_has_pedigree', False)
+    has_trainer_data  = metrics.get('_has_trainer', False)
     pedigree_weight   = float(metrics.get('pedigree_weight', 0.03))
 
     # ══ FAZ A: TEMEL AĞIRLIKLAR (Ölü katmanlar sıfırlandı) ══════════════
@@ -3958,7 +4229,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         'degree_stability':      0.06,
         'training_fitness':      0.06,
         'training_degree_score': 0.05,
-        'track_suit':            0.00,  # DEVRE DISI
+        'track_suit':            0.03,
         'form_trend':            0.18,
         'distance_suit':         0.08,
         'weight_impact':         0.06,
@@ -3968,7 +4239,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         'pedigree':              0.03,
         'hp_score':              0.08,
         'agf_score':             0.00,
-        'trainer_score':         0.00,  # DEVRE DISI
+        'trainer_score':         0.02,
     }
 
     # ── KOŞU TİPİNE ÖZEL AĞIRLIK PROFİLLERİ ────────────────────
@@ -4071,6 +4342,20 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['form_trend']   += freed * 0.25
         w['pedigree']     += freed * 0.15
         w['jockey_score'] += freed * 0.10
+
+    if track_races == 0:
+        freed_track = w.get('track_suit', 0.0)
+        w['track_suit'] = 0.0
+        w['distance_suit'] += freed_track * 0.45
+        w['degree_avg'] += freed_track * 0.35
+        w['form_trend'] += freed_track * 0.20
+
+    if not has_trainer_data:
+        freed_trainer = w.get('trainer_score', 0.0)
+        w['trainer_score'] = 0.0
+        w['jockey_score'] += freed_trainer * 0.50
+        w['form_trend'] += freed_trainer * 0.30
+        w['degree_avg'] += freed_trainer * 0.20
 
     # ── FAZ B.4: AGF VERİSİ YOK → AGF ağırlığını dağıt ─────────────
     # AGF=50 nötr değer demek (veri yok veya koşu başlamadı).
@@ -4474,6 +4759,7 @@ _V4_WEIGHT_PROFILES = {
 def _v4_fold_text(value):
     text = str(value or '').upper()
     replacements = {
+        'Ş': 'S', 'İ': 'I', 'Ğ': 'G', 'Ü': 'U', 'Ö': 'O', 'Ç': 'C',
         'Ş': 'S', 'Þ': 'S', 'Åž': 'S', 'ÅŸ': 'S',
         'İ': 'I', 'Ä°': 'I', 'Ä±': 'I',
         'Ğ': 'G', 'Äž': 'G', 'ÄŸ': 'G',
@@ -5390,7 +5676,7 @@ def analyze_race():
                         'trainer_score': 50.0,                  # FAZ 6.2: Antrenör skoru (aşağıda güncellenecek)
                         # FAZ 4.7: calculate_dynamic_weights için meta alanlar
                         '_total_races':   len(races),
-                        '_track_races':   sum(1 for r in races if target_track.lower() in r.get('track', '').lower()) if target_track else 0,
+                        '_track_races':   sum(1 for r in races if _track_key(r.get('track', '')) == _track_key(target_track)) if target_track else 0,
                         '_dist_races':    len(filtered_races),
                         '_has_training':  training_data is not None,
                         '_has_pedigree':  False,  # Pe4.6 sonrası güncellenecek
@@ -5415,6 +5701,7 @@ def analyze_race():
                     trainer_stats_val = fetch_trainer_stats(trainer_name_val) if trainer_name_val else None
                     trainer_score_val = calculate_trainer_score(trainer_stats_val)
                     metrics_pass1['trainer_score'] = trainer_score_val
+                    metrics_pass1['_has_trainer'] = bool(trainer_stats_val and trainer_stats_val.get('data_quality') != 'NONE')
                     metric_source_flags = {
                         'hasTraining': training_data is not None,
                         'hasTrainingTimes': bool(training_data and training_data.get('times')),
@@ -5533,6 +5820,11 @@ def analyze_race():
                             'distanceSuitScore': distance_suit,
                             'formTrendScore': trend_score,
                             'degreeAvgScore': degree_stats.get('degreeScore', 50),
+                            'trainingFitnessScore': training_fitness,
+                            'trainingDegreeScore': training_deg_score,
+                            'hpScore': hp_score_val,
+                            'agfScore': agf_score_val,
+                            'trainerScore': trainer_score_val,
                         },
                         # FAZ 4.5+4.6: PASS 1 ara değerleri (PASS 2 için gerekli)
                         '_runningStyle': horse_style,
@@ -5703,6 +5995,8 @@ def analyze_race():
                     mf = h.get('_mf')
                     if mf:
                         mf['degree_avg'] = normalized
+                        if h.get('scoreBreakdown') is not None:
+                            h['scoreBreakdown']['degreeAvgScore'] = normalized
                         new_score = calculate_ai_score(mf)
                         h['aiScore']    = new_score
                         h['prediction'] = generate_prediction(new_score, mf)
@@ -5760,6 +6054,7 @@ def analyze_race():
             'degree_avg', 'form_trend', 'hp_score', 'distance_suit',
             'training_fitness', 'jockey_score',
             'weight_impact', 'bounce_score', 'degree_stability',
+            'track_suit', 'trainer_score',
             # track_suit ÇIKARILDI (std=0, hep 50)
             # trainer_score ÇIKARILDI (veri güvenilir değil)
         ]
