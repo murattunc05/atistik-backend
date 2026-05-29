@@ -555,6 +555,9 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             {
                 "status": "results_found",
                 "fetchedRaceId": fetched.get("race_id"),
+                "fetchedRaceIdMismatch": bool(
+                    fetched.get("race_id") and str(fetched.get("race_id")) != str(race.get("raceId"))
+                ),
                 "match": stats,
                 "results": fetched_results,
                 "safeToSubmit": safe,
@@ -572,11 +575,12 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             continue
 
         submit_payload = {
-            "race_id": str(fetched.get("race_id") or race.get("raceId")),
+            "race_id": str(race.get("raceId")),
             "race_date": date_dot(args.day),
             "race_no": str(race.get("raceNo", "")),
             "results": fetched_results,
         }
+        entry["submitRaceId"] = submit_payload["race_id"]
         submit = http_json(
             "POST",
             endpoint(args.backend_url, "/api/submit-results"),
