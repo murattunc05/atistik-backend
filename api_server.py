@@ -3512,6 +3512,21 @@ def _trainer_hint(value):
     return text.strip()
 
 
+def _trainer_native_search_parts(trainer_name):
+    """Return TJK autocomplete terms without stripping Turkish characters."""
+    text = str(trainer_name or '').strip().upper()
+    if not text:
+        return '', ''
+    text = re.sub(r'\b(AP|APRANTI|KG|DB|SK|GKR)\b', ' ', text)
+    parts = [
+        p for p in re.split(r'[^0-9A-ZÇĞİÖŞÜÂÎÛ]+', text)
+        if p
+    ]
+    if len(parts) >= 2:
+        return parts[0], parts[-1]
+    return '', parts[0] if parts else ''
+
+
 def _resolve_trainer_ids(trainer_name):
     trainer_key = _v4_fold_text(trainer_name).strip()
     if not trainer_key:
@@ -3520,11 +3535,18 @@ def _resolve_trainer_ids(trainer_name):
         return _trainer_id_cache[trainer_key]
 
     first_hint, surname_hint = _trainer_abbrev_parts(trainer_name)
+    _, native_surname_hint = _trainer_native_search_parts(trainer_name)
     search_terms = []
+    if native_surname_hint:
+        search_terms.append(native_surname_hint)
+    native_key = str(trainer_name or '').strip().upper()
+    if native_key:
+        search_terms.append(native_key)
     if surname_hint:
         search_terms.append(surname_hint)
     if trainer_key:
         search_terms.append(trainer_key)
+    search_terms = list(dict.fromkeys([term for term in search_terms if term]))
 
     matches = []
     seen = set()
