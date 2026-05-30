@@ -10,6 +10,7 @@ import numpy as np
 import time
 import re
 import urllib3
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)  # Flutter'dan gelen isteklere izin ver
@@ -1820,7 +1821,7 @@ def _empty_horse_details(horse_data, reason='no_history'):
     }
 
 
-def fetch_horse_details_safe(horse_data, target_distance=None):
+def fetch_horse_details_safe(horse_data, target_distance=None, race_date_str=None):
     """
     Güvenli bir şekilde at detaylarını çeker (Hata yönetimi ile).
     FAZ 1.1: Tüm yarış geçmişini çeker, mesafe bazlı filtreleme yapar.
@@ -1868,6 +1869,12 @@ def fetch_horse_details_safe(horse_data, target_distance=None):
         rows = table_body.find_all('tr')
         all_races = []       # Tüm yarışlar
         filtered_races = []  # Mesafe bazlı filtrelenmiş yarışlar
+        target_race_date = None
+        if race_date_str:
+            try:
+                target_race_date = datetime.strptime(str(race_date_str).strip(), '%d.%m.%Y')
+            except Exception:
+                target_race_date = None
         
         # Hedef mesafeyi sayıya çevir (filtreleme için)
         target_dist_num = None
@@ -1885,6 +1892,13 @@ def fetch_horse_details_safe(horse_data, target_distance=None):
             if len(cells) > 17:
                 try:
                     race_date = cells[0].text.strip()
+                    if target_race_date:
+                        try:
+                            parsed_race_date = datetime.strptime(race_date, '%d.%m.%Y')
+                            if parsed_race_date >= target_race_date:
+                                continue
+                        except Exception:
+                            pass
                     city = cells[1].text.strip()
                     distance = cells[2].text.strip()
                     track = " ".join(cells[3].text.strip().split())  # Pist tipi (Çim/Kum/Sentetik) + durum
@@ -5626,7 +5640,7 @@ def analyze_race():
         
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_horse = {executor.submit(fetch_horse_details_safe, horse, target_distance): horse for horse in horses}
+            future_to_horse = {executor.submit(fetch_horse_details_safe, horse, target_distance, race_date): horse for horse in horses}
             
             for future in concurrent.futures.as_completed(future_to_horse):
                 original_horse = future_to_horse[future]
