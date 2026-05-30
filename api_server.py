@@ -3851,6 +3851,17 @@ def calculate_trainer_score(trainer_stats):
 _sire_cache = {}  # { 'BABA_ADI_UPPER': { ...stats... } }
 
 
+def _sire_search_names(sire_name):
+    """Return TJK-friendly sire name candidates, stripping country suffixes."""
+    raw = str(sire_name or '').strip()
+    if not raw:
+        return []
+    raw = re.sub(r'\s+', ' ', raw)
+    cleaned = re.sub(r'\s*\((?:[A-Z]{2,3}|[A-Z]{2,3}\.)\)\s*$', '', raw, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    return list(dict.fromkeys([name for name in [cleaned, raw] if name]))
+
+
 def fetch_sire_offspring_stats(sire_name):
     """
     FAZ 4.6: TJK KosuSorgulama sayfasından babanın yavrularının
@@ -3867,7 +3878,8 @@ def fetch_sire_offspring_stats(sire_name):
     if not sire_name or not sire_name.strip():
         return None
 
-    sire_key = sire_name.strip().upper()
+    search_names = _sire_search_names(sire_name)
+    sire_key = _v4_fold_text(search_names[0] if search_names else sire_name).strip()
 
     # Önbellekte varsa direkt dön
     if sire_key in _sire_cache:
@@ -3879,12 +3891,6 @@ def fetch_sire_offspring_stats(sire_name):
     try:
         base_url = "https://www.tjk.org/TR/YarisSever/Query/Page/KosuSorgulama"
         current_year = time.localtime().tm_year
-        params = {
-            'QueryParameter_BabaAdi': sire_name.strip(),
-            'QueryParameter_Tarih_Start': f'01.01.{current_year - 2}',
-            'QueryParameter_Tarih_End':   f'31.12.{current_year}',
-            'QueryParameter_SehirId':     '-1',
-        }
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -3892,24 +3898,42 @@ def fetch_sire_offspring_stats(sire_name):
             "Referer": "https://www.tjk.org/TR/YarisSever/Query/Page/KosuSorgulama"
         }
 
-        response = requests.get(base_url, params=params, headers=headers, timeout=12)
-        if response.status_code != 200:
-            print(f"[PEDIGREE] TJK hatası: {response.status_code}")
-            return None
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Tablo gövdesini bul
-        table = soup.find('table', id='queryTable')
         tbody = None
-        if table:
-            tbody = table.find('tbody', id='tbody0') or table.find('tbody')
-        if not tbody:
-            tbody = soup.find('tbody', id='tbody0')
+        matched_sire_name = None
+        for candidate_name in search_names:
+            params = {
+                'QueryParameter_BabaAdi': candidate_name,
+                'QueryParameter_Tarih_Start': f'01.01.{current_year - 2}',
+                'QueryParameter_Tarih_End':   f'31.12.{current_year}',
+                'QueryParameter_SehirId':     '-1',
+            }
+            response = requests.get(base_url, params=params, headers=headers, timeout=12)
+            if response.status_code != 200:
+                print(f"[PEDIGREE] TJK hatası ({candidate_name}): {response.status_code}")
+                continue
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Tablo gövdesini bul
+            table = soup.find('table', id='queryTable')
+            candidate_tbody = None
+            if table:
+                candidate_tbody = table.find('tbody', id='tbody0') or table.find('tbody')
+            if not candidate_tbody:
+                candidate_tbody = soup.find('tbody', id='tbody0')
+            rows = candidate_tbody.find_all('tr') if candidate_tbody else []
+            has_data = any(
+                'hidable' not in row.get('class', []) and len(row.find_all('td')) >= 8
+                for row in rows
+            )
+            if has_data:
+                tbody = candidate_tbody
+                matched_sire_name = candidate_name
+                break
 
         if not tbody:
             print(f"[PEDIGREE] {sire_name} için tablo bulunamadı — veri yok")
-            result = {
+            return {
                 'sire_name': sire_name,
                 'total_offspring_races': 0,
                 'win_rate': 0.0,
@@ -3917,8 +3941,6 @@ def fetch_sire_offspring_stats(sire_name):
                 'distance_profile': {},
                 'data_quality': 'NONE'
             }
-            _sire_cache[sire_key] = result
-            return result
 
         rows = tbody.find_all('tr')
 
@@ -4004,7 +4026,8 @@ def fetch_sire_offspring_stats(sire_name):
         }
 
         result = {
-            'sire_name':             sire_name,
+            'sire_name':             matched_sire_name or sire_name,
+            'original_sire_name':    sire_name,
             'total_offspring_races': total_races,
             'win_rate':              round(total_wins / total_races, 3) if total_races else 0.0,
             'track_profile':         track_profile,
