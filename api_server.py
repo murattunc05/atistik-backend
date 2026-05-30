@@ -3579,7 +3579,12 @@ def _resolve_trainer_ids(trainer_name):
                         continue
                     text_parts = [p for p in re.split(r'\s+', folded_text) if p]
                     last_name = _trainer_hint(text_parts[-1]) if text_parts else ''
-                    surname_ok = not surname_hint or last_name.startswith(surname_hint) or surname_hint in last_name
+                    if not surname_hint:
+                        surname_ok = True
+                    elif len(surname_hint) <= 4:
+                        surname_ok = last_name == surname_hint
+                    else:
+                        surname_ok = last_name == surname_hint or last_name.startswith(surname_hint)
                     first_ok = not first_hint or any(_trainer_hint(p).startswith(first_hint) for p in text_parts[:-1])
                     exact_ok = trainer_key and trainer_key.replace(' ', '') in folded_text.replace(' ', '')
                     if (surname_ok and first_ok) or exact_ok:
