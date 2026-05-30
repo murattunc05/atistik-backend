@@ -5688,7 +5688,7 @@ def analyze_race():
                     print(f"[DEBUG] EŞLEŞME: {horse_name_clean} -> Training VAR")
                 else:
                     print(f"[DEBUG] At: {horse_name_clean}, Training: YOK")
-                training_fitness, training_label, days_since, training_best_time, training_best_distance = calculate_training_fitness(training_data)
+                training_fitness, training_label, days_since, training_best_time, training_best_distance = calculate_training_fitness(training_data, race_date)
                 
                 if horse_data is not None:
                     races = horse_data.get('races', [])
