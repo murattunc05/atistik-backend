@@ -4273,6 +4273,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
     has_hp_data       = metrics.get('_has_hp', False)
     has_weight_data   = metrics.get('_has_weight', False)
     has_jockey_data   = metrics.get('_has_jockey', False)
+    has_training_degree_data = metrics.get('_has_training_projection', False)
     pedigree_weight   = float(metrics.get('pedigree_weight', 0.03))
 
     # ══ FAZ A: TEMEL AĞIRLIKLAR (Ölü katmanlar sıfırlandı) ══════════════
@@ -4428,6 +4429,8 @@ def calculate_dynamic_weights(metrics, race_type='default'):
 
     if not has_training:
         unavailable.update(['training_fitness', 'training_degree_score'])
+    elif not has_training_degree_data:
+        unavailable.add('training_degree_score')
     if not has_pedigree_data:
         unavailable.add('pedigree')
     if not has_trainer_data:
@@ -5775,6 +5778,8 @@ def analyze_race():
                         '_track_races':   sum(1 for r in races if _track_key(r.get('track', '')) == _track_key(target_track)) if target_track else 0,
                         '_dist_races':    len(filtered_races),
                         '_has_training':  training_data is not None,
+                        '_has_training_times': bool(training_data and training_data.get('times')),
+                        '_has_training_projection': training_projection is not None,
                         '_has_pedigree':  False,  # Pe4.6 sonrası güncellenecek
                         '_has_agf':       has_valid_agf,
                         '_has_hp':        has_valid_hp,
@@ -5805,6 +5810,7 @@ def analyze_race():
                     metric_source_flags = {
                         'hasTraining': training_data is not None,
                         'hasTrainingTimes': bool(training_data and training_data.get('times')),
+                        'hasTrainingProjection': training_projection is not None,
                         'trainingMatchedName': training_data.get('horseName') if training_data else None,
                         'trainingDate': training_data.get('trainingDate') if training_data else None,
                         'hasAgf': has_valid_agf,
@@ -5979,6 +5985,7 @@ def analyze_race():
                         'metricSourceFlags': {
                             'hasTraining': False,
                             'hasTrainingTimes': False,
+                            'hasTrainingProjection': False,
                             'hasAgf': False,
                             'validAgfCountInRace': len(valid_agf_values),
                             'hasSireName': bool(original_horse.get('father', '').strip()),
