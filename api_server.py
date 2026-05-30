@@ -3601,10 +3601,11 @@ def _resolve_trainer_ids(trainer_name):
     for match in matches:
         unique_names.setdefault(_v4_fold_text(match.get('name', '')).strip(), []).append(match)
     if len(unique_names) > 1:
-        _trainer_id_cache[trainer_key] = []
         return []
-    _trainer_id_cache[trainer_key] = matches[:3]
-    return _trainer_id_cache[trainer_key]
+    if matches:
+        _trainer_id_cache[trainer_key] = matches[:3]
+        return _trainer_id_cache[trainer_key]
+    return []
 
 
 def fetch_trainer_stats(trainer_name):
@@ -3734,7 +3735,7 @@ def fetch_trainer_stats(trainer_name):
 
     trainer_ids = _resolve_trainer_ids(trainer_name)
     if not trainer_ids:
-        result = {
+        return {
             'trainer_name': trainer_name,
             'resolved_name': None,
             'total_races': 0,
@@ -3743,8 +3744,6 @@ def fetch_trainer_stats(trainer_name):
             'place_rate': 0.0,
             'data_quality': 'NONE',
         }
-        _trainer_cache[trainer_key] = result
-        return result
 
     current_year = time.localtime().tm_year
     year_min = current_year - 2
