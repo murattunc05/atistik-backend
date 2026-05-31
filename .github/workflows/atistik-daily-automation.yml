@@ -144,5 +144,16 @@ jobs:
             echo "No automation report changes."
           else
             git commit -m "Atistik automation ${{ steps.resolve.outputs.mode }} ${{ steps.resolve.outputs.date }}"
-            git push
+            for attempt in 1 2 3 4 5; do
+              if git push; then
+                break
+              fi
+              if [[ "$attempt" == "5" ]]; then
+                echo "Failed to push automation report after $attempt attempts."
+                exit 1
+              fi
+              echo "Push rejected, rebasing on latest ml-data main and retrying ($attempt/5)."
+              git pull --rebase origin main
+              sleep 5
+            done
           fi
