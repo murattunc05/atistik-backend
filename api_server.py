@@ -6301,6 +6301,11 @@ def analyze_race():
             _log_path = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
             _current_race_id = race_id or f"{target_distance}_{target_track}_{int(time.time())}"
 
+            def _prediction_log_name_key(value):
+                text = str(value or '').split('\n')[0].strip().upper()
+                text = re.sub(r'\s*\(\s*\d+\s*\)\s*$', '', text)
+                return re.sub(r'\s+', ' ', text).strip()
+
             # 1. Mevcut dosyayı oku → dict'e çevir
             _existing = {}   # key = (race_id, horse_name_upper) → entry
             _other_lines = []  # Bu koşuya ait OLMAYAN satırlar
@@ -6313,7 +6318,7 @@ def analyze_race():
                         try:
                             _old = _json.loads(_line)
                             _old_rid = str(_old.get('race_id', ''))
-                            _old_name = _old.get('horse_name', '').strip().upper()
+                            _old_name = _prediction_log_name_key(_old.get('horse_name', ''))
                             if _old_rid == str(_current_race_id):
                                 _existing[(_old_rid, _old_name)] = _old
                             else:
@@ -6327,7 +6332,7 @@ def analyze_race():
                 # FAZ 7 Bug Fix: _metrics_pass1 zaten pop() ile silindi → _mf kullan
                 _m = _h.get('_mf', {})
                 _h_name = _h.get('name', '')
-                _key = (str(_current_race_id), _h_name.strip().upper())
+                _key = (str(_current_race_id), _prediction_log_name_key(_h_name))
 
                 _entry = {
                     'race_id':    _current_race_id,
