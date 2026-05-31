@@ -5154,7 +5154,8 @@ def attach_sort_metrics(analyzed_horses):
             and as_int(pedigree_info.get('totalOffspringRaces')) > 0
         )
         has_jockey = isinstance(jockey_stats, dict) and as_int(jockey_stats.get('totalRaces')) > 0
-        has_hp = raw_hp_is_valid(horse.get('rawHp'))
+        source_flags = horse.get('metricSourceFlags') or {}
+        has_hp = bool(source_flags.get('hasHp')) if 'hasHp' in source_flags else raw_hp_is_valid(horse.get('rawHp'))
         has_weight = horse.get('weightChange') is not None
 
         training_degree = as_float(
