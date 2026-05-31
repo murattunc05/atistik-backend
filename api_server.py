@@ -3614,10 +3614,11 @@ def _resolve_trainer_ids(trainer_name):
     unique_names = {}
     for match in matches:
         unique_names.setdefault(_v4_fold_text(match.get('name', '')).strip(), []).append(match)
-    if len(unique_names) > 1:
-        return []
     if matches:
-        _trainer_id_cache[trainer_key] = matches[:3]
+        # TJK daily program sometimes gives ambiguous abbreviated trainer names
+        # such as "A.ATAS". Do not guess a single person; aggregate matching
+        # candidates and mark quality as AMBIGUOUS in fetch_trainer_stats().
+        _trainer_id_cache[trainer_key] = matches[:5]
         return _trainer_id_cache[trainer_key]
     return []
 
@@ -3758,6 +3759,11 @@ def fetch_trainer_stats(trainer_name):
             'place_rate': 0.0,
             'data_quality': 'NONE',
         }
+    ambiguous_trainer = len({
+        _v4_fold_text(item.get('name', '')).strip()
+        for item in trainer_ids
+        if item.get('name')
+    }) > 1
 
     current_year = time.localtime().tm_year
     year_min = current_year - 2
@@ -3800,10 +3806,17 @@ def fetch_trainer_stats(trainer_name):
             print(f"[TRAINER] Istatistik hatasi ({trainer_name}): {e}")
             continue
 
-    data_quality = 'NONE' if total_races == 0 else ('LOW' if total_races < 30 else 'HIGH')
+    if total_races == 0:
+        data_quality = 'NONE'
+    elif ambiguous_trainer:
+        data_quality = 'AMBIGUOUS'
+    else:
+        data_quality = 'LOW' if total_races < 30 else 'HIGH'
     result = {
         'trainer_name': trainer_name,
         'resolved_name': resolved_names[0] if resolved_names else trainer_name,
+        'resolved_names': sorted(set(resolved_names)),
+        'candidate_count': len(trainer_ids),
         'total_races': total_races,
         'total_wins': total_wins,
         'win_rate': round(total_wins / total_races, 3) if total_races else 0.0,
