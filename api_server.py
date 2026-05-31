@@ -3531,6 +3531,7 @@ def _trainer_native_search_parts(trainer_name):
     text = str(trainer_name or '').strip().upper()
     if not text:
         return '', ''
+    text = text.replace('Ţ', 'Ş').replace('ţ', 'Ş')
     text = re.sub(r'\b(AP|APRANTI|KG|DB|SK|GKR)\b', ' ', text)
     parts = [
         p for p in re.split(r'[^0-9A-ZÇĞİÖŞÜÂÎÛ]+', text)
@@ -3598,7 +3599,11 @@ def _resolve_trainer_ids(trainer_name):
                     elif len(surname_hint) <= 4:
                         surname_ok = last_name == surname_hint
                     else:
-                        surname_ok = last_name == surname_hint or last_name.startswith(surname_hint)
+                        surname_ok = (
+                            last_name == surname_hint
+                            or last_name.startswith(surname_hint)
+                            or last_name.endswith(surname_hint)
+                        )
                     first_ok = not first_hint or any(_trainer_hint(p).startswith(first_hint) for p in text_parts[:-1])
                     exact_ok = trainer_key and trainer_key.replace(' ', '') in folded_text.replace(' ', '')
                     if (surname_ok and first_ok) or exact_ok:
@@ -4888,6 +4893,7 @@ def _v4_fold_text(value):
         'Ü': 'U', 'Ãœ': 'U', 'Ã¼': 'U',
         'Ö': 'O', 'Ã–': 'O', 'Ã¶': 'O',
         'Ç': 'C', 'Ã‡': 'C', 'Ã§': 'C',
+        'Ţ': 'S', 'ţ': 'S',
     }
     for src, dst in replacements.items():
         text = text.replace(src, dst)
