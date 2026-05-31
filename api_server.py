@@ -5752,6 +5752,7 @@ def analyze_race():
                     # Eski dar [15-90] aralığı kaldırıldı → tam [0-100] normalizasyon
                     raw_hp = str(original_horse.get('hp', '')).strip()
                     has_valid_hp = raw_hp.isdigit()
+                    has_hp_source = has_valid_hp and len(valid_hps) >= 2 and race_max_hp > race_min_hp
                     horse_hp = int(raw_hp) if raw_hp.isdigit() else (race_min_hp if valid_hps else 50)
                     if not valid_hps or race_max_hp == race_min_hp:
                         hp_score_val = 50.0
@@ -5796,7 +5797,7 @@ def analyze_race():
                         '_has_training_projection': training_projection is not None,
                         '_has_pedigree':  False,  # Pe4.6 sonrası güncellenecek
                         '_has_agf':       has_valid_agf,
-                        '_has_hp':        has_valid_hp,
+                        '_has_hp':        has_hp_source,
                         '_has_weight':    has_weight_source,
                         '_has_jockey':    has_jockey_source,
                         '_race_type':     race_type,  # FAZ 6.2: Koşu tipine özel ağırlık profili
@@ -5831,6 +5832,9 @@ def analyze_race():
                         'rawAgf': raw_agf or None,
                         'validAgfCountInRace': len(valid_agf_values),
                         'agfNeutral': abs(float(agf_score_val) - 50.0) < 1.0,
+                        'hasHp': has_hp_source,
+                        'rawHp': raw_hp or None,
+                        'validHpCountInRace': len(valid_hps),
                         'hasSireName': bool(sire_name),
                         'hasPedigree': bool(sire_stats and sire_stats.get('data_quality') != 'NONE'),
                         'pedigreeDataQuality': sire_stats.get('data_quality', 'NONE') if sire_stats else 'NONE',
