@@ -3504,6 +3504,10 @@ def calculate_pace_score(horse_style, pace_scenario):
 
 _trainer_cache = {}  # { 'ANTRENOR_ADI_UPPER': { ...stats... } }
 _trainer_id_cache = {}
+_trainer_id_aliases = {
+    'S.C.GOZUNGU': [{'id': 3085, 'name': 'SEZGİN CAN GÖZÜNGÜ'}],
+    'SER.YILDIZ': [{'id': 3039, 'name': 'SERHAT YILDIZ'}],
+}
 
 
 def _to_int(value):
@@ -3547,6 +3551,9 @@ def _resolve_trainer_ids(trainer_name):
     if not trainer_key:
         return []
     if trainer_key in _trainer_id_cache:
+        return _trainer_id_cache[trainer_key]
+    if trainer_key in _trainer_id_aliases:
+        _trainer_id_cache[trainer_key] = _trainer_id_aliases[trainer_key]
         return _trainer_id_cache[trainer_key]
 
     first_hint, surname_hint = _trainer_abbrev_parts(trainer_name)
