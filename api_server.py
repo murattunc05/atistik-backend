@@ -3505,6 +3505,7 @@ def calculate_pace_score(horse_style, pace_scenario):
 _trainer_cache = {}  # { 'ANTRENOR_ADI_UPPER': { ...stats... } }
 _trainer_id_cache = {}
 _trainer_id_aliases = {
+    'H.DOLMAZ': [{'id': 3041, 'name': 'HASAN DOLMAZ'}],
     'R.KARATAS': [{'id': 2376, 'name': 'REŞİT KARATAŞ'}],
     'S.C.GOZUNGU': [{'id': 3085, 'name': 'SEZGİN CAN GÖZÜNGÜ'}],
     'SER.YILDIZ': [{'id': 3039, 'name': 'SERHAT YILDIZ'}],
