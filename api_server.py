@@ -4722,7 +4722,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.7"
+_V4_VERSION = "4.8"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -4848,23 +4848,23 @@ _V4_WEIGHT_PROFILES = {
     },
     'MAIDEN': {
         'level': 'category',
-        'sample_races': 45,
-        'status': 'eligible_shadow',
+        'sample_races': 43,
+        'status': 'visible_controlled',
         'weights': {
-            'hp_score': 28.0,
-            'form_trend': 20.2,
-            'jockey_score': 13.4,
-            'pedigree': 8.3,
-            'degree_avg': 8.1,
-            'degree_stability': 5.0,
-            'distance_suit': 4.6,
-            'training_degree_score': 3.8,
-            'degree_trend': 3.7,
-            'bounce_score': 2.0,
-            'pace_score': 1.4,
-            'weight_impact': 1.0,
-            'training_fitness': 0.5,
-            'agf_score': 0.0,
+            'agf_score': 28.6,
+            'form_trend': 18.1,
+            'pace_score': 10.2,
+            'degree_avg': 9.5,
+            'hp_score': 9.1,
+            'jockey_score': 8.0,
+            'degree_stability': 5.7,
+            'distance_suit': 4.2,
+            'training_fitness': 2.8,
+            'pedigree': 1.4,
+            'degree_trend': 1.2,
+            'training_degree_score': 1.2,
+            'bounce_score': 0.0,
+            'weight_impact': 0.0,
             'age_score': 0.0,
         },
     },
@@ -5119,10 +5119,21 @@ def resolve_v4_profile_weights(profile):
 def calculate_v4_shadow_score(metrics, weights):
     weighted_sum = 0.0
     total = 0.0
+    source_guards = {
+        'agf_score': '_has_agf',
+        'hp_score': '_has_hp',
+        'weight_impact': '_has_weight',
+        'jockey_score': '_has_jockey',
+        'training_fitness': '_has_training',
+        'training_degree_score': '_has_training_times',
+        'pedigree': '_has_pedigree',
+        'age_score': '_has_age',
+    }
     for key, weight in weights.items():
         if weight <= 0:
             continue
-        if key == 'age_score' and not metrics.get('_has_age', False):
+        guard_key = source_guards.get(key)
+        if guard_key and guard_key in metrics and not metrics.get(guard_key, False):
             continue
         try:
             value = float(metrics.get(key, 50.0))
@@ -5304,14 +5315,21 @@ def resolve_v4_decision(profile, resolved):
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'HANDIKAP v4.7 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
+            'reason': 'HANDIKAP v4.8 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
         }
 
     if category == 'KV':
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'KV v4.7 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
+            'reason': 'KV v4.8 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
+        }
+
+    if category == 'MAIDEN':
+        return {
+            'mode': 'visible_controlled',
+            'useForRanking': True,
+            'reason': 'MAIDEN v4.8 controlled rollout: visible ranking uses updated Maiden profile; legacy ranking is preserved.',
         }
 
     if category == 'SARTLI' and subtype == 'SART3':
@@ -5335,7 +5353,7 @@ def resolve_v4_decision(profile, resolved):
             'reason': 'SARTLI eligible shadow profile improved 08.05.2026; candidate for controlled rollout.',
         }
 
-    if category in ['MAIDEN', 'SATIS', 'GRUP']:
+    if category in ['SATIS', 'GRUP']:
         return {
             'mode': 'shadow_only',
             'useForRanking': False,
