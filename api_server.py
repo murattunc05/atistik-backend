@@ -4291,6 +4291,41 @@ def calculate_agf_score(agf_str, all_agf_values):
     return round(max(0.0, min(100.0, raw_score)), 1)
 
 
+def parse_horse_age(age_str):
+    """Parse TJK age strings such as '4y d a' or '3y k d' into an integer age."""
+    match = re.search(r'\d+', str(age_str or ''))
+    if not match:
+        return None
+    try:
+        return int(match.group(0))
+    except (ValueError, TypeError):
+        return None
+
+
+def calculate_age_score(age_value, race_age_values, race_type=''):
+    """Return a data-backed 0-100 age score.
+
+    Recent labeled tests showed age only helps when the field has mixed ages.
+    In those mixed-age races, older runners gave the most stable small signal
+    for Handikap/KV/Sartli. Same-age fields stay neutral and are gated out.
+    """
+    if age_value is None or not race_age_values or len(race_age_values) < 2:
+        return 50.0
+
+    min_age = min(race_age_values)
+    max_age = max(race_age_values)
+    age_range = max_age - min_age
+    if age_range <= 0:
+        return 50.0
+
+    race_type_lower = (race_type or '').lower()
+    if any(k in race_type_lower for k in ['maiden', 'mdn', 'md']):
+        return 50.0
+
+    raw_score = ((age_value - min_age) / age_range) * 100
+    return round(max(0.0, min(100.0, raw_score)), 1)
+
+
 def calculate_dynamic_weights(metrics, race_type='default'):
     """
     FAZ A + 4.7: Her at için veri durumuna göre katmanların ağırlıklarını
@@ -4315,6 +4350,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
     has_weight_data   = metrics.get('_has_weight', False)
     has_jockey_data   = metrics.get('_has_jockey', False)
     has_training_degree_data = metrics.get('_has_training_projection', False)
+    has_age_data      = metrics.get('_has_age', False)
     pedigree_weight   = float(metrics.get('pedigree_weight', 0.03))
 
     # ══ FAZ A: TEMEL AĞIRLIKLAR (Ölü katmanlar sıfırlandı) ══════════════
@@ -4335,6 +4371,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         'hp_score':              0.08,
         'agf_score':             0.00,
         'trainer_score':         0.02,
+        'age_score':             0.02,
     }
 
     # ── KOŞU TİPİNE ÖZEL AĞIRLIK PROFİLLERİ ────────────────────
@@ -4348,6 +4385,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['bounce_score']          = 0.09
         w['distance_suit']         = 0.08
         w['jockey_score']          = 0.08
+        w['age_score']             = 0.04
         print(f"[WEIGHTS] Handikap -> HP:%14 Form:%20 Hiz:%18 Kilo:%9")
 
     elif any(k in race_type_lower for k in ['maiden', 'mdn', 'md']):
@@ -4359,6 +4397,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['form_trend']            = 0.05
         w['degree_stability']      = 0.02
         w['jockey_score']          = 0.10
+        w['age_score']             = 0.00
         print(f"[WEIGHTS] Maiden -> Pedigri:%18 Idman:%24 AGF:%20 Jokey:%10")
 
     elif any(k in race_type_lower for k in ['sartli', 'conditions']) or 'şartl' in race_type_lower:
@@ -4371,6 +4410,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
             w['training_fitness']      = 0.10
             w['hp_score']              = 0.04
             w['jockey_score']          = 0.09
+            w['age_score']             = 0.03
             print(f"[WEIGHTS] Sartli 1 -> Form:%16 Hiz:%16 AGF:%15")
         else:
             w['form_trend']            = 0.22
@@ -4379,6 +4419,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
             w['bounce_score']          = 0.09
             w['distance_suit']         = 0.09
             w['jockey_score']          = 0.08
+            w['age_score']             = 0.03
             print(f"[WEIGHTS] Sartli 2+ -> Form:%22 Hiz:%20 Bounce:%9")
 
     elif 'kv' in race_type_lower:
@@ -4388,6 +4429,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['bounce_score']          = 0.08
         w['distance_suit']         = 0.08
         w['jockey_score']          = 0.08
+        w['age_score']             = 0.04
         print(f"[WEIGHTS] KV -> Form:%22 Hiz:%22 Bounce:%8")
 
     elif any(k in race_type_lower for k in ['satiş', 'satis', 'claiming']):
@@ -4395,6 +4437,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['degree_avg']            = 0.20
         w['jockey_score']          = 0.08
         w['bounce_score']          = 0.08
+        w['age_score']             = 0.02
         print(f"[WEIGHTS] Satis -> Form:%20 Hiz:%20 Bounce:%8")
 
     # ── SENARYO: MAİDEN (İlk koşu — hiç yarış verisi yok) ──────────
@@ -4413,6 +4456,7 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['pace_score']            = 0.05
         w['weight_impact']         = 0.05
         w['pedigree']              = 0.20
+        w['age_score']             = 0.0
 
     elif total_races <= 2:
         w['degree_avg']       *= 0.55
@@ -4484,6 +4528,8 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         unavailable.add('weight_impact')
     if not has_jockey_data and abs(float(metrics.get('jockey_score', 50.0) or 50.0) - 50.0) < 1.0:
         unavailable.add('jockey_score')
+    if not has_age_data:
+        unavailable.add('age_score')
 
     agf_val = metrics.get('agf_score', 50.0)
     if not has_agf_data and abs(agf_val - 50.0) < 1.0 and w.get('agf_score', 0) > 0.01:
@@ -4676,7 +4722,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.6"
+_V4_VERSION = "4.7"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -4684,6 +4730,7 @@ _V4_METRIC_KEYS = [
     'training_fitness', 'training_degree_score',
     'weight_impact', 'jockey_score', 'bounce_score',
     'pace_score', 'pedigree', 'hp_score', 'agf_score',
+    'age_score',
 ]
 
 _V4_MIN_SAMPLE_RACES = {
@@ -4713,6 +4760,7 @@ _V4_WEIGHT_PROFILES = {
             'degree_trend': 1.9,
             'pedigree': 1.7,
             'distance_suit': 1.5,
+            'age_score': 3.0,
         },
     },
     'SART4': {
@@ -4733,6 +4781,7 @@ _V4_WEIGHT_PROFILES = {
             'hp_score': 2.0,
             'bounce_score': 2.0,
             'distance_suit': 1.0,
+            'age_score': 3.0,
         },
     },
     'SART5': {
@@ -4752,6 +4801,7 @@ _V4_WEIGHT_PROFILES = {
             'distance_suit': 2.3,
             'form_trend': 1.8,
             'degree_trend': 1.2,
+            'age_score': 4.0,
         },
     },
     'SARTLI': {
@@ -4771,6 +4821,7 @@ _V4_WEIGHT_PROFILES = {
             'hp_score': 4.0,
             'agf_score': 3.0,
             'degree_trend': 2.0,
+            'age_score': 4.0,
         },
     },
     'HANDIKAP': {
@@ -4792,6 +4843,7 @@ _V4_WEIGHT_PROFILES = {
             'training_degree_score': 1.6,
             'degree_trend': 0.3,
             'agf_score': 0.0,
+            'age_score': 6.0,
         },
     },
     'MAIDEN': {
@@ -4813,6 +4865,7 @@ _V4_WEIGHT_PROFILES = {
             'weight_impact': 1.0,
             'training_fitness': 0.5,
             'agf_score': 0.0,
+            'age_score': 0.0,
         },
     },
     'KV': {
@@ -4834,6 +4887,7 @@ _V4_WEIGHT_PROFILES = {
             'training_degree_score': 2.0,
             'pedigree': 2.0,
             'weight_impact': 1.0,
+            'age_score': 4.0,
         },
     },
     'SATIS': {
@@ -4851,6 +4905,7 @@ _V4_WEIGHT_PROFILES = {
             'training_fitness': 5.0,
             'training_degree_score': 4.0,
             'hp_score': 4.0,
+            'age_score': 2.0,
         },
     },
     'GRUP': {
@@ -4867,6 +4922,7 @@ _V4_WEIGHT_PROFILES = {
             'bounce_score': 6.0,
             'training_fitness': 3.0,
             'training_degree_score': 3.0,
+            'age_score': 2.0,
         },
     },
     'GLOBAL': {
@@ -4887,6 +4943,7 @@ _V4_WEIGHT_PROFILES = {
             'weight_impact': 1.0,
             'bounce_score': 0.7,
             'degree_stability': 0.1,
+            'age_score': 2.0,
         },
     },
 }
@@ -5065,6 +5122,8 @@ def calculate_v4_shadow_score(metrics, weights):
     for key, weight in weights.items():
         if weight <= 0:
             continue
+        if key == 'age_score' and not metrics.get('_has_age', False):
+            continue
         try:
             value = float(metrics.get(key, 50.0))
         except (ValueError, TypeError):
@@ -5098,6 +5157,7 @@ def calculate_v4_data_quality(scored_horses):
     agf_source_count = sum(1 for flags in source_flags if flags.get('hasAgf'))
     pedigree_source_count = sum(1 for flags in source_flags if flags.get('hasPedigree'))
     trainer_source_count = sum(1 for flags in source_flags if flags.get('hasTrainer'))
+    age_source_count = sum(1 for flags in source_flags if flags.get('hasAgeActionable'))
 
     return {
         'zeroScoreCount': zero_count,
@@ -5109,6 +5169,7 @@ def calculate_v4_data_quality(scored_horses):
             'agfCount': agf_source_count,
             'pedigreeCount': pedigree_source_count,
             'trainerCount': trainer_source_count,
+            'ageCount': age_source_count,
             'runnerCount': runner_count,
         },
         'allZeroRace': all_zero,
@@ -5142,7 +5203,7 @@ def attach_sort_metrics(analyzed_horses):
     """
     metric_keys = [
         'form', 'degree', 'training', 'trainingFitness', 'pace',
-        'distance', 'hp', 'jockey', 'pedigree', 'weight',
+        'distance', 'hp', 'jockey', 'pedigree', 'weight', 'age',
     ]
 
     def as_float(value):
@@ -5185,6 +5246,7 @@ def attach_sort_metrics(analyzed_horses):
         source_flags = horse.get('metricSourceFlags') or {}
         has_hp = bool(source_flags.get('hasHp')) if 'hasHp' in source_flags else raw_hp_is_valid(horse.get('rawHp'))
         has_weight = horse.get('weightChange') is not None
+        has_age = bool(source_flags.get('hasAgeActionable'))
 
         training_degree = as_float(
             training_info.get('trainingDegreeScore') if isinstance(training_info, dict) else None
@@ -5210,6 +5272,7 @@ def attach_sort_metrics(analyzed_horses):
             'jockey': as_float(metrics.get('jockey_score')) if has_jockey else None,
             'pedigree': as_float(pedigree_info.get('pedigreeScore')) if has_pedigree else None,
             'weight': as_float(metrics.get('weight_impact')) if has_weight else None,
+            'age': as_float(metrics.get('age_score')) if has_age else None,
         }
 
     for key in metric_keys:
@@ -5241,14 +5304,14 @@ def resolve_v4_decision(profile, resolved):
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'HANDIKAP v4.6 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
+            'reason': 'HANDIKAP v4.7 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
         }
 
     if category == 'KV':
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'KV v4.6 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
+            'reason': 'KV v4.7 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
         }
 
     if category == 'SARTLI' and subtype == 'SART3':
@@ -5656,6 +5719,23 @@ def analyze_race():
         race_min_hp = min(valid_hps) if valid_hps else 50
         hp_range = race_max_hp - race_min_hp if race_max_hp > race_min_hp else 1
 
+        # FAZ 6.3: Yaş metriği (koşu içi normalize, aynı yaşta pasif)
+        valid_age_values = []
+        for h in horses:
+            age_val = parse_horse_age(h.get('age', ''))
+            if age_val is not None:
+                valid_age_values.append(age_val)
+        race_max_age = max(valid_age_values) if valid_age_values else None
+        race_min_age = min(valid_age_values) if valid_age_values else None
+        race_age_range = (
+            race_max_age - race_min_age
+            if race_max_age is not None and race_min_age is not None and race_max_age > race_min_age
+            else 0
+        )
+        race_type_lower_for_age = (race_type or '').lower()
+        age_supported_for_ranking = not any(k in race_type_lower_for_age for k in ['maiden', 'mdn', 'md'])
+        print(f"[AGE] {len(valid_age_values)} at için yaş verisi bulundu, range={race_age_range}")
+
         # FAZ 6.2: AGF Normalizasyonu (Pass 1 öncesi hazırlık)
         valid_agf_values = []
         for h in horses:
@@ -5796,6 +5876,16 @@ def analyze_race():
                     has_valid_agf = parse_agf_percent(raw_agf) is not None
                     agf_score_val = calculate_agf_score(original_horse.get('agf', ''), valid_agf_values)
                     has_weight_source = bool(current_weight and last_weight)
+                    raw_age = str(original_horse.get('age', '')).strip()
+                    horse_age = parse_horse_age(raw_age)
+                    has_age_source = horse_age is not None
+                    has_age_actionable = bool(
+                        has_age_source
+                        and len(valid_age_values) >= 2
+                        and race_age_range > 0
+                        and age_supported_for_ranking
+                    )
+                    age_score_val = calculate_age_score(horse_age, valid_age_values, race_type)
 
                     metrics_pass1 = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
@@ -5817,6 +5907,7 @@ def analyze_race():
                         'hp_score': hp_score_val,               # FAZ 5.2: Handikap Puanı normalizasyonu
                         'agf_score': agf_score_val,             # FAZ 6.2: AGF piyasa sinyali
                         'trainer_score': 50.0,                  # FAZ 6.2: Antrenör skoru (aşağıda güncellenecek)
+                        'age_score': age_score_val,             # FAZ 6.3: Yaş sinyali
                         # FAZ 4.7: calculate_dynamic_weights için meta alanlar
                         '_total_races':   len(races),
                         '_track_races':   sum(1 for r in races if _track_key(r.get('track', '')) == _track_key(target_track)) if target_track else 0,
@@ -5829,6 +5920,7 @@ def analyze_race():
                         '_has_hp':        has_hp_source,
                         '_has_weight':    has_weight_source,
                         '_has_jockey':    has_jockey_source,
+                        '_has_age':       has_age_actionable,
                         '_race_type':     race_type,  # FAZ 6.2: Koşu tipine özel ağırlık profili
                         '_horse_races':   races,       # Konsensüs: grup ayarlaması için geçmiş yarışlar
                     }
@@ -5864,6 +5956,13 @@ def analyze_race():
                         'hasHp': has_hp_source,
                         'rawHp': raw_hp or None,
                         'validHpCountInRace': len(valid_hps),
+                        'hasAge': has_age_source,
+                        'hasAgeActionable': has_age_actionable,
+                        'rawAge': raw_age or None,
+                        'parsedAge': horse_age,
+                        'validAgeCountInRace': len(valid_age_values),
+                        'ageRangeInRace': race_age_range,
+                        'ageScoreDirection': 'older_relative' if age_supported_for_ranking else 'neutral',
                         'hasSireName': bool(sire_name),
                         'hasPedigree': bool(sire_stats and sire_stats.get('data_quality') != 'NONE'),
                         'pedigreeDataQuality': sire_stats.get('data_quality', 'NONE') if sire_stats else 'NONE',
@@ -5933,6 +6032,8 @@ def analyze_race():
                     intermediate_horses.append({
                         'name': horse_data['name'],
                         'no': original_horse.get('no', ''),
+                        'rawAge': raw_age,
+                        'ageScore': age_score_val,
                         'rawHp': original_horse.get('_raw_hp', ''),  # FAZ 5.2 (UI İÇİN)
                         'hpScore': hp_score_val,                     # FAZ 5.2 (UI İÇİN)
                         'aiScore': ai_score_pass1,   # geçici, PASS 2'de güncellenecek
@@ -5974,6 +6075,7 @@ def analyze_race():
                             'hpScore': hp_score_val,
                             'agfScore': agf_score_val,
                             'trainerScore': trainer_score_val,
+                            'ageScore': age_score_val,
                         },
                         # FAZ 4.5+4.6: PASS 1 ara değerleri (PASS 2 için gerekli)
                         '_runningStyle': horse_style,
@@ -6035,6 +6137,11 @@ def analyze_race():
                             'hasTrainingProjection': False,
                             'hasAgf': False,
                             'validAgfCountInRace': len(valid_agf_values),
+                            'hasAge': parse_horse_age(original_horse.get('age', '')) is not None,
+                            'hasAgeActionable': False,
+                            'rawAge': original_horse.get('age', '') or None,
+                            'validAgeCountInRace': len(valid_age_values),
+                            'ageRangeInRace': race_age_range,
                             'hasSireName': bool(original_horse.get('father', '').strip()),
                             'hasPedigree': False,
                             'pedigreeDataQuality': 'NONE',
@@ -6204,7 +6311,7 @@ def analyze_race():
             'degree_avg', 'form_trend', 'hp_score', 'distance_suit',
             'training_fitness', 'jockey_score',
             'weight_impact', 'bounce_score', 'degree_stability',
-            'track_suit', 'trainer_score',
+            'track_suit', 'trainer_score', 'age_score',
             # track_suit ÇIKARILDI (std=0, hep 50)
             # trainer_score ÇIKARILDI (veri güvenilir değil)
         ]
@@ -6403,7 +6510,7 @@ def analyze_race():
                             'training_fitness','training_degree_score',
                             'weight_impact','jockey_score','bounce_score',
                             'pace_score','pedigree','hp_score',
-                            'agf_score','trainer_score',
+                            'agf_score','trainer_score','age_score',
                         ]
                     }
                 }
