@@ -4752,7 +4752,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.9"
+_V4_VERSION = "4.10"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -4766,6 +4766,7 @@ _V4_METRIC_KEYS = [
 _V4_MIN_SAMPLE_RACES = {
     'exact': 8,
     'subtype_distance_field': 8,
+    'subtype_track': 8,
     'subtype': 12,
     'category': 25,
     'global': 0,
@@ -4875,6 +4876,121 @@ _V4_WEIGHT_PROFILES = {
             'degree_trend': 0.3,
             'agf_score': 0.0,
             'age_score': 6.0,
+        },
+    },
+    'HANDIKAP14': {
+        'level': 'subtype',
+        'sample_races': 12,
+        'status': 'visible_controlled',
+        'weights': {
+            'degree_stability': 31.1,
+            'degree_avg': 18.5,
+            'agf_score': 13.4,
+            'distance_suit': 11.0,
+            'track_experience_score': 7.0,
+            'pace_score': 8.8,
+            'hp_score': 6.3,
+            'form_trend': 5.7,
+            'bounce_score': 3.4,
+        },
+    },
+    'HANDIKAP14|Kum': {
+        'level': 'subtype_track',
+        'sample_races': 10,
+        'status': 'visible_controlled',
+        'weights': {
+            'form_trend': 23.7,
+            'agf_score': 23.7,
+            'degree_stability': 21.7,
+            'degree_avg': 15.3,
+            'track_experience_score': 7.0,
+            'pace_score': 5.3,
+            'bounce_score': 3.6,
+            'training_fitness': 2.7,
+            'training_degree_score': 1.6,
+            'degree_trend': 1.2,
+            'jockey_score': 1.0,
+        },
+    },
+    'HANDIKAP15': {
+        'level': 'subtype',
+        'sample_races': 23,
+        'status': 'visible_controlled',
+        'weights': {
+            'form_trend': 23.6,
+            'agf_score': 23.3,
+            'bounce_score': 13.8,
+            'pace_score': 11.2,
+            'track_experience_score': 7.0,
+            'hp_score': 6.7,
+            'distance_suit': 6.0,
+            'degree_avg': 5.7,
+            'degree_stability': 2.6,
+        },
+    },
+    'HANDIKAP15|Kum': {
+        'level': 'subtype_track',
+        'sample_races': 12,
+        'status': 'visible_controlled',
+        'weights': {
+            'agf_score': 29.0,
+            'bounce_score': 22.6,
+            'form_trend': 19.9,
+            'pace_score': 8.6,
+            'track_experience_score': 7.0,
+            'hp_score': 7.2,
+            'training_fitness': 3.0,
+            'degree_stability': 2.9,
+            'degree_avg': 2.8,
+            'distance_suit': 2.6,
+        },
+    },
+    'HANDIKAP15|Cim': {
+        'level': 'subtype_track',
+        'sample_races': 10,
+        'status': 'visible_controlled',
+        'weights': {
+            'agf_score': 28.8,
+            'form_trend': 20.4,
+            'pace_score': 19.0,
+            'degree_avg': 9.9,
+            'track_experience_score': 7.0,
+            'weight_impact': 4.4,
+            'distance_suit': 4.3,
+            'training_fitness': 4.0,
+            'hp_score': 3.9,
+            'pedigree': 2.7,
+            'age_score': 1.4,
+        },
+    },
+    'HANDIKAP16': {
+        'level': 'subtype',
+        'sample_races': 19,
+        'status': 'visible_controlled',
+        'weights': {
+            'form_trend': 31.1,
+            'pace_score': 29.5,
+            'agf_score': 13.2,
+            'distance_suit': 7.3,
+            'track_experience_score': 7.0,
+            'bounce_score': 6.6,
+            'degree_avg': 6.4,
+            'degree_stability': 2.5,
+            'jockey_score': 1.9,
+        },
+    },
+    'HANDIKAP16|Kum': {
+        'level': 'subtype_track',
+        'sample_races': 11,
+        'status': 'visible_controlled',
+        'weights': {
+            'form_trend': 23.2,
+            'agf_score': 19.6,
+            'pace_score': 17.9,
+            'training_fitness': 15.5,
+            'jockey_score': 14.5,
+            'degree_avg': 8.3,
+            'track_experience_score': 7.0,
         },
     },
     'MAIDEN': {
@@ -5023,6 +5139,8 @@ def _v4_field_bucket(field_size):
 
 def _v4_track_bucket(track):
     folded = _v4_fold_text(track)
+    if '?IM' in folded or folded.strip() == 'IM':
+        return 'Cim'
     if 'KUM' in folded:
         return 'Kum'
     if 'CIM' in folded:
@@ -5103,6 +5221,7 @@ def resolve_v4_profile_weights(profile):
     candidates = [
         (f"{subtype}|{distance_bucket}|{field_bucket}|{track_bucket}", 'exact'),
         (f"{subtype}|{distance_bucket}|{field_bucket}", 'subtype_distance_field'),
+        (f"{subtype}|{track_bucket}", 'subtype_track'),
         (subtype, 'subtype'),
         (category, 'category'),
         ('GLOBAL', 'global'),
@@ -5349,21 +5468,21 @@ def resolve_v4_decision(profile, resolved):
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'HANDIKAP v4.9 controlled rollout: visible ranking uses v4 score with surface-experience guard; legacy ranking is preserved.',
+            'reason': 'HANDIKAP v4.10 controlled rollout: visible ranking uses subtype/track profile with surface-experience guard; legacy ranking is preserved.',
         }
 
     if category == 'KV':
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'KV v4.9 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
+            'reason': 'KV v4.10 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
         }
 
     if category == 'MAIDEN':
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'MAIDEN v4.9 controlled rollout: visible ranking uses updated Maiden profile; legacy ranking is preserved.',
+            'reason': 'MAIDEN v4.10 controlled rollout: visible ranking uses updated Maiden profile; legacy ranking is preserved.',
         }
 
     if category == 'SARTLI' and subtype == 'SART3':
