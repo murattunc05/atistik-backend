@@ -2898,6 +2898,8 @@ def _track_key(value):
         return 'cim'
     if compact.startswith('S:') or compact == 'S':
         return 'sentetik'
+    if compact in ('?IM', 'IM'):
+        return 'cim'
     if 'SENTETIK' in folded:
         return 'sentetik'
     if 'KUM' in folded:
@@ -2971,6 +2973,34 @@ def calculate_track_suitability(races, target_track):
         label = f"{track_type} Zorlanir"
 
     return round(score, 1), label
+
+
+def calculate_track_experience_score(races, target_track, track_suit_score=50.0):
+    """Penalize unproven surface switches without changing the legacy track score."""
+    target_key = _track_key(target_track)
+    if not races or not target_key:
+        return 50.0, 0, 0, "neutral"
+
+    target_count = 0
+    other_count = 0
+    for race in races:
+        race_track_key = _track_key(race.get('track', ''))
+        if not race_track_key:
+            continue
+        if race_track_key == target_key:
+            target_count += 1
+        else:
+            other_count += 1
+
+    if target_count > 0:
+        return float(track_suit_score), target_count, other_count, "target_surface_history"
+    if other_count >= 5:
+        return 30.0, target_count, other_count, "strong_surface_switch_penalty"
+    if other_count >= 3:
+        return 35.0, target_count, other_count, "surface_switch_penalty"
+    if other_count >= 1:
+        return 42.0, target_count, other_count, "light_surface_switch_penalty"
+    return 50.0, target_count, other_count, "neutral"
 
 
 def calculate_distance_suitability(races, target_distance):
@@ -4722,11 +4752,11 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.8"
+_V4_VERSION = "4.9"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
-    'form_trend', 'distance_suit',
+    'form_trend', 'track_experience_score', 'distance_suit',
     'training_fitness', 'training_degree_score',
     'weight_impact', 'jockey_score', 'bounce_score',
     'pace_score', 'pedigree', 'hp_score', 'agf_score',
@@ -4836,6 +4866,7 @@ _V4_WEIGHT_PROFILES = {
             'weight_impact': 6.9,
             'training_fitness': 6.7,
             'jockey_score': 5.2,
+            'track_experience_score': 8.0,
             'distance_suit': 4.7,
             'pedigree': 2.8,
             'hp_score': 2.7,
@@ -4952,7 +4983,7 @@ _V4_WEIGHT_PROFILES = {
 def _v4_fold_text(value):
     text = str(value or '').upper()
     replacements = {
-        'Ş': 'S', 'İ': 'I', 'Ğ': 'G', 'Ü': 'U', 'Ö': 'O', 'Ç': 'C',
+        'Ş': 'S', 'İ': 'I', 'İ': 'I', 'Ğ': 'G', 'Ü': 'U', 'Ö': 'O', 'Ç': 'C',
         'Ş': 'S', 'Þ': 'S', 'Åž': 'S', 'ÅŸ': 'S',
         'İ': 'I', 'Ä°': 'I', 'Ä±': 'I',
         'Ğ': 'G', 'Äž': 'G', 'ÄŸ': 'G',
@@ -5128,6 +5159,7 @@ def calculate_v4_shadow_score(metrics, weights):
         'training_degree_score': '_has_training_times',
         'pedigree': '_has_pedigree',
         'age_score': '_has_age',
+        'track_experience_score': '_has_track_experience',
     }
     for key, weight in weights.items():
         if weight <= 0:
@@ -5169,6 +5201,7 @@ def calculate_v4_data_quality(scored_horses):
     pedigree_source_count = sum(1 for flags in source_flags if flags.get('hasPedigree'))
     trainer_source_count = sum(1 for flags in source_flags if flags.get('hasTrainer'))
     age_source_count = sum(1 for flags in source_flags if flags.get('hasAgeActionable'))
+    track_experience_count = sum(1 for flags in source_flags if flags.get('hasTrackExperience'))
 
     return {
         'zeroScoreCount': zero_count,
@@ -5181,6 +5214,7 @@ def calculate_v4_data_quality(scored_horses):
             'pedigreeCount': pedigree_source_count,
             'trainerCount': trainer_source_count,
             'ageCount': age_source_count,
+            'trackExperienceCount': track_experience_count,
             'runnerCount': runner_count,
         },
         'allZeroRace': all_zero,
@@ -5315,21 +5349,21 @@ def resolve_v4_decision(profile, resolved):
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'HANDIKAP v4.8 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
+            'reason': 'HANDIKAP v4.9 controlled rollout: visible ranking uses v4 score with surface-experience guard; legacy ranking is preserved.',
         }
 
     if category == 'KV':
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'KV v4.8 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
+            'reason': 'KV v4.9 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
         }
 
     if category == 'MAIDEN':
         return {
             'mode': 'visible_controlled',
             'useForRanking': True,
-            'reason': 'MAIDEN v4.8 controlled rollout: visible ranking uses updated Maiden profile; legacy ranking is preserved.',
+            'reason': 'MAIDEN v4.9 controlled rollout: visible ranking uses updated Maiden profile; legacy ranking is preserved.',
         }
 
     if category == 'SARTLI' and subtype == 'SART3':
@@ -5904,6 +5938,12 @@ def analyze_race():
                         and age_supported_for_ranking
                     )
                     age_score_val = calculate_age_score(horse_age, valid_age_values, race_type)
+                    track_experience_score_val, target_track_race_count, other_track_race_count, track_experience_reason = calculate_track_experience_score(
+                        races,
+                        target_track,
+                        track_suit,
+                    )
+                    has_track_experience = bool(target_track_race_count > 0 or other_track_race_count > 0)
 
                     metrics_pass1 = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
@@ -5913,6 +5953,7 @@ def analyze_race():
                         'form_trend_value': trend_value,
                         'consistency': consistency,
                         'track_suit': track_suit,
+                        'track_experience_score': track_experience_score_val,
                         'distance_suit': distance_suit,
                         'training_fitness': training_fitness,
                         'training_degree_score': training_deg_score,
@@ -5939,6 +5980,7 @@ def analyze_race():
                         '_has_weight':    has_weight_source,
                         '_has_jockey':    has_jockey_source,
                         '_has_age':       has_age_actionable,
+                        '_has_track_experience': has_track_experience,
                         '_race_type':     race_type,  # FAZ 6.2: Koşu tipine özel ağırlık profili
                         '_horse_races':   races,       # Konsensüs: grup ayarlaması için geçmiş yarışlar
                     }
@@ -5981,6 +6023,11 @@ def analyze_race():
                         'validAgeCountInRace': len(valid_age_values),
                         'ageRangeInRace': race_age_range,
                         'ageScoreDirection': 'older_relative' if age_supported_for_ranking else 'neutral',
+                        'hasTrackExperience': has_track_experience,
+                        'targetTrackRaceCount': target_track_race_count,
+                        'otherTrackRaceCount': other_track_race_count,
+                        'trackExperienceReason': track_experience_reason,
+                        'trackExperienceScore': track_experience_score_val,
                         'hasSireName': bool(sire_name),
                         'hasPedigree': bool(sire_stats and sire_stats.get('data_quality') != 'NONE'),
                         'pedigreeDataQuality': sire_stats.get('data_quality', 'NONE') if sire_stats else 'NONE',
@@ -6085,6 +6132,7 @@ def analyze_race():
                             'paceScore': 50.0,          # PASS 2'de güncellenecek
                             'pedigreeScore': pedigree_score_val,   # FAZ 4.6
                             'trackSuitScore': track_suit,
+                            'trackExperienceScore': track_experience_score_val,
                             'distanceSuitScore': distance_suit,
                             'formTrendScore': trend_score,
                             'degreeAvgScore': degree_stats.get('degreeScore', 50),
@@ -6524,7 +6572,7 @@ def analyze_race():
                         k: _m.get(k) if _m else None
                         for k in [
                             'degree_avg','degree_trend','degree_stability',
-                            'form_trend','track_suit','distance_suit',
+                            'form_trend','track_suit','track_experience_score','distance_suit',
                             'training_fitness','training_degree_score',
                             'weight_impact','jockey_score','bounce_score',
                             'pace_score','pedigree','hp_score',
