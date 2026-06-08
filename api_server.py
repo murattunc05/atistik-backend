@@ -18,44 +18,56 @@ CORS(app)  # Flutter'dan gelen isteklere izin ver
 # ══════════════════════════════════════════════════════════════════
 # FAZ 8: ML MODEL YÜKLEME (XGBoost Blend)
 # ══════════════════════════════════════════════════════════════════
-_ml_model = None
+_ml_model = None  # Legacy ML blend is intentionally disabled.
 _ml_feature_cols = []
 _ml_feature_stats = {}
-_ml_load_error = None  # Teşhis için
+_ml_load_error = None  # Legacy diagnostic field kept for compatibility.
+_ml_shadow_model = None
+_ml_shadow_feature_cols = []
+_ml_shadow_feature_stats = {}
+_ml_shadow_metadata = {}
+_ml_shadow_load_error = None
+_ML_SHADOW_MODE = "shadow_only"
 
 def load_ml_model():
-    """Sunucu başlangıcında model_xgb.json'ı yükle. Yoksa graceful skip."""
-    global _ml_model, _ml_feature_cols, _ml_feature_stats, _ml_load_error
+    """Load the optional shadow ranker without affecting visible v4 ranking."""
+    global _ml_shadow_model, _ml_shadow_feature_cols, _ml_shadow_feature_stats
+    global _ml_shadow_metadata, _ml_shadow_load_error
     import os as _o, json as _j
-    model_path = _o.path.join(_o.path.dirname(__file__), 'model_xgb.json')
-    stats_path = _o.path.join(_o.path.dirname(__file__), 'feature_stats.json')
+    model_path = _o.path.join(_o.path.dirname(__file__), 'model_shadow_ranker.json')
+    stats_path = _o.path.join(_o.path.dirname(__file__), 'feature_stats_shadow.json')
 
     if not _o.path.exists(model_path):
-        _ml_load_error = f"model_xgb.json bulunamadı: {model_path}"
-        print(f"[ML] {_ml_load_error}")
+        _ml_shadow_load_error = f"model_shadow_ranker.json bulunamadi: {model_path}"
+        print(f"[SHADOW-ML] {_ml_shadow_load_error}")
         return
 
     try:
         import xgboost as xgb
-        _ml_model = xgb.XGBRanker()
-        _ml_model.load_model(model_path)
-        _ml_load_error = None
-        print(f"[ML] XGBoost model yüklendi: {model_path}")
+        _ml_shadow_model = xgb.XGBRanker()
+        _ml_shadow_model.load_model(model_path)
+        _ml_shadow_load_error = None
+        print(f"[SHADOW-ML] XGBoost ranker yuklendi: {model_path}")
 
         if _o.path.exists(stats_path):
             with open(stats_path, 'r', encoding='utf-8') as f:
                 saved = _j.load(f)
-            _ml_feature_cols = saved.get('feature_cols', [])
-            _ml_feature_stats = saved.get('stats', {})
-            print(f"[ML] {len(_ml_feature_cols)} feature tanımı yüklendi")
+            _ml_shadow_feature_cols = saved.get('feature_cols', [])
+            _ml_shadow_feature_stats = saved.get('stats', {})
+            _ml_shadow_metadata = saved.get('metadata', {})
+            print(f"[SHADOW-ML] {len(_ml_shadow_feature_cols)} feature tanimi yuklendi")
+        else:
+            _ml_shadow_feature_cols = []
+            _ml_shadow_feature_stats = {}
+            _ml_shadow_metadata = {}
     except ImportError as ie:
-        _ml_load_error = f"ImportError: {ie}"
-        print(f"[ML] xgboost import hatası: {ie}")
-        _ml_model = None
+        _ml_shadow_load_error = f"ImportError: {ie}"
+        print(f"[SHADOW-ML] xgboost import hatasi: {ie}")
+        _ml_shadow_model = None
     except Exception as e:
-        _ml_load_error = f"Exception: {e}"
-        print(f"[ML] Model yükleme hatası: {e}")
-        _ml_model = None
+        _ml_shadow_load_error = f"Exception: {e}"
+        print(f"[SHADOW-ML] Model yukleme hatasi: {e}")
+        _ml_shadow_model = None
 
 # Sunucu başlangıcında yükle
 load_ml_model()
@@ -65,10 +77,12 @@ def ml_status():
     """ML model yükleme durumunu döner (teşhis endpoint'i)."""
     prediction_stats = _prediction_file_stats() if '_prediction_file_stats' in globals() else {}
     return jsonify({
-        'model_loaded': _ml_model is not None,
-        'feature_count': len(_ml_feature_cols),
-        'load_error': _ml_load_error,
-        'mode': 'hybrid' if _ml_model else 'rules_only',
+        'model_loaded': _ml_shadow_model is not None,
+        'feature_count': len(_ml_shadow_feature_cols),
+        'load_error': _ml_shadow_load_error,
+        'mode': _ML_SHADOW_MODE if _ml_shadow_model else 'unavailable',
+        'model_version': _ml_shadow_metadata.get('model_version'),
+        'metadata': _ml_shadow_metadata,
         'predictions': prediction_stats,
         'github_backup_configured': bool(globals().get('_GITHUB_TOKEN') and globals().get('_GITHUB_ML_REPO')),
     })
@@ -5635,6 +5649,151 @@ def calculate_ai_score(metrics):
     return master_score
 
 
+def _shadow_safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return float(default)
+        return float(value)
+    except (ValueError, TypeError):
+        return float(default)
+
+
+def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distance='', track=''):
+    horse = horse or {}
+    metrics = metrics or {}
+    flags = horse.get('metricSourceFlags') or {}
+    profile = horse.get('v4Profile') or {}
+    race_type_text = str(race_type or metrics.get('_race_type') or profile.get('category') or '')
+    folded_type = _v4_fold_text(race_type_text)
+    track_bucket = _v4_track_bucket(track or profile.get('track') or '')
+
+    try:
+        distance_num = int(re.sub(r'[^0-9]', '', str(distance or 0)) or 0)
+    except (ValueError, TypeError):
+        distance_num = 0
+
+    base_keys = [
+        'degree_avg', 'degree_trend', 'degree_stability', 'form_trend',
+        'track_suit', 'track_experience_score', 'distance_suit',
+        'training_fitness', 'training_degree_score', 'weight_impact',
+        'jockey_score', 'bounce_score', 'pace_score', 'pedigree',
+        'hp_score', 'trainer_score', 'agf_score', 'age_score',
+    ]
+    features = {key: _shadow_safe_float(metrics.get(key), 50.0) for key in base_keys}
+
+    features.update({
+        'v4_score': _shadow_safe_float(horse.get('v4Score'), 0.0),
+        'v4_rank': _shadow_safe_float(horse.get('v4Rank'), field_size or 0),
+        'field_size': _shadow_safe_float(field_size, 0.0),
+        'distance_num': _shadow_safe_float(distance_num, 0.0),
+        'is_handikap': 1.0 if 'HANDIKAP' in folded_type else 0.0,
+        'is_maiden': 1.0 if 'MAIDEN' in folded_type or 'MDN' in folded_type else 0.0,
+        'is_sartli': 1.0 if 'SART' in folded_type else 0.0,
+        'is_kv': 1.0 if 'KV' in folded_type else 0.0,
+        'is_grup': 1.0 if 'GRUP' in folded_type or re.search(r'\bG\s*[-/]?\s*[123]\b', folded_type) else 0.0,
+        'is_satis': 1.0 if 'SATIS' in folded_type else 0.0,
+        'track_kum': 1.0 if track_bucket == 'Kum' else 0.0,
+        'track_cim': 1.0 if track_bucket == 'Cim' else 0.0,
+        'track_sentetik': 1.0 if track_bucket == 'Sentetik' else 0.0,
+        'has_training': 1.0 if flags.get('hasTraining') else 0.0,
+        'has_agf': 1.0 if flags.get('hasAgf') else 0.0,
+        'has_hp': 1.0 if flags.get('hasHp') else 0.0,
+        'has_pedigree': 1.0 if flags.get('hasPedigree') else 0.0,
+        'has_trainer': 1.0 if flags.get('hasTrainer') else 0.0,
+        'has_age_actionable': 1.0 if flags.get('hasAgeActionable') else 0.0,
+        'has_track_experience': 1.0 if flags.get('hasTrackExperience') else 0.0,
+    })
+
+    metric_values = [features[key] for key in base_keys]
+    features['top3_feature_avg'] = float(np.mean(sorted(metric_values)[-3:])) if metric_values else 50.0
+    features['feature_variance'] = float(np.var(metric_values)) if metric_values else 0.0
+    return features
+
+
+def _shadow_feature_vector(feature_values):
+    vector = []
+    for col in _ml_shadow_feature_cols:
+        if col in feature_values:
+            vector.append(_shadow_safe_float(feature_values.get(col), 0.0))
+            continue
+        stat = _ml_shadow_feature_stats.get(col, {}) if isinstance(_ml_shadow_feature_stats, dict) else {}
+        vector.append(_shadow_safe_float(stat.get('mean'), 0.0))
+    return vector
+
+
+def attach_shadow_ml_predictions(analyzed_horses, race_type='', distance='', track=''):
+    """Attach optional ML shadow fields without changing visible v4 ranking."""
+    model_version = _ml_shadow_metadata.get('model_version')
+    unavailable_reason = None
+    if _ml_shadow_model is None or not _ml_shadow_feature_cols:
+        unavailable_reason = _ml_shadow_load_error or 'shadow model unavailable'
+
+    raw_scores = []
+    field_size = len(analyzed_horses)
+
+    if unavailable_reason is None:
+        for horse in analyzed_horses:
+            metrics = horse.get('_mf', {}) or {}
+            feature_values = _shadow_feature_dict(
+                metrics,
+                horse=horse,
+                field_size=field_size,
+                race_type=race_type,
+                distance=distance,
+                track=track,
+            )
+            try:
+                X = np.array([_shadow_feature_vector(feature_values)], dtype=np.float32)
+                raw_scores.append(float(_ml_shadow_model.predict(X)[0]))
+            except Exception as err:
+                print(f"[SHADOW-ML] Tahmin hatasi: {err}")
+                unavailable_reason = str(err)
+                break
+
+    if unavailable_reason is not None:
+        for horse in analyzed_horses:
+            horse['mlShadowMode'] = 'unavailable'
+            horse['mlModelVersion'] = model_version
+            horse['mlShadowReason'] = unavailable_reason
+            horse['mlShadowScore'] = None
+            horse['mlShadowRank'] = None
+            horse['mlWinProbability'] = None
+            horse['mlTop3Probability'] = None
+            horse['mlExpectedFinishRank'] = None
+        return
+
+    min_score = min(raw_scores)
+    max_score = max(raw_scores)
+    score_range = max(max_score - min_score, 1e-9)
+    normalized_scores = [round((score - min_score) / score_range * 100.0, 1) for score in raw_scores]
+    order = sorted(range(field_size), key=lambda idx: normalized_scores[idx], reverse=True)
+    rank_by_index = {idx: rank + 1 for rank, idx in enumerate(order)}
+    win_probs_by_rank_order = calculate_softmax_probabilities(
+        [normalized_scores[idx] for idx in order],
+        temperature=18.0,
+    )
+    win_prob_by_index = {
+        idx: win_probs_by_rank_order[pos] if pos < len(win_probs_by_rank_order) else 0.0
+        for pos, idx in enumerate(order)
+    }
+
+    import math as _math
+    for idx, horse in enumerate(analyzed_horses):
+        ml_rank = rank_by_index[idx]
+        ml_score = normalized_scores[idx]
+        expected_from_score = 1.0 + max(field_size - 1, 0) * (1.0 - (ml_score / 100.0))
+        expected_finish = round((ml_rank * 0.65) + (expected_from_score * 0.35), 2)
+        top3_probability = round(100.0 / (1.0 + _math.exp((ml_rank - 3.5) / 1.6)), 1)
+        horse['mlShadowMode'] = _ML_SHADOW_MODE
+        horse['mlModelVersion'] = model_version
+        horse['mlShadowReason'] = 'shadow model only; visible v4 ranking is unchanged'
+        horse['mlShadowScore'] = ml_score
+        horse['mlShadowRank'] = ml_rank
+        horse['mlWinProbability'] = win_prob_by_index.get(idx, 0.0)
+        horse['mlTop3Probability'] = max(0.0, min(99.0, top3_probability))
+        horse['mlExpectedFinishRank'] = expected_finish
+
+
 def generate_prediction(ai_score, metrics):
     """
     FAZ 4.7: Zenginleştirilmiş tahmin etiketi.
@@ -6425,6 +6584,7 @@ def analyze_race():
         # olan atlar ödüllendirilir, tek katmanda parlayan cezalandırılır
         # ═══════════════════════════════════════════════════════════
         # ═══ FAZ A.1: KONSENSÜS — Ölü katmanlar çıkarıldı, std kontrolü eklendi ═══
+        blend_mode = 'v4_default_shadow_ml'
         _CONSENSUS_LAYERS = [
             'degree_avg', 'form_trend', 'hp_score', 'distance_suit',
             'training_fitness', 'jockey_score',
@@ -6509,6 +6669,19 @@ def analyze_race():
             )
         except Exception as _v4_err:
             print(f"[V4 SHADOW] Hesaplama hatasi, mevcut algoritma ile devam: {_v4_err}")
+
+        try:
+            attach_shadow_ml_predictions(
+                analyzed_horses,
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+            )
+        except Exception as _shadow_ml_err:
+            print(f"[SHADOW-ML] Hesaplama hatasi, v4 siralama korunuyor: {_shadow_ml_err}")
+            for _h in analyzed_horses:
+                _h['mlShadowMode'] = 'unavailable'
+                _h['mlShadowReason'] = str(_shadow_ml_err)
 
         attach_sort_metrics(analyzed_horses)
 
@@ -6609,6 +6782,14 @@ def analyze_race():
                     'v4_weights': _h.get('v4Weights', {}),
                     'v4_confidence': _h.get('v4Confidence', {}),
                     'v4_data_quality': _h.get('v4DataQuality', {}),
+                    'ml_shadow_score': _h.get('mlShadowScore'),
+                    'ml_shadow_rank': _h.get('mlShadowRank'),
+                    'ml_win_probability': _h.get('mlWinProbability'),
+                    'ml_top3_probability': _h.get('mlTop3Probability'),
+                    'ml_expected_finish_rank': _h.get('mlExpectedFinishRank'),
+                    'ml_model_version': _h.get('mlModelVersion'),
+                    'ml_shadow_mode': _h.get('mlShadowMode'),
+                    'ml_shadow_reason': _h.get('mlShadowReason'),
                     'sort_metrics': _h.get('sortMetrics', {}),
                     'race_type':  race_type or '',
                     'distance':   target_distance or '',
