@@ -4752,7 +4752,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.10"
+_V4_VERSION = "4.11"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -5458,70 +5458,20 @@ def attach_sort_metrics(analyzed_horses):
 
 
 def resolve_v4_decision(profile, resolved):
-    """Classify v4 output for rollout tracking and controlled visible ranking."""
+    """Classify v4 output now that v4 is the default visible ranking."""
     category = profile.get('category', 'GLOBAL')
-    subtype = profile.get('subtype', 'GLOBAL')
-    fallback_level = resolved.get('fallbackLevel', 'global')
-    confidence_label = resolved.get('confidenceLabel', 'fallback-shadow')
-
-    if category == 'HANDIKAP':
-        return {
-            'mode': 'visible_controlled',
-            'useForRanking': True,
-            'reason': 'HANDIKAP v4.10 controlled rollout: visible ranking uses subtype/track profile with surface-experience guard; legacy ranking is preserved.',
-        }
-
-    if category == 'KV':
-        return {
-            'mode': 'visible_controlled',
-            'useForRanking': True,
-            'reason': 'KV v4.10 controlled rollout: visible ranking uses v4 score; legacy ranking is preserved.',
-        }
-
-    if category == 'MAIDEN':
-        return {
-            'mode': 'visible_controlled',
-            'useForRanking': True,
-            'reason': 'MAIDEN v4.10 controlled rollout: visible ranking uses updated Maiden profile; legacy ranking is preserved.',
-        }
-
-    if category == 'SARTLI' and subtype == 'SART3':
-        return {
-            'mode': 'shadow_only',
-            'useForRanking': False,
-            'reason': 'SART3 candidate regressed in 08.05.2026 shadow test; needs weight revision.',
-        }
-
-    if category == 'SARTLI' and subtype == 'SART5':
-        return {
-            'mode': 'shadow_only',
-            'useForRanking': False,
-            'reason': 'SART5 showed positive signal but sample is too small for visible ranking.',
-        }
-
-    if category == 'SARTLI' and confidence_label == 'eligible-shadow':
-        return {
-            'mode': 'candidate',
-            'useForRanking': False,
-            'reason': 'SARTLI eligible shadow profile improved 08.05.2026; candidate for controlled rollout.',
-        }
-
-    if category in ['SATIS', 'GRUP']:
-        return {
-            'mode': 'shadow_only',
-            'useForRanking': False,
-            'reason': f'{category} profile remains under observation; not enough stable evidence.',
-        }
-
     return {
-        'mode': 'shadow_only',
-        'useForRanking': False,
-        'reason': f'Fallback level {fallback_level}; observe only.',
+        'mode': 'default_visible',
+        'useForRanking': True,
+        'reason': (
+            f'{category} v4.11 default ranking: visible ranking uses v4 score; '
+            'legacy score is no longer calculated for new analyses.'
+        ),
     }
 
 
 def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
-    """Attach v4 fields, and use v4 as visible ranking only for controlled rollout groups."""
+    """Attach v4 fields and make v4 the default visible ranking for every group."""
     profile = extract_v4_race_profile(
         race_type=race_type,
         distance=distance,
@@ -5538,7 +5488,7 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
         v4_score = calculate_v4_shadow_score(metrics, weights) if metrics else 0.0
         horse['v4Version'] = _V4_VERSION
         horse['v4Score'] = v4_score
-        horse['v4Mode'] = 'shadow'
+        horse['v4Mode'] = 'visible'
         horse['v4DecisionMode'] = decision['mode']
         horse['v4UseForRanking'] = decision['useForRanking']
         horse['v4Reason'] = decision['reason']
@@ -5566,24 +5516,7 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
     for index, horse in enumerate(scored):
         horse['v4Rank'] = index + 1
 
-    legacy_order = sorted(scored, key=lambda h: h.get('aiScore', 0), reverse=True)
-    legacy_probs = calculate_softmax_probabilities(
-        [horse.get('aiScore', 0) for horse in legacy_order],
-        temperature=18.0,
-    )
-    for index, horse in enumerate(legacy_order):
-        legacy_score = horse.get('aiScore', 0)
-        horse['legacyScore'] = legacy_score
-        horse['legacyRank'] = index + 1
-        horse['legacyWinProbability'] = legacy_probs[index] if index < len(legacy_probs) else 0.0
-        horse['legacyWinProbabilityLabel'] = (
-            f"%{horse['legacyWinProbability']:.1f} eski algoritma kazanma ihtimali"
-        )
-
-    use_visible_v4 = bool(decision['useForRanking']) and not data_quality['lowDataRace']
-    if decision['useForRanking'] and not use_visible_v4:
-        fallback_reason = ' v4 visible fallback disabled because race data quality is low.'
-        decision['reason'] = f"{decision['reason']}{fallback_reason}"
+    use_visible_v4 = bool(decision['useForRanking'])
 
     for horse in scored:
         horse['v4AppliedForRanking'] = use_visible_v4
@@ -5602,7 +5535,7 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
         f"[V4 ROLLOUT] profile={profile.get('profileKey')} "
         f"selected={resolved['selectedKey']} level={resolved['fallbackLevel']} "
         f"sample={resolved['sampleRaces']}/{resolved['minRequired']} "
-        f"decision={decision['mode']} visible={use_visible_v4} version={_V4_VERSION} "
+        f"decision={decision['mode']} visible={use_visible_v4} legacy=disabled version={_V4_VERSION} "
         f"valid={data_quality['validRunnerCount']} zero={data_quality['zeroScoreCount']}"
     )
 
@@ -6661,14 +6594,14 @@ def analyze_race():
                     'horse_name': _h_name,
                     'ai_score':   _h.get('aiScore', 0),
                     'rank_pred':  _h.get('rank', 0),
-                    'legacy_score': _h.get('legacyScore', _h.get('aiScore', 0)),
-                    'legacy_rank': _h.get('legacyRank', _h.get('rank', 0)),
+                    'legacy_score': _h.get('legacyScore'),
+                    'legacy_rank': _h.get('legacyRank'),
                     'legacy_win_probability': _h.get('legacyWinProbability'),
                     'v4_score':   _h.get('v4Score', 0),
                     'v4_rank':    _h.get('v4Rank', 0),
                     'v4_version': _h.get('v4Version', _V4_VERSION),
-                    'v4_mode':    _h.get('v4Mode', 'shadow'),
-                    'v4_decision_mode': _h.get('v4DecisionMode', 'shadow_only'),
+                    'v4_mode':    _h.get('v4Mode', 'visible'),
+                    'v4_decision_mode': _h.get('v4DecisionMode', 'default_visible'),
                     'v4_use_for_ranking': _h.get('v4UseForRanking', False),
                     'v4_applied_for_ranking': _h.get('v4AppliedForRanking', False),
                     'v4_reason': _h.get('v4Reason', ''),
