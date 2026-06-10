@@ -2227,12 +2227,12 @@ def apply_class_factor_to_degrees(races):
     ile birlikte normalize eder.
     
     Formül:
-        adjustedDegreeInSeconds = degreeInSeconds / classMultiplier / trackConditionMultiplier
+        adjustedDegreeInSeconds = degreeInSeconds / classMultiplier * trackConditionMultiplier
     
     Örnek:
         Ağır pistte KV-8'de koşulan 2.10 (130sn)
         classMultiplier = 1.08, trackConditionMultiplier = 0.93
-        adjusted = 130 / 1.08 / 0.93 ≈ 129.53 / 0.93 ≈ 115.54sn  <-- çok daha hızlı normalize olur
+        adjusted = 130 / 1.08 * 0.93 ≈ 111.94sn
     
     Args:
         races (list): Yarış dictionaryleri listesi
@@ -2255,9 +2255,10 @@ def apply_class_factor_to_degrees(races):
         # Birleşik normalize edilmiş derece
         degree_seconds = race.get('degreeInSeconds')
         if degree_seconds and degree_seconds > 0:
-            # Önce class, sonra pist durumu düzeltmesi
+            # Zor sınıf derecesini bölerek, yavaş pist derecesini çarparak normalize et.
+            # 1'in altındaki pist çarpanına bölmek süreyi uzatıp düzeltmeyi tersine çevirir.
             race['adjustedDegreeInSeconds'] = round(
-                degree_seconds / class_mult / track_cond_mult, 2
+                degree_seconds / class_mult * track_cond_mult, 2
             )
         else:
             race['adjustedDegreeInSeconds'] = None
@@ -3110,6 +3111,36 @@ def calculate_training_degree_score(training_projection, avg_race_degree):
 
 # ============== FAZ 4.2: SİKLET (KİLO) PERFORMANS ENDİKSİ ==============
 
+def parse_carried_weight(value):
+    """Parse TJK carried-weight values such as ``54`` or ``50+2.00Fazla Kilo``."""
+    if not value:
+        return None
+    base_match = re.match(r'(\d+[,.]?\d*)', str(value).strip())
+    if not base_match:
+        return None
+    weight = float(base_match.group(1).replace(',', '.'))
+    allowance_match = re.search(r'\+(\d+[,.]?\d*)', str(value))
+    if allowance_match:
+        weight += float(allowance_match.group(1).replace(',', '.'))
+    return weight
+
+
+def calculate_handicap_efficiency_score(horse_hp, current_weight, all_hps, all_weights):
+    """Measure whether carried weight is favorable relative to the horse's HP."""
+    if horse_hp is None or current_weight is None or len(all_hps) < 3 or len(all_weights) < 3:
+        return 50.0
+
+    hp_min, hp_max = min(all_hps), max(all_hps)
+    weight_min, weight_max = min(all_weights), max(all_weights)
+    if hp_max <= hp_min or weight_max <= weight_min:
+        return 50.0
+
+    hp_percentile = (float(horse_hp) - hp_min) / (hp_max - hp_min)
+    weight_percentile = (float(current_weight) - weight_min) / (weight_max - weight_min)
+    residual = hp_percentile - weight_percentile
+    return round(max(0.0, min(100.0, 50.0 + residual * 50.0)), 1)
+
+
 def calculate_weight_impact(current_weight_str, last_weight_str, target_distance):
     """
     FAZ 4.2: Kilo değişimini mesafe÷etkileşimi dâhilinde 0-100 skor üretir.
@@ -3133,21 +3164,8 @@ def calculate_weight_impact(current_weight_str, last_weight_str, target_distance
     Returns:
         float: Skor (0-100), nötr = 50
     """
-    def parse_w(w_str):
-        """Parse weight string like '50+2.00Fazla Kilo' -> 52.0"""
-        if not w_str:
-            return None
-        base_match = re.match(r'(\d+[,.]?\d*)', str(w_str).strip())
-        if not base_match:
-            return None
-        base = float(base_match.group(1).replace(',', '.'))
-        bonus_match = re.search(r'\+(\d+[,.]?\d*)', str(w_str))
-        if bonus_match:
-            base += float(bonus_match.group(1).replace(',', '.'))
-        return base
-    
-    cw = parse_w(current_weight_str)
-    lw = parse_w(last_weight_str)
+    cw = parse_carried_weight(current_weight_str)
+    lw = parse_carried_weight(last_weight_str)
     
     # Kilo bilgisi yoksa nötr
     if cw is None or lw is None:
@@ -4766,7 +4784,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.12"
+_V4_VERSION = "4.13"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -5335,6 +5353,7 @@ def calculate_v4_data_quality(scored_horses):
     trainer_source_count = sum(1 for flags in source_flags if flags.get('hasTrainer'))
     age_source_count = sum(1 for flags in source_flags if flags.get('hasAgeActionable'))
     track_experience_count = sum(1 for flags in source_flags if flags.get('hasTrackExperience'))
+    handicap_efficiency_count = sum(1 for flags in source_flags if flags.get('hasHandicapEfficiency'))
 
     return {
         'zeroScoreCount': zero_count,
@@ -5348,6 +5367,7 @@ def calculate_v4_data_quality(scored_horses):
             'trainerCount': trainer_source_count,
             'ageCount': age_source_count,
             'trackExperienceCount': track_experience_count,
+            'handicapEfficiencyCount': handicap_efficiency_count,
             'runnerCount': runner_count,
         },
         'allZeroRace': all_zero,
@@ -5676,6 +5696,7 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'degree_avg', 'degree_trend', 'degree_stability', 'form_trend',
         'track_suit', 'track_experience_score', 'distance_suit',
         'training_fitness', 'training_degree_score', 'weight_impact',
+        'handicap_efficiency_score',
         'jockey_score', 'bounce_score', 'pace_score', 'pedigree',
         'hp_score', 'trainer_score', 'agf_score', 'age_score',
     ]
@@ -5702,6 +5723,7 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'has_trainer': 1.0 if flags.get('hasTrainer') else 0.0,
         'has_age_actionable': 1.0 if flags.get('hasAgeActionable') else 0.0,
         'has_track_experience': 1.0 if flags.get('hasTrackExperience') else 0.0,
+        'has_handicap_efficiency': 1.0 if flags.get('hasHandicapEfficiency') else 0.0,
     })
 
     metric_values = [features[key] for key in base_keys]
@@ -5977,6 +5999,15 @@ def analyze_race():
             hp_str = str(h.get('hp', '')).strip()
             if hp_str.isdigit():
                 valid_hps.append(int(hp_str))
+
+        valid_current_weights = []
+        for h in horses:
+            parsed_weight = parse_carried_weight(h.get('weight', ''))
+            if parsed_weight is not None:
+                valid_current_weights.append(parsed_weight)
+
+        folded_race_type = _v4_fold_text(race_type)
+        is_handicap_race = 'HANDIKAP' in folded_race_type or 'HANDICAP' in folded_race_type
         
         race_max_hp = max(valid_hps) if valid_hps else 50
         race_min_hp = min(valid_hps) if valid_hps else 50
@@ -6098,6 +6129,7 @@ def analyze_race():
                     
                     # FAZ 4.2: Kilo değişimi — AI score'dan ÖNCE hesapla
                     current_weight = original_horse.get('weight', '').strip()
+                    current_weight_value = parse_carried_weight(current_weight)
                     last_weight = races[0].get('weight', '').strip() if races else ''
                     weight_impact_score = calculate_weight_impact(current_weight, last_weight, target_distance)
                     
@@ -6132,6 +6164,20 @@ def analyze_race():
                         # TAM ARALIK: en düşük HP=0, en yüksek HP=100
                         hp_score_val = round(((horse_hp - race_min_hp) / hp_range) * 100.0, 1)
                         hp_score_val = max(0.0, min(100.0, hp_score_val))
+
+                    has_handicap_efficiency = bool(
+                        is_handicap_race
+                        and has_valid_hp
+                        and current_weight_value is not None
+                        and len(valid_hps) >= 3
+                        and len(valid_current_weights) >= 3
+                    )
+                    handicap_efficiency_score = calculate_handicap_efficiency_score(
+                        horse_hp if has_valid_hp else None,
+                        current_weight_value,
+                        valid_hps,
+                        valid_current_weights,
+                    ) if has_handicap_efficiency else 50.0
 
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
                     original_horse['_raw_hp'] = raw_hp if raw_hp else '-';
@@ -6169,6 +6215,8 @@ def analyze_race():
                         'training_fitness': training_fitness,
                         'training_degree_score': training_deg_score,
                         'weight_impact': weight_impact_score,   # FAZ 4.2
+                        # Shadow feature: HP ile taşınan kiloyu birlikte değerlendirir.
+                        'handicap_efficiency_score': handicap_efficiency_score,
                         'jockey_score': jockey_score_val,       # FAZ 4.3
                         'bounce_score': bounce_score_val,       # FAZ 4.4
                         'pace_score': 50.0,                     # FAZ 4.5: PASS 2'de güncellenecek (nötr placeholder)
@@ -6189,6 +6237,7 @@ def analyze_race():
                         '_has_agf':       has_valid_agf,
                         '_has_hp':        has_hp_source,
                         '_has_weight':    has_weight_source,
+                        '_has_handicap_efficiency': has_handicap_efficiency,
                         '_has_jockey':    has_jockey_source,
                         '_has_age':       has_age_actionable,
                         '_has_track_experience': has_track_experience,
@@ -6227,6 +6276,11 @@ def analyze_race():
                         'hasHp': has_hp_source,
                         'rawHp': raw_hp or None,
                         'validHpCountInRace': len(valid_hps),
+                        'hasHandicapEfficiency': has_handicap_efficiency,
+                        'rawCurrentWeight': current_weight or None,
+                        'parsedCurrentWeight': current_weight_value,
+                        'validWeightCountInRace': len(valid_current_weights),
+                        'handicapEfficiencyScore': handicap_efficiency_score,
                         'hasAge': has_age_source,
                         'hasAgeActionable': has_age_actionable,
                         'rawAge': raw_age or None,
@@ -6338,6 +6392,7 @@ def analyze_race():
                         'metricSourceFlags': metric_source_flags,
                         'scoreBreakdown': {
                             'weightImpactScore': weight_impact_score,
+                            'handicapEfficiencyScore': handicap_efficiency_score,
                             'jockeyScore': jockey_score_val,
                             'bounceScore': bounce_score_val,
                             'paceScore': 50.0,          # PASS 2'de güncellenecek
@@ -6807,7 +6862,7 @@ def analyze_race():
                             'degree_avg','degree_trend','degree_stability',
                             'form_trend','track_suit','track_experience_score','distance_suit',
                             'training_fitness','training_degree_score',
-                            'weight_impact','jockey_score','bounce_score',
+                            'weight_impact','handicap_efficiency_score','jockey_score','bounce_score',
                             'pace_score','pedigree','hp_score',
                             'agf_score','trainer_score','age_score',
                         ]

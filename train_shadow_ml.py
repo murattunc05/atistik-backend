@@ -21,6 +21,7 @@ FEATURE_COLS = [
     "training_fitness",
     "training_degree_score",
     "weight_impact",
+    "handicap_efficiency_score",
     "jockey_score",
     "bounce_score",
     "pace_score",
@@ -49,6 +50,7 @@ FEATURE_COLS = [
     "has_trainer",
     "has_age_actionable",
     "has_track_experience",
+    "has_handicap_efficiency",
     "top3_feature_avg",
     "feature_variance",
 ]
@@ -154,6 +156,7 @@ def feature_dict(entry):
         "training_fitness",
         "training_degree_score",
         "weight_impact",
+        "handicap_efficiency_score",
         "jockey_score",
         "bounce_score",
         "pace_score",
@@ -186,6 +189,7 @@ def feature_dict(entry):
             "has_trainer": 1.0 if flags.get("hasTrainer") else 0.0,
             "has_age_actionable": 1.0 if flags.get("hasAgeActionable") else 0.0,
             "has_track_experience": 1.0 if flags.get("hasTrackExperience") else 0.0,
+            "has_handicap_efficiency": 1.0 if flags.get("hasHandicapEfficiency") else 0.0,
         }
     )
     values = [features[key] for key in metric_keys]
