@@ -4766,7 +4766,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.11"
+_V4_VERSION = "4.12"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -4789,23 +4789,23 @@ _V4_MIN_SAMPLE_RACES = {
 _V4_WEIGHT_PROFILES = {
     'SART3': {
         'level': 'subtype',
-        'sample_races': 12,
+        'sample_races': 21,
         'status': 'eligible_shadow',
         'weights': {
-            'training_degree_score': 20.2,
-            'training_fitness': 16.6,
-            'form_trend': 15.7,
-            'bounce_score': 14.2,
-            'weight_impact': 7.8,
-            'degree_avg': 6.0,
-            'jockey_score': 5.2,
-            'degree_stability': 3.5,
-            'hp_score': 3.2,
-            'pace_score': 2.5,
-            'degree_trend': 1.9,
-            'pedigree': 1.7,
-            'distance_suit': 1.5,
-            'age_score': 3.0,
+            'pedigree': 23.5,
+            'form_trend': 23.1,
+            'bounce_score': 12.1,
+            'distance_suit': 11.1,
+            'degree_avg': 4.5,
+            'training_fitness': 4.2,
+            'training_degree_score': 4.1,
+            'hp_score': 3.9,
+            'weight_impact': 3.2,
+            'age_score': 2.6,
+            'degree_stability': 2.2,
+            'jockey_score': 2.0,
+            'degree_trend': 1.6,
+            'pace_score': 1.6,
         },
     },
     'SART4': {
