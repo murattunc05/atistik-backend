@@ -6883,10 +6883,16 @@ def submit_results():
         import json as _json, os as _os
         data = request.json
         def _clean_name(s):
-            """At isminden newline ve sonrasını temizle: 'AĞASAÇAN\n (1)' → 'AĞASAÇAN'"""
+            """Normalize horse names for result matching.
+
+            TJK result sources can collapse spaces (``SUPERCHIRON``) while
+            analysis records keep them (``SUPER CHIRON``). Race-id matching
+            already limits the scope, so punctuation and whitespace can be
+            removed safely from both sides before comparing names.
+            """
             text = str(s).split('\n')[0].strip().upper()
             text = re.sub(r'\s*\(\s*\d+\s*\)\s*$', '', text)
-            return re.sub(r'\s+', ' ', text).strip()
+            return re.sub(r'[\W_]+', '', text, flags=re.UNICODE)
 
         race_id_in  = str(data.get('race_id', '')).strip()
         race_date   = str(data.get('race_date', '')).strip()   # FAZ 7.4: fallback
