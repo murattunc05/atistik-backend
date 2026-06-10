@@ -7214,6 +7214,31 @@ def ml_stats():
                 except Exception:
                     continue
 
+        analyzed_race_count = len(races)
+        labeled_race_count = sum(1 for values in races.values() if values['labeled'] > 0)
+        fully_labeled_race_count = sum(
+            1 for values in races.values()
+            if values['horses'] > 0 and values['labeled'] == values['horses']
+        )
+        partially_labeled_race_count = sum(
+            1 for values in races.values()
+            if 0 < values['labeled'] < values['horses']
+        )
+        unlabeled_race_count = analyzed_race_count - labeled_race_count
+
+        trained_race_count = 0
+        try:
+            trained_race_count = int(_ml_shadow_metadata.get('train_races', 0) or 0) + int(
+                _ml_shadow_metadata.get('validation_races', 0) or 0
+            )
+        except (TypeError, ValueError):
+            trained_race_count = 0
+
+        retrain_interval_races = 50
+        new_labeled_races = max(0, labeled_race_count - trained_race_count)
+        races_until_retrain = max(0, retrain_interval_races - new_labeled_races)
+        retrain_due = trained_race_count > 0 and races_until_retrain == 0
+
         race_list = [
             {
                 'race_id': rid,
@@ -7229,12 +7254,27 @@ def ml_stats():
             'total':     total,
             'labeled':   labeled,
             'unlabeled': unlabeled,
-            'race_count': len(races),
+            # ML sayacinda race_count yalnizca egitime girebilen sonuclu kosulari ifade eder.
+            'race_count': labeled_race_count,
+            'analyzed_race_count': analyzed_race_count,
+            'labeled_race_count': labeled_race_count,
+            'fully_labeled_race_count': fully_labeled_race_count,
+            'partially_labeled_race_count': partially_labeled_race_count,
+            'unlabeled_race_count': unlabeled_race_count,
+            'model_training_race_count': trained_race_count,
+            'new_labeled_races_since_training': new_labeled_races,
+            'retrain_interval_races': retrain_interval_races,
+            'races_until_retrain': races_until_retrain,
+            'retrain_due': retrain_due,
             'training_ready': labeled >= 50,
             'races':     race_list[:20],   # Son 20 koşu
-            'message':   (
-                f'{labeled} etiketlenmiş at verisi var. '
-                f'{"Model eğitilebilir! ✅" if labeled >= 50 else f"Model eğitimi için {50 - labeled} tane daha gerekli."}'
+            'message': (
+                f'{labeled_race_count} sonuçlu yarış / {labeled} etiketlenmiş at var. '
+                + (
+                    f'Yeniden eğitim eşiği doldu (+{new_labeled_races} yarış).'
+                    if retrain_due
+                    else f'Yeniden eğitim için {races_until_retrain} sonuçlu yarış daha gerekli.'
+                )
             )
         })
 
