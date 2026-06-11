@@ -4846,7 +4846,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.13"
+_V4_VERSION = "4.14"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -5059,18 +5059,19 @@ _V4_WEIGHT_PROFILES = {
     },
     'HANDIKAP16': {
         'level': 'subtype',
-        'sample_races': 19,
+        'sample_races': 26,
         'status': 'visible_controlled',
         'weights': {
-            'form_trend': 31.1,
-            'pace_score': 29.5,
-            'agf_score': 13.2,
-            'distance_suit': 7.3,
-            'track_experience_score': 7.0,
-            'bounce_score': 6.6,
-            'degree_avg': 6.4,
-            'degree_stability': 2.5,
-            'jockey_score': 1.9,
+            'form_trend': 27.3,
+            'age_score': 17.4,
+            'pace_score': 15.3,
+            'training_fitness': 14.3,
+            'agf_score': 8.3,
+            'track_experience_score': 6.8,
+            'weight_impact': 4.7,
+            'training_degree_score': 2.4,
+            'bounce_score': 1.6,
+            'pedigree': 1.1,
         },
     },
     'HANDIKAP16|Kum': {
@@ -5560,7 +5561,7 @@ def resolve_v4_decision(profile, resolved):
         'mode': 'default_visible',
         'useForRanking': True,
         'reason': (
-            f'{category} v4.11 default ranking: visible ranking uses v4 score; '
+            f'{category} v{_V4_VERSION} default ranking: visible ranking uses v4 score; '
             'legacy score is no longer calculated for new analyses.'
         ),
     }
