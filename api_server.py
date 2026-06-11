@@ -82,6 +82,7 @@ def ml_status():
         'load_error': _ml_shadow_load_error,
         'mode': _ML_SHADOW_MODE if _ml_shadow_model else 'unavailable',
         'model_version': _ml_shadow_metadata.get('model_version'),
+        'ranking_version': f'v{globals().get("_V4_VERSION", "unknown")}',
         'metadata': _ml_shadow_metadata,
         'predictions': prediction_stats,
         'github_backup_configured': bool(globals().get('_GITHUB_TOKEN') and globals().get('_GITHUB_ML_REPO')),
