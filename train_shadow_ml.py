@@ -1,12 +1,11 @@
 import argparse
 import json
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import requests
 from sklearn.metrics import ndcg_score
 
 
@@ -22,6 +21,10 @@ FEATURE_COLS = [
     "training_degree_score",
     "weight_impact",
     "handicap_efficiency_score",
+    "handicap_class_transition_score",
+    "handicap_class_delta",
+    "running_style_proxy_score",
+    "pace_pressure",
     "jockey_score",
     "bounce_score",
     "pace_score",
@@ -51,6 +54,7 @@ FEATURE_COLS = [
     "has_age_actionable",
     "has_track_experience",
     "has_handicap_efficiency",
+    "has_handicap_class_history",
     "top3_feature_avg",
     "feature_variance",
 ]
@@ -145,7 +149,7 @@ def feature_dict(entry):
     except ValueError:
         distance_num = 0
 
-    metric_keys = [
+    score_keys = [
         "degree_avg",
         "degree_trend",
         "degree_stability",
@@ -166,7 +170,15 @@ def feature_dict(entry):
         "agf_score",
         "age_score",
     ]
-    features = {key: safe_float(metrics.get(key), 50.0) for key in metric_keys}
+    features = {key: safe_float(metrics.get(key), 50.0) for key in score_keys}
+    features.update(
+        {
+            "handicap_class_transition_score": safe_float(metrics.get("handicap_class_transition_score"), 50.0),
+            "handicap_class_delta": safe_float(metrics.get("handicap_class_delta"), 0.0),
+            "running_style_proxy_score": safe_float(metrics.get("running_style_proxy_score"), 50.0),
+            "pace_pressure": safe_float(metrics.get("pace_pressure"), 0.0),
+        }
+    )
     features.update(
         {
             "v4_score": safe_float(entry.get("v4_score"), safe_float(entry.get("ai_score"), 0.0)),
@@ -190,9 +202,10 @@ def feature_dict(entry):
             "has_age_actionable": 1.0 if flags.get("hasAgeActionable") else 0.0,
             "has_track_experience": 1.0 if flags.get("hasTrackExperience") else 0.0,
             "has_handicap_efficiency": 1.0 if flags.get("hasHandicapEfficiency") else 0.0,
+            "has_handicap_class_history": 1.0 if flags.get("hasHandicapClassHistory") else 0.0,
         }
     )
-    values = [features[key] for key in metric_keys]
+    values = [features[key] for key in score_keys]
     features["top3_feature_avg"] = float(np.mean(sorted(values)[-3:])) if values else 50.0
     features["feature_variance"] = float(np.var(values)) if values else 0.0
     return features
@@ -203,6 +216,8 @@ def load_entries(args):
         with open(args.input, "r", encoding="utf-8") as f:
             payload = json.load(f)
     else:
+        import requests
+
         response = requests.get(args.export_url, timeout=120)
         response.raise_for_status()
         payload = response.json()
@@ -234,6 +249,30 @@ def split_races(entries, validation_ratio=0.2):
     race_items = sorted(races.items(), key=lambda item: race_sort_key(item[1]))
     split_at = max(1, int(len(race_items) * (1.0 - validation_ratio)))
     return dict(race_items[:split_at]), dict(race_items[split_at:])
+
+
+def walk_forward_splits(entries, fold_count=3, initial_train_ratio=0.55):
+    races = defaultdict(list)
+    for entry in entries:
+        races[str(entry.get("race_id"))].append(entry)
+    race_items = sorted(races.items(), key=lambda item: race_sort_key(item[1]))
+    initial_train_size = max(1, int(len(race_items) * initial_train_ratio))
+    remaining = len(race_items) - initial_train_size
+    if remaining < fold_count:
+        return []
+
+    fold_size = max(1, math.ceil(remaining / fold_count))
+    splits = []
+    for fold_index in range(fold_count):
+        validation_start = initial_train_size + fold_index * fold_size
+        validation_end = min(len(race_items), validation_start + fold_size)
+        if validation_start >= validation_end:
+            break
+        splits.append((
+            dict(race_items[:validation_start]),
+            dict(race_items[validation_start:validation_end]),
+        ))
+    return splits
 
 
 def matrix_from_races(races, feature_cols):
@@ -387,6 +426,16 @@ def metrics_row(name, metrics):
     )
 
 
+def detected_v4_label(races):
+    versions = Counter(
+        str(row.get("v4_version"))
+        for rows in races.values()
+        for row in rows
+        if row.get("v4_version")
+    )
+    return f"v{versions.most_common(1)[0][0]}" if versions else "v4"
+
+
 def subset_by_group(races, group_name):
     return {
         race_id: rows
@@ -418,7 +467,7 @@ def feature_stats(entries, feature_cols):
     }
 
 
-def write_report(path, metadata, validation_races, model_agf, model_no_agf):
+def write_report(path, metadata, validation_races, model_agf, model_no_agf, walk_forward_results):
     sections = []
     sections.append(f"# Shadow ML Training Report - {metadata['model_version']}\n")
     sections.append(
@@ -434,7 +483,7 @@ def write_report(path, metadata, validation_races, model_agf, model_no_agf):
         if not races:
             return
         sections.append(f"\n## {title}\n\n{header}")
-        sections.append(metrics_row("v4.11", evaluate_existing(races, "v4_rank")))
+        sections.append(metrics_row(detected_v4_label(races), evaluate_existing(races, "v4_rank")))
         sections.append(metrics_row("ML + AGF", evaluate_model(model_agf, races, FEATURE_COLS)))
         sections.append(metrics_row("ML - AGF", evaluate_model(model_no_agf, races, NO_AGF_FEATURE_COLS)))
         sections.append(metrics_row("AGF only", evaluate_agf(races)))
@@ -444,6 +493,22 @@ def write_report(path, metadata, validation_races, model_agf, model_no_agf):
         add_table(f"Validation {group}", subset_by_group(validation_races, group))
     for profile in ["HANDIKAP14|Kum", "HANDIKAP15|Kum", "HANDIKAP15|Cim", "HANDIKAP16|Kum", "HANDIKAP16|Cim"]:
         add_table(f"Validation {profile}", subset_by_handikap_profile(validation_races, profile))
+
+    if walk_forward_results:
+        sections.append("\n## Walk-Forward Validation\n")
+        sections.append(
+            "| Fold | Train | Validation | Segment | Model | Top1 | Winner Top3 | Rho | MAE | NDCG@5 |\n"
+            "|---:|---:|---:|---|---|---:|---:|---:|---:|---:|"
+        )
+        for result in walk_forward_results:
+            for segment in ["Overall", "HANDIKAP"]:
+                for model_name, metrics in result["segments"].get(segment, {}).items():
+                    sections.append(
+                        f"| {result['fold']} | {result['train_races']} | {result['validation_races']} | "
+                        f"{segment} | {model_name} | {metrics['top1']}/{metrics['races']} | "
+                        f"{metrics['winner_top3']}/{metrics['races']} | {fmt(metrics['rho'])} | "
+                        f"{fmt(metrics['mae'])} | {fmt(metrics['ndcg5'])} |"
+                    )
 
     path.write_text("\n".join(sections) + "\n", encoding="utf-8")
 
@@ -457,6 +522,7 @@ def main():
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     entries = load_entries(args)
     if len(entries) < 100:
         raise SystemExit(f"Not enough labeled entries for training: {len(entries)}")
@@ -466,6 +532,28 @@ def main():
 
     model_agf = train_ranker(train_races, FEATURE_COLS)
     model_no_agf = train_ranker(train_races, NO_AGF_FEATURE_COLS)
+    walk_forward_results = []
+    for fold_index, (fold_train, fold_validation) in enumerate(walk_forward_splits(entries), start=1):
+        fold_agf = train_ranker(fold_train, FEATURE_COLS)
+        fold_no_agf = train_ranker(fold_train, NO_AGF_FEATURE_COLS)
+        segments = {}
+        for segment_name, segment_races in [
+            ("Overall", fold_validation),
+            ("HANDIKAP", subset_by_group(fold_validation, "HANDIKAP")),
+        ]:
+            if not segment_races:
+                continue
+            segments[segment_name] = {
+                detected_v4_label(segment_races): evaluate_existing(segment_races, "v4_rank"),
+                "ML + AGF": evaluate_model(fold_agf, segment_races, FEATURE_COLS),
+                "ML - AGF": evaluate_model(fold_no_agf, segment_races, NO_AGF_FEATURE_COLS),
+            }
+        walk_forward_results.append({
+            "fold": fold_index,
+            "train_races": len(fold_train),
+            "validation_races": len(fold_validation),
+            "segments": segments,
+        })
     model_version = "shadow-" + datetime.now().strftime("%Y%m%d-%H%M")
     metadata = {
         "model_version": model_version,
@@ -475,6 +563,7 @@ def main():
         "labeled_entries": len(entries),
         "includes_agf": True,
         "objective": "rank:ndcg",
+        "walk_forward_folds": len(walk_forward_results),
         "retrain_rule": "+50 labeled races or weekly, whichever comes first",
         "activation_rule": "shadow only until 1000 overall races, 120 profile races, and 3 consecutive reports beat v4",
     }
@@ -490,7 +579,7 @@ def main():
         "metadata": metadata,
     }
     stats_path.write_text(json.dumps(stats_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_report(report_path, metadata, validation_races, model_agf, model_no_agf)
+    write_report(report_path, metadata, validation_races, model_agf, model_no_agf, walk_forward_results)
 
     print(json.dumps({
         "model": str(model_path),

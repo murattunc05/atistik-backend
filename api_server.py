@@ -3141,6 +3141,68 @@ def calculate_handicap_efficiency_score(horse_hp, current_weight, all_hps, all_w
     return round(max(0.0, min(100.0, 50.0 + residual * 50.0)), 1)
 
 
+def extract_handicap_level(race_type):
+    """Return the numeric Handicap level from values such as ``Handikap 16/H2``."""
+    folded = _v4_fold_text(race_type)
+    match = re.search(r'(?:HANDIKAP|HNDIKAP)\s*[-/]?\s*(\d+)', folded)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def calculate_handicap_class_transition(races, current_race_type):
+    """Describe current Handicap difficulty versus recent Handicap races.
+
+    This is shadow-only. A positive delta means that the current Handicap
+    number is higher than the recency-weighted historical average.
+    """
+    current_level = extract_handicap_level(current_race_type)
+    if current_level is None:
+        return {
+            'hasHistory': False,
+            'currentLevel': None,
+            'historicalLevel': None,
+            'delta': 0.0,
+            'score': 50.0,
+            'sampleCount': 0,
+        }
+
+    recent_levels = []
+    for race in (races or [])[:8]:
+        past_type = race.get('raceType', '') or race.get('group', '')
+        past_level = extract_handicap_level(past_type)
+        if past_level is not None:
+            recent_levels.append(past_level)
+        if len(recent_levels) >= 6:
+            break
+
+    if len(recent_levels) < 2:
+        return {
+            'hasHistory': False,
+            'currentLevel': current_level,
+            'historicalLevel': recent_levels[0] if recent_levels else None,
+            'delta': 0.0,
+            'score': 50.0,
+            'sampleCount': len(recent_levels),
+        }
+
+    weights = list(range(len(recent_levels), 0, -1))
+    historical_level = sum(level * weight for level, weight in zip(recent_levels, weights)) / sum(weights)
+    delta = float(current_level) - historical_level
+    score = max(10.0, min(90.0, 50.0 - delta * 8.0))
+    return {
+        'hasHistory': True,
+        'currentLevel': current_level,
+        'historicalLevel': round(historical_level, 2),
+        'delta': round(delta, 2),
+        'score': round(score, 1),
+        'sampleCount': len(recent_levels),
+    }
+
+
 def calculate_weight_impact(current_weight_str, last_weight_str, target_distance):
     """
     FAZ 4.2: Kilo değişimini mesafe÷etkileşimi dâhilinde 0-100 skor üretir.
@@ -5692,7 +5754,7 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
     except (ValueError, TypeError):
         distance_num = 0
 
-    base_keys = [
+    score_keys = [
         'degree_avg', 'degree_trend', 'degree_stability', 'form_trend',
         'track_suit', 'track_experience_score', 'distance_suit',
         'training_fitness', 'training_degree_score', 'weight_impact',
@@ -5700,7 +5762,13 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'jockey_score', 'bounce_score', 'pace_score', 'pedigree',
         'hp_score', 'trainer_score', 'agf_score', 'age_score',
     ]
-    features = {key: _shadow_safe_float(metrics.get(key), 50.0) for key in base_keys}
+    features = {key: _shadow_safe_float(metrics.get(key), 50.0) for key in score_keys}
+    features.update({
+        'handicap_class_transition_score': _shadow_safe_float(metrics.get('handicap_class_transition_score'), 50.0),
+        'handicap_class_delta': _shadow_safe_float(metrics.get('handicap_class_delta'), 0.0),
+        'running_style_proxy_score': _shadow_safe_float(metrics.get('running_style_proxy_score'), 50.0),
+        'pace_pressure': _shadow_safe_float(metrics.get('pace_pressure'), 0.0),
+    })
 
     features.update({
         'v4_score': _shadow_safe_float(horse.get('v4Score'), 0.0),
@@ -5724,9 +5792,10 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'has_age_actionable': 1.0 if flags.get('hasAgeActionable') else 0.0,
         'has_track_experience': 1.0 if flags.get('hasTrackExperience') else 0.0,
         'has_handicap_efficiency': 1.0 if flags.get('hasHandicapEfficiency') else 0.0,
+        'has_handicap_class_history': 1.0 if flags.get('hasHandicapClassHistory') else 0.0,
     })
 
-    metric_values = [features[key] for key in base_keys]
+    metric_values = [features[key] for key in score_keys]
     features['top3_feature_avg'] = float(np.mean(sorted(metric_values)[-3:])) if metric_values else 50.0
     features['feature_variance'] = float(np.var(metric_values)) if metric_values else 0.0
     return features
@@ -6201,6 +6270,7 @@ def analyze_race():
                         track_suit,
                     )
                     has_track_experience = bool(target_track_race_count > 0 or other_track_race_count > 0)
+                    handicap_class_transition = calculate_handicap_class_transition(races, race_type)
 
                     metrics_pass1 = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
@@ -6217,6 +6287,10 @@ def analyze_race():
                         'weight_impact': weight_impact_score,   # FAZ 4.2
                         # Shadow feature: HP ile taşınan kiloyu birlikte değerlendirir.
                         'handicap_efficiency_score': handicap_efficiency_score,
+                        'handicap_class_transition_score': handicap_class_transition['score'],
+                        'handicap_class_delta': handicap_class_transition['delta'],
+                        'running_style_proxy_score': 50.0,
+                        'pace_pressure': 0.0,
                         'jockey_score': jockey_score_val,       # FAZ 4.3
                         'bounce_score': bounce_score_val,       # FAZ 4.4
                         'pace_score': 50.0,                     # FAZ 4.5: PASS 2'de güncellenecek (nötr placeholder)
@@ -6238,6 +6312,7 @@ def analyze_race():
                         '_has_hp':        has_hp_source,
                         '_has_weight':    has_weight_source,
                         '_has_handicap_efficiency': has_handicap_efficiency,
+                        '_has_handicap_class_history': handicap_class_transition['hasHistory'],
                         '_has_jockey':    has_jockey_source,
                         '_has_age':       has_age_actionable,
                         '_has_track_experience': has_track_experience,
@@ -6281,6 +6356,12 @@ def analyze_race():
                         'parsedCurrentWeight': current_weight_value,
                         'validWeightCountInRace': len(valid_current_weights),
                         'handicapEfficiencyScore': handicap_efficiency_score,
+                        'hasHandicapClassHistory': handicap_class_transition['hasHistory'],
+                        'handicapClassCurrentLevel': handicap_class_transition['currentLevel'],
+                        'handicapClassHistoricalLevel': handicap_class_transition['historicalLevel'],
+                        'handicapClassDelta': handicap_class_transition['delta'],
+                        'handicapClassSampleCount': handicap_class_transition['sampleCount'],
+                        'handicapClassTransitionScore': handicap_class_transition['score'],
                         'hasAge': has_age_source,
                         'hasAgeActionable': has_age_actionable,
                         'rawAge': raw_age or None,
@@ -6393,6 +6474,8 @@ def analyze_race():
                         'scoreBreakdown': {
                             'weightImpactScore': weight_impact_score,
                             'handicapEfficiencyScore': handicap_efficiency_score,
+                            'handicapClassTransitionScore': handicap_class_transition['score'],
+                            'handicapClassDelta': handicap_class_transition['delta'],
                             'jockeyScore': jockey_score_val,
                             'bounceScore': bounce_score_val,
                             'paceScore': 50.0,          # PASS 2'de güncellenecek
@@ -6494,6 +6577,7 @@ def analyze_race():
             for h in intermediate_horses
         ]
         pace_scenario, kacak_count = calculate_pace_scenario(horse_styles_list)
+        pace_pressure = round((kacak_count / max(1, len(intermediate_horses))) * 100.0, 1)
         print(f"[FAZ 4.5] Tempo senaryosu: {pace_scenario} ({kacak_count} kaçak at)")
         
         analyzed_horses = []
@@ -6501,11 +6585,14 @@ def analyze_race():
             horse_name = h['name']
             horse_style = h.get('_runningStyle', 'TAKİPÇİ')
             metrics_p1 = h.get('_metrics_pass1', {})
+            running_style_proxy_score = float(h.get('_essScore', 50.0) or 50.0)
             
             if metrics_p1:
                 # pace_score hesapla ve metrics'e ekle
                 pace_score_val = calculate_pace_score(horse_style, pace_scenario)
                 metrics_p1['pace_score'] = pace_score_val
+                metrics_p1['running_style_proxy_score'] = running_style_proxy_score
+                metrics_p1['pace_pressure'] = pace_pressure
                 final_ai_score = calculate_ai_score(metrics_p1)
                 # FAZ 4.7: Veri güven skoru
                 confidence_val, confidence_label = calculate_data_confidence(metrics_p1)
@@ -6523,6 +6610,8 @@ def analyze_race():
             # scoreBreakdown güncelle
             if 'scoreBreakdown' in h:
                 h['scoreBreakdown']['paceScore'] = pace_score_val
+                h['scoreBreakdown']['runningStyleProxyScore'] = running_style_proxy_score
+                h['scoreBreakdown']['pacePressure'] = pace_pressure
             
             # Temizle: PASS 1 private alanlarını kaldır, pedigreeInfo'yu kalıcıya taşı
             pedigree_info = h.pop('_pedigreeInfo', None)
@@ -6552,6 +6641,9 @@ def analyze_race():
                 'paceScenario': pace_scenario,
                 'paceScore':    pace_score_val,
                 'kacakCount':   kacak_count,
+                'pacePressure': pace_pressure,
+                'styleProxyScore': running_style_proxy_score,
+                'styleSource': 'recent_finish_position_proxy',
             }
             
             analyzed_horses.append(h)
@@ -6862,8 +6954,10 @@ def analyze_race():
                             'degree_avg','degree_trend','degree_stability',
                             'form_trend','track_suit','track_experience_score','distance_suit',
                             'training_fitness','training_degree_score',
-                            'weight_impact','handicap_efficiency_score','jockey_score','bounce_score',
-                            'pace_score','pedigree','hp_score',
+                            'weight_impact','handicap_efficiency_score',
+                            'handicap_class_transition_score','handicap_class_delta',
+                            'jockey_score','bounce_score','pace_score',
+                            'running_style_proxy_score','pace_pressure','pedigree','hp_score',
                             'agf_score','trainer_score','age_score',
                         ]
                     }
