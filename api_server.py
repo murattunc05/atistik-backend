@@ -828,9 +828,11 @@ def fetch_race_results():
 
         for horse in horses_in:
             horse_name  = horse.get('name', '').strip()
+            horse_no = str(horse.get('no', '') or '').strip()
             # FAZ 7.4: TJK scraper at ismine newline + derece numarası ekleyebiliyor
             # Örn: "AĞASAÇAN\n (1)" → "AĞASAÇAN"
             horse_name = horse_name.split('\n')[0].strip()
+            horse_name = re.sub(r'\s*\(\s*\d+\s*\)\s*$', '', horse_name).strip()
             detail_link = horse.get('detailLink', '').strip()
 
             if not detail_link or not horse_name:
@@ -888,6 +890,7 @@ def fetch_race_results():
                 if found_pos is not None:
                     results.append({
                         'horse_name': horse_name,
+                        'horse_no': horse_no,
                         'finish_pos': found_pos,
                     })
                 else:
@@ -4847,7 +4850,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.14"
+_V4_VERSION = "4.15"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -5307,6 +5310,43 @@ def _v4_normalize_weights(raw_weights):
     return {k: round(max(v, 0.0) / total, 4) for k, v in weights.items()}
 
 
+def _v415_agf_allowed(profile):
+    """AGF is a ranking signal only for Maiden and Sartli 1 races."""
+    return (
+        profile.get('category') == 'MAIDEN'
+        or profile.get('subtype') == 'SART1'
+    )
+
+
+def _v415_apply_agf_policy(profile, raw_weights):
+    """Remove AGF outside its allowed groups and redistribute its weight."""
+    weights = {k: float(raw_weights.get(k, 0.0)) for k in _V4_METRIC_KEYS}
+    agf_weight = max(0.0, weights.get('agf_score', 0.0))
+    allowed = _v415_agf_allowed(profile)
+    if allowed or agf_weight <= 0.0:
+        return weights, allowed
+
+    weights['agf_score'] = 0.0
+    category = profile.get('category')
+    subtype = profile.get('subtype')
+
+    if category == 'HANDIKAP':
+        weights['degree_avg'] += agf_weight * 0.25
+        weights['training_fitness'] += agf_weight * 0.75
+    elif subtype == 'SART4':
+        weights['hp_score'] += agf_weight
+    elif category == 'SARTLI':
+        weights['degree_stability'] += agf_weight
+    elif category == 'KV':
+        weights['degree_trend'] += agf_weight * 0.75
+        weights['hp_score'] += agf_weight * 0.25
+    else:
+        # Future profiles must also remain AGF-free unless explicitly allowed.
+        weights['degree_stability'] += agf_weight
+
+    return weights, False
+
+
 def resolve_v4_profile_weights(profile):
     subtype = profile.get('subtype', 'GLOBAL')
     category = profile.get('category', 'GLOBAL')
@@ -5336,7 +5376,11 @@ def resolve_v4_profile_weights(profile):
     sample_races = int(selected.get('sample_races', 0))
     min_required = _V4_MIN_SAMPLE_RACES.get(fallback_level, 0)
     eligible = sample_races >= min_required
-    weights = _v4_normalize_weights(selected.get('weights', {}))
+    policy_weights, agf_allowed = _v415_apply_agf_policy(
+        profile,
+        selected.get('weights', {}),
+    )
+    weights = _v4_normalize_weights(policy_weights)
 
     if eligible:
         confidence_score = 0.75 if fallback_level != 'global' else 0.45
@@ -5359,6 +5403,82 @@ def resolve_v4_profile_weights(profile):
         'confidenceLabel': confidence_label,
         'weights': weights,
         'weightsPct': {k: round(v * 100, 1) for k, v in weights.items() if v > 0},
+        'agfAllowedForRanking': agf_allowed,
+    }
+
+
+def _parse_race_distance(value):
+    try:
+        digits = re.sub(r'[^0-9]', '', str(value or ''))
+        return int(digits) if digits else None
+    except (ValueError, TypeError):
+        return None
+
+
+def calculate_v4_ranking_penalties(races, race_date_str=None, kgs_value=None):
+    """Return explicit rest penalties without considering training activity."""
+    reference_date = None
+    try:
+        reference_date = datetime.strptime(str(race_date_str or '').strip(), '%d.%m.%Y')
+    except (ValueError, TypeError):
+        pass
+
+    last_race = None
+    last_race_date = None
+    if reference_date:
+        dated_races = []
+        for race in races or []:
+            try:
+                parsed_date = datetime.strptime(str(race.get('date', '')).strip(), '%d.%m.%Y')
+            except (ValueError, TypeError):
+                continue
+            if parsed_date < reference_date:
+                dated_races.append((parsed_date, race))
+        if dated_races:
+            last_race_date, last_race = max(dated_races, key=lambda item: item[0])
+
+    days_since_last_race = None
+    rest_source = 'unknown'
+    if reference_date and last_race_date:
+        days_since_last_race = max(0, (reference_date - last_race_date).days)
+        rest_source = 'race_history'
+    else:
+        try:
+            parsed_kgs = int(float(str(kgs_value or '').replace(',', '.').strip()))
+            if parsed_kgs >= 0:
+                days_since_last_race = parsed_kgs
+                rest_source = 'kgs'
+        except (ValueError, TypeError):
+            pass
+
+    if last_race is None and races:
+        last_race = races[0]
+    last_race_distance = _parse_race_distance(
+        last_race.get('distance') if last_race else None
+    )
+
+    penalties = []
+    if days_since_last_race is not None:
+        if days_since_last_race >= 91:
+            penalties.append({'code': 'long_layoff_91_plus', 'points': 11.0})
+        elif days_since_last_race >= 61:
+            penalties.append({'code': 'long_layoff_61_90', 'points': 7.0})
+        elif days_since_last_race >= 40:
+            penalties.append({'code': 'long_layoff_40_60', 'points': 5.0})
+
+        if (
+            days_since_last_race <= 5
+            and last_race_distance is not None
+            and last_race_distance > 1800
+        ):
+            penalties.append({'code': 'recent_long_race', 'points': 6.0})
+
+    return {
+        'daysSinceLastRace': days_since_last_race,
+        'lastRaceDistance': last_race_distance,
+        'restDataSource': rest_source,
+        'penalties': penalties,
+        'totalPenalty': round(sum(item['points'] for item in penalties), 1),
     }
 
 
@@ -5583,9 +5703,17 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
     scored = []
     for horse in analyzed_horses:
         metrics = horse.get('_mf', {}) or {}
-        v4_score = calculate_v4_shadow_score(metrics, weights) if metrics else 0.0
+        v4_base_score = calculate_v4_shadow_score(metrics, weights) if metrics else 0.0
+        try:
+            penalty_total = max(0.0, float(horse.get('v4PenaltyTotal', 0.0) or 0.0))
+        except (ValueError, TypeError):
+            penalty_total = 0.0
+        v4_score = round(max(0.0, min(100.0, v4_base_score - penalty_total)), 1)
         horse['v4Version'] = _V4_VERSION
+        horse['v4BaseScore'] = v4_base_score
+        horse['v4PenaltyTotal'] = penalty_total
         horse['v4Score'] = v4_score
+        horse['agfAllowedForRanking'] = resolved['agfAllowedForRanking']
         horse['v4Mode'] = 'visible'
         horse['v4DecisionMode'] = decision['mode']
         horse['v4UseForRanking'] = decision['useForRanking']
@@ -5765,6 +5893,15 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'hp_score', 'trainer_score', 'agf_score', 'age_score',
     ]
     features = {key: _shadow_safe_float(metrics.get(key), 50.0) for key in score_keys}
+    agf_allowed = bool(
+        horse.get(
+            'agfAllowedForRanking',
+            profile.get('category') == 'MAIDEN' or profile.get('subtype') == 'SART1',
+        )
+    )
+    if not agf_allowed:
+        agf_stat = _ml_shadow_feature_stats.get('agf_score', {}) if isinstance(_ml_shadow_feature_stats, dict) else {}
+        features['agf_score'] = _shadow_safe_float(agf_stat.get('mean'), 50.0)
     features.update({
         'handicap_class_transition_score': _shadow_safe_float(metrics.get('handicap_class_transition_score'), 50.0),
         'handicap_class_delta': _shadow_safe_float(metrics.get('handicap_class_delta'), 0.0),
@@ -5780,6 +5917,7 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'is_handikap': 1.0 if 'HANDIKAP' in folded_type else 0.0,
         'is_maiden': 1.0 if 'MAIDEN' in folded_type or 'MDN' in folded_type else 0.0,
         'is_sartli': 1.0 if 'SART' in folded_type else 0.0,
+        'is_sart1': 1.0 if profile.get('subtype') == 'SART1' else 0.0,
         'is_kv': 1.0 if 'KV' in folded_type else 0.0,
         'is_grup': 1.0 if 'GRUP' in folded_type or re.search(r'\bG\s*[-/]?\s*[123]\b', folded_type) else 0.0,
         'is_satis': 1.0 if 'SATIS' in folded_type else 0.0,
@@ -5787,7 +5925,7 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'track_cim': 1.0 if track_bucket == 'Cim' else 0.0,
         'track_sentetik': 1.0 if track_bucket == 'Sentetik' else 0.0,
         'has_training': 1.0 if flags.get('hasTraining') else 0.0,
-        'has_agf': 1.0 if flags.get('hasAgf') else 0.0,
+        'has_agf': 1.0 if agf_allowed and flags.get('hasAgf') else 0.0,
         'has_hp': 1.0 if flags.get('hasHp') else 0.0,
         'has_pedigree': 1.0 if flags.get('hasPedigree') else 0.0,
         'has_trainer': 1.0 if flags.get('hasTrainer') else 0.0,
@@ -5795,9 +5933,14 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'has_track_experience': 1.0 if flags.get('hasTrackExperience') else 0.0,
         'has_handicap_efficiency': 1.0 if flags.get('hasHandicapEfficiency') else 0.0,
         'has_handicap_class_history': 1.0 if flags.get('hasHandicapClassHistory') else 0.0,
+        'days_since_last_race': _shadow_safe_float(horse.get('daysSinceLastRace'), -1.0),
+        'last_race_distance': _shadow_safe_float(horse.get('lastRaceDistance'), 0.0),
+        'long_layoff_bucket': _shadow_safe_float(metrics.get('_long_layoff_bucket'), 0.0),
+        'recent_long_race_flag': 1.0 if metrics.get('_recent_long_race_flag') else 0.0,
     })
 
-    metric_values = [features[key] for key in score_keys]
+    active_score_keys = [key for key in score_keys if agf_allowed or key != 'agf_score']
+    metric_values = [features[key] for key in active_score_keys]
     features['top3_feature_avg'] = float(np.mean(sorted(metric_values)[-3:])) if metric_values else 50.0
     features['feature_variance'] = float(np.var(metric_values)) if metric_values else 0.0
     return features
@@ -6220,7 +6363,12 @@ def analyze_race():
                     has_jockey_source = bool(_jockey_stats_pre or _jockey_changed_pre or _jockey_training_match)
                     jockey_score_val = calculate_jockey_score(_jockey_stats_pre, _jockey_changed_pre, _training_jockey, _cur_jockey)
                     
-                    bounce_score_val = calculate_bounce_score(races)
+                    bounce_score_val = calculate_bounce_score(races, race_date)
+                    ranking_penalty_info = calculate_v4_ranking_penalties(
+                        races,
+                        race_date_str=race_date,
+                        kgs_value=original_horse.get('kgs'),
+                    )
                     
                     # ═══ FAZ A.2: HP Puanı — KOŞU-İÇİ GÖRELİ (TAM ARALIK 0-100) ═══
                     # Yüksek HP = güçlü at → doğrusal ödüllendirme
@@ -6318,6 +6466,18 @@ def analyze_race():
                         '_has_jockey':    has_jockey_source,
                         '_has_age':       has_age_actionable,
                         '_has_track_experience': has_track_experience,
+                        '_days_since_last_race': ranking_penalty_info['daysSinceLastRace'],
+                        '_last_race_distance': ranking_penalty_info['lastRaceDistance'],
+                        '_long_layoff_bucket': (
+                            3 if (ranking_penalty_info['daysSinceLastRace'] or 0) >= 91
+                            else 2 if (ranking_penalty_info['daysSinceLastRace'] or 0) >= 61
+                            else 1 if (ranking_penalty_info['daysSinceLastRace'] or 0) >= 40
+                            else 0
+                        ),
+                        '_recent_long_race_flag': any(
+                            item.get('code') == 'recent_long_race'
+                            for item in ranking_penalty_info['penalties']
+                        ),
                         '_race_type':     race_type,  # FAZ 6.2: Koşu tipine özel ağırlık profili
                         '_horse_races':   races,       # Konsensüs: grup ayarlaması için geçmiş yarışlar
                     }
@@ -6467,6 +6627,11 @@ def analyze_race():
                         'jockeyStats': jockey_stats,
                         'jockeyChanged': jockey_changed,
                         'weightChange': weight_change,
+                        'daysSinceLastRace': ranking_penalty_info['daysSinceLastRace'],
+                        'lastRaceDistance': ranking_penalty_info['lastRaceDistance'],
+                        'restDataSource': ranking_penalty_info['restDataSource'],
+                        'rankingPenalties': ranking_penalty_info['penalties'],
+                        'v4PenaltyTotal': ranking_penalty_info['totalPenalty'],
                         'bestTime': best_time,
                         'raceCount': len(races),
                         'filteredRaceCount': len(filtered_races),
@@ -6546,6 +6711,11 @@ def analyze_race():
                         'stats': {},
                         'raceCount': 0,
                         'filteredRaceCount': 0,
+                        'daysSinceLastRace': None,
+                        'lastRaceDistance': None,
+                        'restDataSource': 'unknown',
+                        'rankingPenalties': [],
+                        'v4PenaltyTotal': 0.0,
                         'detailFetchStatus': 'unrecoverable',
                         'featuresReliable': False,
                         'metricSourceFlags': {
@@ -6914,12 +7084,15 @@ def analyze_race():
                     'race_date':  race_date or '',   # FAZ 7: Lookup için
                     'race_no':    race_no or '',     # FAZ 7: Lookup için
                     'horse_name': _h_name,
+                    'horse_no':   _h.get('no', ''),
                     'ai_score':   _h.get('aiScore', 0),
                     'rank_pred':  _h.get('rank', 0),
                     'legacy_score': _h.get('legacyScore'),
                     'legacy_rank': _h.get('legacyRank'),
                     'legacy_win_probability': _h.get('legacyWinProbability'),
                     'v4_score':   _h.get('v4Score', 0),
+                    'v4_base_score': _h.get('v4BaseScore', 0),
+                    'v4_penalty_total': _h.get('v4PenaltyTotal', 0),
                     'v4_rank':    _h.get('v4Rank', 0),
                     'v4_version': _h.get('v4Version', _V4_VERSION),
                     'v4_mode':    _h.get('v4Mode', 'visible'),
@@ -6931,6 +7104,11 @@ def analyze_race():
                     'v4_weights': _h.get('v4Weights', {}),
                     'v4_confidence': _h.get('v4Confidence', {}),
                     'v4_data_quality': _h.get('v4DataQuality', {}),
+                    'days_since_last_race': _h.get('daysSinceLastRace'),
+                    'last_race_distance': _h.get('lastRaceDistance'),
+                    'rest_data_source': _h.get('restDataSource', 'unknown'),
+                    'ranking_penalties': _h.get('rankingPenalties', []),
+                    'agf_allowed_for_ranking': _h.get('agfAllowedForRanking', False),
                     'ml_shadow_score': _h.get('mlShadowScore'),
                     'ml_shadow_rank': _h.get('mlShadowRank'),
                     'ml_win_probability': _h.get('mlWinProbability'),

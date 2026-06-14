@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,7 @@ FEATURE_COLS = [
     "is_handikap",
     "is_maiden",
     "is_sartli",
+    "is_sart1",
     "is_kv",
     "is_grup",
     "is_satis",
@@ -55,6 +57,10 @@ FEATURE_COLS = [
     "has_track_experience",
     "has_handicap_efficiency",
     "has_handicap_class_history",
+    "days_since_last_race",
+    "last_race_distance",
+    "long_layoff_bucket",
+    "recent_long_race_flag",
     "top3_feature_avg",
     "feature_variance",
 ]
@@ -130,8 +136,6 @@ def handikap_profile(entry):
     if selected and selected.startswith("HANDIKAP"):
         return selected
     folded = fold_text(entry.get("race_type"))
-    import re
-
     match = re.search(r"HANDIKAP\s*(\d+)", folded)
     subtype = f"HANDIKAP{match.group(1)}" if match else "HANDIKAP"
     bucket = track_bucket(entry.get("track"))
@@ -170,7 +174,14 @@ def feature_dict(entry):
         "agf_score",
         "age_score",
     ]
+    is_maiden = "MAIDEN" in folded_type or "MDN" in folded_type
+    is_sartli = "SART" in folded_type
+    is_sart1 = bool(is_sartli and re.search(r"\bSART(?:LI)?\s*[-/]?\s*1\b", folded_type))
+    agf_allowed = bool(entry.get("agf_allowed_for_ranking", is_maiden or is_sart1))
+
     features = {key: safe_float(metrics.get(key), 50.0) for key in score_keys}
+    if not agf_allowed:
+        features["agf_score"] = 50.0
     features.update(
         {
             "handicap_class_transition_score": safe_float(metrics.get("handicap_class_transition_score"), 50.0),
@@ -186,8 +197,9 @@ def feature_dict(entry):
             "field_size": safe_float(entry.get("field_size"), 0.0),
             "distance_num": safe_float(distance_num, 0.0),
             "is_handikap": 1.0 if "HANDIKAP" in folded_type else 0.0,
-            "is_maiden": 1.0 if "MAIDEN" in folded_type or "MDN" in folded_type else 0.0,
-            "is_sartli": 1.0 if "SART" in folded_type else 0.0,
+            "is_maiden": 1.0 if is_maiden else 0.0,
+            "is_sartli": 1.0 if is_sartli else 0.0,
+            "is_sart1": 1.0 if is_sart1 else 0.0,
             "is_kv": 1.0 if "KV" in folded_type else 0.0,
             "is_grup": 1.0 if "GRUP" in folded_type or " G1" in folded_type or " G2" in folded_type or " G3" in folded_type else 0.0,
             "is_satis": 1.0 if "SATIS" in folded_type else 0.0,
@@ -195,7 +207,7 @@ def feature_dict(entry):
             "track_cim": 1.0 if track == "Cim" else 0.0,
             "track_sentetik": 1.0 if track == "Sentetik" else 0.0,
             "has_training": 1.0 if flags.get("hasTraining") else 0.0,
-            "has_agf": 1.0 if flags.get("hasAgf") else 0.0,
+            "has_agf": 1.0 if agf_allowed and flags.get("hasAgf") else 0.0,
             "has_hp": 1.0 if flags.get("hasHp") else 0.0,
             "has_pedigree": 1.0 if flags.get("hasPedigree") else 0.0,
             "has_trainer": 1.0 if flags.get("hasTrainer") else 0.0,
@@ -203,9 +215,23 @@ def feature_dict(entry):
             "has_track_experience": 1.0 if flags.get("hasTrackExperience") else 0.0,
             "has_handicap_efficiency": 1.0 if flags.get("hasHandicapEfficiency") else 0.0,
             "has_handicap_class_history": 1.0 if flags.get("hasHandicapClassHistory") else 0.0,
+            "days_since_last_race": safe_float(entry.get("days_since_last_race"), -1.0),
+            "last_race_distance": safe_float(entry.get("last_race_distance"), 0.0),
+            "long_layoff_bucket": (
+                3.0 if safe_float(entry.get("days_since_last_race"), -1.0) >= 91
+                else 2.0 if safe_float(entry.get("days_since_last_race"), -1.0) >= 61
+                else 1.0 if safe_float(entry.get("days_since_last_race"), -1.0) >= 40
+                else 0.0
+            ),
+            "recent_long_race_flag": 1.0 if any(
+                item.get("code") == "recent_long_race"
+                for item in (entry.get("ranking_penalties") or [])
+                if isinstance(item, dict)
+            ) else 0.0,
         }
     )
-    values = [features[key] for key in score_keys]
+    active_score_keys = [key for key in score_keys if agf_allowed or key != "agf_score"]
+    values = [features[key] for key in active_score_keys]
     features["top3_feature_avg"] = float(np.mean(sorted(values)[-3:])) if values else 50.0
     features["feature_variance"] = float(np.var(values)) if values else 0.0
     return features
