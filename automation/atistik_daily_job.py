@@ -762,7 +762,8 @@ def format_v4_rankings(rankings: list[dict[str, Any]]) -> list[str]:
         rank = item.get("v4Rank", "")
         horse = str(item.get("horse") or "").strip()
         horse_no = str(item.get("no") or "").strip()
-        display_name = f"{horse} ({horse_no})" if horse_no else horse
+        has_number_suffix = bool(re.search(r"\(\d+\)$", horse))
+        display_name = horse if has_number_suffix or not horse_no else f"{horse} ({horse_no})"
         score = item.get("v4Score", "")
         if isinstance(score, float):
             score = f"{score:.1f}"
