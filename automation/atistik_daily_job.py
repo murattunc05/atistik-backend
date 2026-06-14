@@ -274,6 +274,7 @@ def summarize_rankings(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows.append(
             {
                 "horse": horse.get("name", ""),
+                "no": horse.get("no", ""),
                 "rank": horse.get("rank"),
                 "aiScore": horse.get("aiScore"),
                 "v4Rank": horse.get("v4Rank"),
@@ -755,6 +756,20 @@ def markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
     return "\n".join(out)
 
 
+def format_v4_rankings(rankings: list[dict[str, Any]]) -> list[str]:
+    lines = []
+    for item in rankings:
+        rank = item.get("v4Rank", "")
+        horse = str(item.get("horse") or "").strip()
+        horse_no = str(item.get("no") or "").strip()
+        display_name = f"{horse} ({horse_no})" if horse_no else horse
+        score = item.get("v4Score", "")
+        if isinstance(score, float):
+            score = f"{score:.1f}"
+        lines.append(f"{rank}. {display_name} - v4 puan: {score}")
+    return lines
+
+
 def build_summary(day: date, analysis: dict[str, Any] | None, results: dict[str, Any] | None) -> str:
     lines = [f"# Atistik Automation Summary - {date_iso(day)}", ""]
 
@@ -799,18 +814,9 @@ def build_summary(day: date, analysis: dict[str, Any] | None, results: dict[str,
                 rankings = race.get("rankings", []) or []
                 if not rankings:
                     continue
-                lines.extend([f"#### {city.get('city')} {race.get('raceNo')}. Koşu", ""])
-                rows = [
-                    [
-                        r.get("rank", ""),
-                        r.get("horse", ""),
-                        r.get("aiScore", ""),
-                        r.get("v4Rank", ""),
-                        r.get("v4Score", ""),
-                    ]
-                    for r in rankings
-                ]
-                lines.extend([markdown_table(["Old Rank", "Horse", "Old Score", "v4 Rank", "v4 Score"], rows), ""])
+                lines.extend([f"#### {city.get('city')} {race.get('raceNo')}. Kosu", ""])
+                lines.extend(format_v4_rankings(rankings))
+                lines.append("")
 
     if results:
         totals = results.get("totals", {})
