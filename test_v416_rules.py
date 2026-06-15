@@ -2,7 +2,10 @@ import unittest
 
 from api_server import (
     _V4_VERSION,
+    _v416_apply_agf_policy,
     apply_v4_shadow_mode,
+    calculate_distance_transition_score,
+    calculate_surface_transition_score,
     calculate_v4_ranking_penalties,
     extract_v4_race_profile,
     resolve_v4_profile_weights,
@@ -10,9 +13,9 @@ from api_server import (
 from train_shadow_ml import feature_dict
 
 
-class V415RulesTest(unittest.TestCase):
+class V416RulesTest(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(_V4_VERSION, "4.15")
+        self.assertEqual(_V4_VERSION, "4.16")
 
     def test_agf_is_limited_to_maiden_and_sartli_one(self):
         maiden = resolve_v4_profile_weights(
@@ -36,6 +39,8 @@ class V415RulesTest(unittest.TestCase):
         self.assertEqual(sart4["weights"]["agf_score"], 0)
         self.assertFalse(handicap["agfAllowedForRanking"])
         self.assertEqual(handicap["weights"]["agf_score"], 0)
+        self.assertGreater(handicap["weights"]["surface_transition_score"], 0)
+        self.assertGreater(handicap["weights"]["distance_transition_score"], 0)
 
     def test_shadow_ml_does_not_treat_sartli_19_as_sartli_1(self):
         features = feature_dict({
@@ -81,10 +86,15 @@ class V415RulesTest(unittest.TestCase):
             "degree_stability": 50,
             "form_trend": 50,
             "track_experience_score": 50,
+            "surface_transition_score": 50,
             "distance_suit": 50,
+            "distance_transition_score": 50,
             "training_fitness": 100,
             "training_degree_score": 50,
             "weight_impact": 50,
+            "handicap_efficiency_score": 50,
+            "handicap_class_transition_score": 50,
+            "running_style_proxy_score": 50,
             "jockey_score": 50,
             "bounce_score": 50,
             "pace_score": 50,
@@ -94,6 +104,8 @@ class V415RulesTest(unittest.TestCase):
             "age_score": 50,
             "_has_training": True,
             "_has_agf": True,
+            "_has_surface_transition": True,
+            "_has_distance_transition": True,
         }
         horse = {
             "name": "TEST",
@@ -120,6 +132,68 @@ class V415RulesTest(unittest.TestCase):
         apply_v4_shadow_mode([horse], "Handikap 15", "1400", "Kum")
         self.assertEqual(horse["v4PenaltyTotal"], 5)
         self.assertEqual(horse["v4Score"], max(0, horse["v4BaseScore"] - 5))
+
+    def test_surface_transition_penalizes_chim_to_kum_switch(self):
+        races = [
+            {"track": "Çim", "rank": "2"},
+            {"track": "Çim", "rank": "3"},
+            {"track": "Çim", "rank": "4"},
+            {"track": "Çim", "rank": "2"},
+            {"track": "Çim", "rank": "1"},
+        ]
+        result = calculate_surface_transition_score(races, "Kum", 50)
+        self.assertLessEqual(result["score"], 25)
+        self.assertEqual(result["reason"], "strong_surface_switch_penalty")
+        self.assertEqual(result["targetTrackRaceCount"], 0)
+
+    def test_surface_transition_is_lighter_between_kum_and_sentetik(self):
+        races = [
+            {"track": "Kum", "rank": "2"},
+            {"track": "Kum", "rank": "3"},
+            {"track": "Kum", "rank": "4"},
+            {"track": "Kum", "rank": "2"},
+            {"track": "Kum", "rank": "1"},
+        ]
+        kum_to_sentetik = calculate_surface_transition_score(races, "Sentetik", 50)
+        kum_to_cim = calculate_surface_transition_score(races, "Çim", 50)
+        self.assertGreater(kum_to_sentetik["score"], kum_to_cim["score"])
+
+    def test_surface_transition_allows_proven_target_surface(self):
+        races = [
+            {"track": "Kum", "rank": "2"},
+            {"track": "Çim", "rank": "5"},
+            {"track": "Kum", "rank": "3"},
+            {"track": "Çim", "rank": "4"},
+        ]
+        result = calculate_surface_transition_score(races, "Kum", 70)
+        self.assertGreaterEqual(result["score"], 55)
+        self.assertNotIn("switch_penalty", result["reason"])
+
+    def test_distance_transition_penalizes_big_jump_without_history(self):
+        races = [
+            {"distance": "1200", "rank": "2"},
+            {"distance": "1300", "rank": "3"},
+            {"distance": "1200", "rank": "1"},
+            {"distance": "1400", "rank": "4"},
+        ]
+        result = calculate_distance_transition_score(races, "2000", 50)
+        self.assertLess(result["score"], 35)
+        self.assertEqual(result["similarDistanceRaceCount"], 0)
+
+    def test_handikap_agf_redistribution_uses_stronger_signals(self):
+        profile = extract_v4_race_profile("Handikap 15", "1400", "Kum", 10)
+        weights, allowed = _v416_apply_agf_policy(profile, {
+            "agf_score": 20,
+            "degree_avg": 10,
+            "training_fitness": 10,
+            "pace_score": 10,
+        })
+        self.assertFalse(allowed)
+        self.assertEqual(weights["agf_score"], 0)
+        self.assertEqual(weights["degree_avg"], 10)
+        self.assertGreater(weights["pace_score"], 10)
+        self.assertGreater(weights["surface_transition_score"], 0)
+        self.assertGreater(weights["distance_transition_score"], 0)
 
 
 if __name__ == "__main__":

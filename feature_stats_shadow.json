@@ -6,7 +6,9 @@
     "form_trend",
     "track_suit",
     "track_experience_score",
+    "surface_transition_score",
     "distance_suit",
+    "distance_transition_score",
     "training_fitness",
     "training_degree_score",
     "weight_impact",
@@ -44,6 +46,8 @@
     "has_trainer",
     "has_age_actionable",
     "has_track_experience",
+    "has_surface_transition",
+    "has_distance_transition",
     "has_handicap_efficiency",
     "has_handicap_class_history",
     "days_since_last_race",
@@ -78,9 +82,17 @@
       "mean": 52.30353029544316,
       "std": 11.381562062748278
     },
+    "surface_transition_score": {
+      "mean": 50.0,
+      "std": 0.0
+    },
     "distance_suit": {
       "mean": 52.960340510766144,
       "std": 21.910038890666353
+    },
+    "distance_transition_score": {
+      "mean": 50.0,
+      "std": 0.0
     },
     "training_fitness": {
       "mean": 76.11837756634952,
@@ -230,6 +242,14 @@
       "mean": 0.30946419629444166,
       "std": 0.46227276310234516
     },
+    "has_surface_transition": {
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "has_distance_transition": {
+      "mean": 0.0,
+      "std": 0.0
+    },
     "has_handicap_efficiency": {
       "mean": 0.06835252879318979,
       "std": 0.2523498773543707
@@ -259,13 +279,13 @@
       "std": 11.26702992950827
     },
     "feature_variance": {
-      "mean": 460.7038898957513,
-      "std": 195.89510915796654
+      "mean": 418.45641301640666,
+      "std": 177.22767143040133
     }
   },
   "metadata": {
-    "model_version": "shadow-20260616-0113",
-    "created_at": "2026-06-16T01:13:08",
+    "model_version": "shadow-20260616-0147",
+    "created_at": "2026-06-16T01:47:23",
     "train_races": 323,
     "validation_races": 81,
     "labeled_entries": 3994,

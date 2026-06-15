@@ -2940,6 +2940,126 @@ def _confidence_blend(score, sample_size, full_sample=5):
     return 50.0 + (float(score) - 50.0) * confidence
 
 
+def _parse_rank_value(race):
+    try:
+        raw = str((race or {}).get('rank', '')).strip()
+        digits = re.sub(r'[^0-9]', '', raw)
+        value = int(digits) if digits else 0
+        return value if value > 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _surface_switch_penalty(source_key, target_key):
+    if not source_key or not target_key or source_key == target_key:
+        return 0.0
+    pair = {source_key, target_key}
+    if pair == {'kum', 'sentetik'}:
+        return 2.0
+    if pair == {'cim', 'sentetik'}:
+        return 4.0
+    if pair == {'cim', 'kum'}:
+        return 7.0
+    return 4.0
+
+
+def calculate_surface_transition_score(races, target_track, track_suit_score=50.0):
+    """Score how risky the current surface is versus recent racing surfaces."""
+    target_key = _track_key(target_track)
+    result = {
+        'score': 50.0,
+        'targetTrackRaceCount': 0,
+        'otherTrackRaceCount': 0,
+        'dominantTrack': None,
+        'dominantTrackShare': 0.0,
+        'lastTrack': None,
+        'lastThreeTargetCount': 0,
+        'reason': 'neutral',
+    }
+    if not races or not target_key:
+        return result
+
+    recent = []
+    for race in (races or [])[:8]:
+        key = _track_key(race.get('track', ''))
+        if not key:
+            continue
+        recent.append({'track': key, 'rank': _parse_rank_value(race)})
+
+    if not recent:
+        return result
+
+    counts = {}
+    for item in recent:
+        counts[item['track']] = counts.get(item['track'], 0) + 1
+    dominant_track, dominant_count = max(counts.items(), key=lambda item: item[1])
+    target_items = [item for item in recent if item['track'] == target_key]
+    other_items = [item for item in recent if item['track'] != target_key]
+    target_ranks = [item['rank'] for item in target_items if item['rank']]
+    other_ranks = [item['rank'] for item in other_items if item['rank']]
+    last_track = recent[0]['track']
+    last_three = recent[:3]
+    last_three_target_count = sum(1 for item in last_three if item['track'] == target_key)
+
+    target_count = len(target_items)
+    other_count = len(other_items)
+    dominant_share = dominant_count / max(1, len(recent))
+    result.update({
+        'targetTrackRaceCount': target_count,
+        'otherTrackRaceCount': other_count,
+        'dominantTrack': dominant_track,
+        'dominantTrackShare': round(dominant_share, 3),
+        'lastTrack': last_track,
+        'lastThreeTargetCount': last_three_target_count,
+    })
+
+    if target_count <= 0:
+        if other_count >= 5:
+            score = 34.0
+            reason = 'strong_surface_switch_penalty'
+        elif other_count >= 3:
+            score = 40.0
+            reason = 'surface_switch_penalty'
+        else:
+            score = 45.0
+            reason = 'light_surface_switch_penalty'
+        score -= _surface_switch_penalty(dominant_track, target_key)
+        if dominant_share >= 0.75:
+            score -= 4.0
+        if len(last_three) >= 2 and last_three_target_count == 0:
+            score -= 3.0
+        result['score'] = round(max(20.0, min(88.0, score)), 1)
+        result['reason'] = reason
+        return result
+
+    target_score = _rank_average_score(target_ranks) if target_ranks else float(track_suit_score or 50.0)
+    score = _confidence_blend(target_score, target_count, full_sample=4)
+    if target_ranks and other_ranks:
+        target_avg = float(np.mean(target_ranks))
+        other_avg = float(np.mean(other_ranks))
+        if target_avg - other_avg >= 1.5:
+            score -= min(18.0, (target_avg - other_avg) * 4.0)
+        elif other_avg - target_avg >= 1.5:
+            score += min(10.0, (other_avg - target_avg) * 3.0)
+
+    if target_count == 1 and other_count >= 4 and last_three_target_count == 0:
+        score = min(score, 58.0)
+        score -= _surface_switch_penalty(last_track, target_key) * 0.5
+        reason = 'thin_target_surface_history'
+    elif last_track != target_key and last_three_target_count == 0:
+        score -= _surface_switch_penalty(last_track, target_key) * 0.5
+        reason = 'recent_surface_switch'
+    elif target_count >= 3 and last_track == target_key:
+        score += 4.0
+        reason = 'target_surface_recent_and_proven'
+    else:
+        reason = 'target_surface_history'
+
+    result['score'] = round(max(20.0, min(92.0, score)), 1)
+    result['reason'] = reason
+    return result
+
+
 def calculate_track_suitability(races, target_track):
     """Data-backed track suitability score."""
     if not races or not target_track:
@@ -3020,6 +3140,87 @@ def calculate_track_experience_score(races, target_track, track_suit_score=50.0)
     if other_count >= 1:
         return 42.0, target_count, other_count, "light_surface_switch_penalty"
     return 50.0, target_count, other_count, "neutral"
+
+
+def calculate_distance_transition_score(races, target_distance, distance_suit_score=50.0):
+    """Score how risky the current distance is versus recent racing distances."""
+    target_dist = _parse_race_distance(target_distance)
+    result = {
+        'score': 50.0,
+        'targetDistance': target_dist,
+        'lastDistance': None,
+        'avgRecentDistance': None,
+        'distanceDelta': None,
+        'similarDistanceRaceCount': 0,
+        'reason': 'neutral',
+    }
+    if not races or not target_dist:
+        return result
+
+    recent = []
+    for race in (races or [])[:8]:
+        dist = _parse_race_distance(race.get('distance', ''))
+        if not dist:
+            continue
+        recent.append({'distance': dist, 'rank': _parse_rank_value(race)})
+
+    if not recent:
+        return result
+
+    distances = [item['distance'] for item in recent]
+    last_distance = distances[0]
+    avg_recent = float(np.mean(distances[:5]))
+    last_delta = abs(last_distance - target_dist)
+    avg_delta = abs(avg_recent - target_dist)
+    similar_items = [item for item in recent if abs(item['distance'] - target_dist) <= 200]
+    similar_ranks = [item['rank'] for item in similar_items if item['rank']]
+
+    result.update({
+        'lastDistance': last_distance,
+        'avgRecentDistance': round(avg_recent, 1),
+        'distanceDelta': int(last_delta),
+        'similarDistanceRaceCount': len(similar_items),
+    })
+
+    if similar_items:
+        similar_score = _rank_average_score(similar_ranks) if similar_ranks else float(distance_suit_score or 50.0)
+        score = _confidence_blend(similar_score, len(similar_items), full_sample=4)
+        if len(similar_items) == 1 and len(recent) >= 5:
+            score = min(score, 62.0)
+        if last_delta > 600:
+            score -= 8.0
+        elif last_delta > 400:
+            score -= 4.0
+        if len(similar_items) >= 2 and last_delta <= 400:
+            score += 3.0
+        reason = 'target_distance_history'
+    else:
+        score = 48.0
+        if last_delta > 800:
+            score -= 14.0
+        elif last_delta > 600:
+            score -= 11.0
+        elif last_delta > 400:
+            score -= 7.0
+        elif last_delta > 200:
+            score -= 4.0
+
+        if avg_delta > 800:
+            score -= 9.0
+        elif avg_delta > 600:
+            score -= 7.0
+        elif avg_delta > 400:
+            score -= 4.0
+
+        if target_dist >= 1800 and avg_recent <= 1400:
+            score -= 6.0
+        elif target_dist <= 1400 and avg_recent >= 1900:
+            score -= 5.0
+        reason = 'distance_jump_penalty' if score < 40 else 'unproven_distance'
+
+    result['score'] = round(max(22.0, min(90.0, score)), 1)
+    result['reason'] = reason
+    return result
 
 
 def calculate_distance_suitability(races, target_distance):
@@ -4850,13 +5051,16 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.15"
+_V4_VERSION = "4.16"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
-    'form_trend', 'track_experience_score', 'distance_suit',
+    'form_trend', 'track_experience_score', 'surface_transition_score',
+    'distance_suit', 'distance_transition_score',
     'training_fitness', 'training_degree_score',
-    'weight_impact', 'jockey_score', 'bounce_score',
+    'weight_impact', 'handicap_efficiency_score',
+    'handicap_class_transition_score', 'running_style_proxy_score',
+    'jockey_score', 'bounce_score',
     'pace_score', 'pedigree', 'hp_score', 'agf_score',
     'age_score',
 ]
@@ -4958,22 +5162,26 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 55,
         'status': 'visible_controlled',
         'weights': {
-            'form_trend': 29.5,
-            'pace_score': 16.4,
-            'degree_avg': 13.3,
-            'bounce_score': 7.9,
-            'weight_impact': 6.9,
-            'training_fitness': 6.7,
-            'jockey_score': 5.2,
-            'track_experience_score': 8.0,
-            'distance_suit': 4.7,
-            'pedigree': 2.8,
-            'hp_score': 2.7,
-            'degree_stability': 2.0,
-            'training_degree_score': 1.6,
-            'degree_trend': 0.3,
+            'pace_score': 18.0,
+            'surface_transition_score': 14.0,
+            'distance_transition_score': 12.0,
+            'training_fitness': 12.0,
+            'running_style_proxy_score': 8.0,
+            'handicap_class_transition_score': 8.0,
+            'weight_impact': 7.0,
+            'track_experience_score': 6.0,
+            'hp_score': 6.0,
+            'distance_suit': 5.0,
+            'form_trend': 5.0,
+            'bounce_score': 4.0,
+            'age_score': 3.0,
+            'degree_avg': 2.0,
+            'jockey_score': 2.0,
+            'training_degree_score': 2.0,
+            'pedigree': 1.0,
+            'degree_stability': 1.0,
+            'degree_trend': 0.5,
             'agf_score': 0.0,
-            'age_score': 6.0,
         },
     },
     'HANDIKAP14': {
@@ -4981,15 +5189,21 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 12,
         'status': 'visible_controlled',
         'weights': {
-            'degree_stability': 31.1,
-            'degree_avg': 18.5,
-            'agf_score': 13.4,
-            'distance_suit': 11.0,
-            'track_experience_score': 7.0,
-            'pace_score': 8.8,
-            'hp_score': 6.3,
-            'form_trend': 5.7,
-            'bounce_score': 3.4,
+            'surface_transition_score': 16.0,
+            'distance_transition_score': 14.0,
+            'pace_score': 12.0,
+            'hp_score': 10.0,
+            'training_fitness': 9.0,
+            'track_experience_score': 9.0,
+            'handicap_class_transition_score': 8.0,
+            'degree_stability': 6.0,
+            'weight_impact': 5.0,
+            'form_trend': 4.0,
+            'bounce_score': 4.0,
+            'age_score': 3.0,
+            'degree_avg': 2.0,
+            'jockey_score': 2.0,
+            'agf_score': 0.0,
         },
     },
     'HANDIKAP14|Kum': {
@@ -4997,17 +5211,20 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 10,
         'status': 'visible_controlled',
         'weights': {
-            'form_trend': 23.7,
-            'agf_score': 23.7,
-            'degree_stability': 21.7,
-            'degree_avg': 15.3,
-            'track_experience_score': 7.0,
-            'pace_score': 5.3,
-            'bounce_score': 3.6,
-            'training_fitness': 2.7,
-            'training_degree_score': 1.6,
-            'degree_trend': 1.2,
-            'jockey_score': 1.0,
+            'surface_transition_score': 15.0,
+            'distance_transition_score': 13.0,
+            'pace_score': 13.0,
+            'training_fitness': 11.0,
+            'handicap_class_transition_score': 9.0,
+            'track_experience_score': 9.0,
+            'hp_score': 7.0,
+            'weight_impact': 6.0,
+            'form_trend': 5.0,
+            'degree_stability': 4.0,
+            'bounce_score': 3.0,
+            'age_score': 3.0,
+            'jockey_score': 2.0,
+            'agf_score': 0.0,
         },
     },
     'HANDIKAP15': {
@@ -5015,15 +5232,20 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 23,
         'status': 'visible_controlled',
         'weights': {
-            'form_trend': 23.6,
-            'agf_score': 23.3,
-            'bounce_score': 13.8,
-            'pace_score': 11.2,
-            'track_experience_score': 7.0,
-            'hp_score': 6.7,
-            'distance_suit': 6.0,
-            'degree_avg': 5.7,
-            'degree_stability': 2.6,
+            'pace_score': 17.0,
+            'surface_transition_score': 15.0,
+            'distance_transition_score': 12.0,
+            'training_fitness': 11.0,
+            'running_style_proxy_score': 9.0,
+            'track_experience_score': 8.0,
+            'handicap_class_transition_score': 7.0,
+            'hp_score': 6.0,
+            'weight_impact': 5.0,
+            'form_trend': 4.0,
+            'bounce_score': 3.0,
+            'degree_avg': 2.0,
+            'age_score': 2.0,
+            'agf_score': 0.0,
         },
     },
     'HANDIKAP15|Kum': {
@@ -5031,16 +5253,19 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 12,
         'status': 'visible_controlled',
         'weights': {
-            'agf_score': 29.0,
-            'bounce_score': 22.6,
-            'form_trend': 19.9,
-            'pace_score': 8.6,
-            'track_experience_score': 7.0,
-            'hp_score': 7.2,
-            'training_fitness': 3.0,
-            'degree_stability': 2.9,
-            'degree_avg': 2.8,
-            'distance_suit': 2.6,
+            'surface_transition_score': 16.0,
+            'pace_score': 16.0,
+            'distance_transition_score': 12.0,
+            'training_fitness': 11.0,
+            'running_style_proxy_score': 8.0,
+            'track_experience_score': 8.0,
+            'hp_score': 7.0,
+            'handicap_class_transition_score': 7.0,
+            'weight_impact': 6.0,
+            'bounce_score': 4.0,
+            'form_trend': 3.0,
+            'degree_stability': 2.0,
+            'agf_score': 0.0,
         },
     },
     'HANDIKAP15|Cim': {
@@ -5048,17 +5273,19 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 10,
         'status': 'visible_controlled',
         'weights': {
-            'agf_score': 28.8,
-            'form_trend': 20.4,
-            'pace_score': 19.0,
-            'degree_avg': 9.9,
-            'track_experience_score': 7.0,
-            'weight_impact': 4.4,
-            'distance_suit': 4.3,
-            'training_fitness': 4.0,
-            'hp_score': 3.9,
-            'pedigree': 2.7,
-            'age_score': 1.4,
+            'pace_score': 18.0,
+            'surface_transition_score': 14.0,
+            'distance_transition_score': 10.0,
+            'training_fitness': 10.0,
+            'running_style_proxy_score': 10.0,
+            'track_experience_score': 8.0,
+            'hp_score': 7.0,
+            'weight_impact': 5.0,
+            'handicap_class_transition_score': 5.0,
+            'form_trend': 5.0,
+            'pedigree': 3.0,
+            'age_score': 3.0,
+            'agf_score': 0.0,
         },
     },
     'HANDIKAP16': {
@@ -5066,16 +5293,20 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 26,
         'status': 'visible_controlled',
         'weights': {
-            'form_trend': 27.3,
-            'age_score': 17.4,
-            'pace_score': 15.3,
-            'training_fitness': 14.3,
-            'agf_score': 8.3,
-            'track_experience_score': 6.8,
-            'weight_impact': 4.7,
-            'training_degree_score': 2.4,
-            'bounce_score': 1.6,
-            'pedigree': 1.1,
+            'pace_score': 17.0,
+            'surface_transition_score': 14.0,
+            'training_fitness': 13.0,
+            'distance_transition_score': 11.0,
+            'running_style_proxy_score': 8.0,
+            'age_score': 8.0,
+            'weight_impact': 7.0,
+            'track_experience_score': 6.0,
+            'handicap_class_transition_score': 6.0,
+            'hp_score': 4.0,
+            'form_trend': 3.0,
+            'jockey_score': 2.0,
+            'bounce_score': 1.0,
+            'agf_score': 0.0,
         },
     },
     'HANDIKAP16|Kum': {
@@ -5083,13 +5314,40 @@ _V4_WEIGHT_PROFILES = {
         'sample_races': 11,
         'status': 'visible_controlled',
         'weights': {
-            'form_trend': 23.2,
-            'agf_score': 19.6,
-            'pace_score': 17.9,
-            'training_fitness': 15.5,
-            'jockey_score': 14.5,
-            'degree_avg': 8.3,
+            'pace_score': 17.0,
+            'training_fitness': 14.0,
+            'surface_transition_score': 14.0,
+            'distance_transition_score': 10.0,
+            'running_style_proxy_score': 8.0,
+            'weight_impact': 7.0,
             'track_experience_score': 7.0,
+            'jockey_score': 6.0,
+            'hp_score': 5.0,
+            'handicap_class_transition_score': 5.0,
+            'form_trend': 3.0,
+            'age_score': 3.0,
+            'degree_avg': 1.0,
+            'agf_score': 0.0,
+        },
+    },
+    'HANDIKAP16|Cim': {
+        'level': 'subtype_track',
+        'sample_races': 8,
+        'status': 'visible_controlled',
+        'weights': {
+            'pace_score': 18.0,
+            'surface_transition_score': 15.0,
+            'training_fitness': 12.0,
+            'distance_transition_score': 10.0,
+            'running_style_proxy_score': 9.0,
+            'track_experience_score': 8.0,
+            'weight_impact': 7.0,
+            'age_score': 6.0,
+            'handicap_class_transition_score': 5.0,
+            'hp_score': 4.0,
+            'form_trend': 3.0,
+            'pedigree': 2.0,
+            'agf_score': 0.0,
         },
     },
     'MAIDEN': {
@@ -5310,7 +5568,7 @@ def _v4_normalize_weights(raw_weights):
     return {k: round(max(v, 0.0) / total, 4) for k, v in weights.items()}
 
 
-def _v415_agf_allowed(profile):
+def _v416_agf_allowed(profile):
     """AGF is a ranking signal only for Maiden and Sartli 1 races."""
     return (
         profile.get('category') == 'MAIDEN'
@@ -5318,11 +5576,11 @@ def _v415_agf_allowed(profile):
     )
 
 
-def _v415_apply_agf_policy(profile, raw_weights):
+def _v416_apply_agf_policy(profile, raw_weights):
     """Remove AGF outside its allowed groups and redistribute its weight."""
     weights = {k: float(raw_weights.get(k, 0.0)) for k in _V4_METRIC_KEYS}
     agf_weight = max(0.0, weights.get('agf_score', 0.0))
-    allowed = _v415_agf_allowed(profile)
+    allowed = _v416_agf_allowed(profile)
     if allowed or agf_weight <= 0.0:
         return weights, allowed
 
@@ -5331,8 +5589,12 @@ def _v415_apply_agf_policy(profile, raw_weights):
     subtype = profile.get('subtype')
 
     if category == 'HANDIKAP':
-        weights['degree_avg'] += agf_weight * 0.25
-        weights['training_fitness'] += agf_weight * 0.75
+        weights['pace_score'] += agf_weight * 0.25
+        weights['surface_transition_score'] += agf_weight * 0.20
+        weights['distance_transition_score'] += agf_weight * 0.15
+        weights['training_fitness'] += agf_weight * 0.15
+        weights['running_style_proxy_score'] += agf_weight * 0.15
+        weights['handicap_class_transition_score'] += agf_weight * 0.10
     elif subtype == 'SART4':
         weights['hp_score'] += agf_weight
     elif category == 'SARTLI':
@@ -5376,7 +5638,7 @@ def resolve_v4_profile_weights(profile):
     sample_races = int(selected.get('sample_races', 0))
     min_required = _V4_MIN_SAMPLE_RACES.get(fallback_level, 0)
     eligible = sample_races >= min_required
-    policy_weights, agf_allowed = _v415_apply_agf_policy(
+    policy_weights, agf_allowed = _v416_apply_agf_policy(
         profile,
         selected.get('weights', {}),
     )
@@ -5495,6 +5757,10 @@ def calculate_v4_shadow_score(metrics, weights):
         'pedigree': '_has_pedigree',
         'age_score': '_has_age',
         'track_experience_score': '_has_track_experience',
+        'surface_transition_score': '_has_surface_transition',
+        'distance_transition_score': '_has_distance_transition',
+        'handicap_efficiency_score': '_has_handicap_efficiency',
+        'handicap_class_transition_score': '_has_handicap_class_history',
     }
     for key, weight in weights.items():
         if weight <= 0:
@@ -5769,9 +6035,12 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
 # AGF is intentionally excluded from the ML feature list.
 _ML_FEATURE_KEYS = [
     "degree_avg", "degree_trend", "degree_stability",
-    "form_trend", "track_suit", "distance_suit",
+    "form_trend", "track_suit", "track_experience_score",
+    "surface_transition_score", "distance_suit", "distance_transition_score",
     "training_fitness", "training_degree_score",
-    "weight_impact", "jockey_score", "bounce_score",
+    "weight_impact", "handicap_efficiency_score",
+    "handicap_class_transition_score", "running_style_proxy_score",
+    "jockey_score", "bounce_score",
     "pace_score", "pedigree", "hp_score", "trainer_score",
 ]
 
@@ -5886,7 +6155,8 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
 
     score_keys = [
         'degree_avg', 'degree_trend', 'degree_stability', 'form_trend',
-        'track_suit', 'track_experience_score', 'distance_suit',
+        'track_suit', 'track_experience_score', 'surface_transition_score',
+        'distance_suit', 'distance_transition_score',
         'training_fitness', 'training_degree_score', 'weight_impact',
         'handicap_efficiency_score',
         'jockey_score', 'bounce_score', 'pace_score', 'pedigree',
@@ -5931,6 +6201,8 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'has_trainer': 1.0 if flags.get('hasTrainer') else 0.0,
         'has_age_actionable': 1.0 if flags.get('hasAgeActionable') else 0.0,
         'has_track_experience': 1.0 if flags.get('hasTrackExperience') else 0.0,
+        'has_surface_transition': 1.0 if flags.get('hasSurfaceTransition') else 0.0,
+        'has_distance_transition': 1.0 if flags.get('hasDistanceTransition') else 0.0,
         'has_handicap_efficiency': 1.0 if flags.get('hasHandicapEfficiency') else 0.0,
         'has_handicap_class_history': 1.0 if flags.get('hasHandicapClassHistory') else 0.0,
         'days_since_last_race': _shadow_safe_float(horse.get('daysSinceLastRace'), -1.0),
@@ -6420,6 +6692,21 @@ def analyze_race():
                         track_suit,
                     )
                     has_track_experience = bool(target_track_race_count > 0 or other_track_race_count > 0)
+                    surface_transition = calculate_surface_transition_score(
+                        races,
+                        target_track,
+                        track_suit,
+                    )
+                    has_surface_transition = bool(
+                        surface_transition['targetTrackRaceCount'] > 0
+                        or surface_transition['otherTrackRaceCount'] > 0
+                    )
+                    distance_transition = calculate_distance_transition_score(
+                        races,
+                        target_distance,
+                        distance_suit,
+                    )
+                    has_distance_transition = bool(distance_transition['lastDistance'] is not None)
                     handicap_class_transition = calculate_handicap_class_transition(races, race_type)
 
                     metrics_pass1 = {
@@ -6431,7 +6718,9 @@ def analyze_race():
                         'consistency': consistency,
                         'track_suit': track_suit,
                         'track_experience_score': track_experience_score_val,
+                        'surface_transition_score': surface_transition['score'],
                         'distance_suit': distance_suit,
+                        'distance_transition_score': distance_transition['score'],
                         'training_fitness': training_fitness,
                         'training_degree_score': training_deg_score,
                         'weight_impact': weight_impact_score,   # FAZ 4.2
@@ -6466,6 +6755,8 @@ def analyze_race():
                         '_has_jockey':    has_jockey_source,
                         '_has_age':       has_age_actionable,
                         '_has_track_experience': has_track_experience,
+                        '_has_surface_transition': has_surface_transition,
+                        '_has_distance_transition': has_distance_transition,
                         '_days_since_last_race': ranking_penalty_info['daysSinceLastRace'],
                         '_last_race_distance': ranking_penalty_info['lastRaceDistance'],
                         '_long_layoff_bucket': (
@@ -6536,6 +6827,20 @@ def analyze_race():
                         'otherTrackRaceCount': other_track_race_count,
                         'trackExperienceReason': track_experience_reason,
                         'trackExperienceScore': track_experience_score_val,
+                        'hasSurfaceTransition': has_surface_transition,
+                        'surfaceTransitionScore': surface_transition['score'],
+                        'surfaceTransitionReason': surface_transition['reason'],
+                        'surfaceTransitionDominantTrack': surface_transition['dominantTrack'],
+                        'surfaceTransitionDominantShare': surface_transition['dominantTrackShare'],
+                        'surfaceTransitionLastTrack': surface_transition['lastTrack'],
+                        'surfaceTransitionLastThreeTargetCount': surface_transition['lastThreeTargetCount'],
+                        'hasDistanceTransition': has_distance_transition,
+                        'distanceTransitionScore': distance_transition['score'],
+                        'distanceTransitionReason': distance_transition['reason'],
+                        'lastDistanceForTransition': distance_transition['lastDistance'],
+                        'avgRecentDistanceForTransition': distance_transition['avgRecentDistance'],
+                        'distanceDeltaForTransition': distance_transition['distanceDelta'],
+                        'similarDistanceRaceCount': distance_transition['similarDistanceRaceCount'],
                         'hasSireName': bool(sire_name),
                         'hasPedigree': bool(sire_stats and sire_stats.get('data_quality') != 'NONE'),
                         'pedigreeDataQuality': sire_stats.get('data_quality', 'NONE') if sire_stats else 'NONE',
@@ -6649,7 +6954,9 @@ def analyze_race():
                             'pedigreeScore': pedigree_score_val,   # FAZ 4.6
                             'trackSuitScore': track_suit,
                             'trackExperienceScore': track_experience_score_val,
+                            'surfaceTransitionScore': surface_transition['score'],
                             'distanceSuitScore': distance_suit,
+                            'distanceTransitionScore': distance_transition['score'],
                             'formTrendScore': trend_score,
                             'degreeAvgScore': degree_stats.get('degreeScore', 50),
                             'trainingFitnessScore': training_fitness,
@@ -7132,7 +7439,8 @@ def analyze_race():
                         k: _m.get(k) if _m else None
                         for k in [
                             'degree_avg','degree_trend','degree_stability',
-                            'form_trend','track_suit','track_experience_score','distance_suit',
+                            'form_trend','track_suit','track_experience_score',
+                            'surface_transition_score','distance_suit','distance_transition_score',
                             'training_fitness','training_degree_score',
                             'weight_impact','handicap_efficiency_score',
                             'handicap_class_transition_score','handicap_class_delta',
