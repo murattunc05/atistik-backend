@@ -181,9 +181,10 @@ def feature_dict(entry):
         "age_score",
     ]
     is_maiden = "MAIDEN" in folded_type or "MDN" in folded_type
+    is_handikap = "HANDIKAP" in folded_type
     is_sartli = "SART" in folded_type
     is_sart1 = bool(is_sartli and re.search(r"\bSART(?:LI)?\s*[-/]?\s*1\b", folded_type))
-    agf_allowed = bool(entry.get("agf_allowed_for_ranking", is_maiden or is_sart1))
+    agf_allowed = bool(entry.get("agf_allowed_for_ranking", is_maiden or is_sart1 or is_handikap))
 
     features = {key: safe_float(metrics.get(key), 50.0) for key in score_keys}
     if not agf_allowed:
@@ -202,7 +203,7 @@ def feature_dict(entry):
             "v4_rank": safe_float(entry.get("v4_rank"), safe_float(entry.get("rank_pred"), 0.0)),
             "field_size": safe_float(entry.get("field_size"), 0.0),
             "distance_num": safe_float(distance_num, 0.0),
-            "is_handikap": 1.0 if "HANDIKAP" in folded_type else 0.0,
+            "is_handikap": 1.0 if is_handikap else 0.0,
             "is_maiden": 1.0 if is_maiden else 0.0,
             "is_sartli": 1.0 if is_sartli else 0.0,
             "is_sart1": 1.0 if is_sart1 else 0.0,

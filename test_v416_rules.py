@@ -2,8 +2,9 @@ import unittest
 
 from api_server import (
     _V4_VERSION,
-    _v416_apply_agf_policy,
+    _v417_apply_agf_policy,
     apply_v4_shadow_mode,
+    calculate_v4_shadow_score,
     calculate_distance_transition_score,
     calculate_surface_transition_score,
     calculate_v4_ranking_penalties,
@@ -13,11 +14,11 @@ from api_server import (
 from train_shadow_ml import feature_dict
 
 
-class V416RulesTest(unittest.TestCase):
+class V417RulesTest(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(_V4_VERSION, "4.16")
+        self.assertEqual(_V4_VERSION, "4.17")
 
-    def test_agf_is_limited_to_maiden_and_sartli_one(self):
+    def test_agf_is_allowed_for_maiden_sartli_one_and_capped_handikap(self):
         maiden = resolve_v4_profile_weights(
             extract_v4_race_profile("Maiden", "1400", "Kum", 10)
         )
@@ -37,10 +38,13 @@ class V416RulesTest(unittest.TestCase):
         self.assertGreater(sart1["weights"]["agf_score"], 0)
         self.assertFalse(sart4["agfAllowedForRanking"])
         self.assertEqual(sart4["weights"]["agf_score"], 0)
-        self.assertFalse(handicap["agfAllowedForRanking"])
-        self.assertEqual(handicap["weights"]["agf_score"], 0)
-        self.assertGreater(handicap["weights"]["surface_transition_score"], 0)
-        self.assertGreater(handicap["weights"]["distance_transition_score"], 0)
+        self.assertTrue(handicap["agfAllowedForRanking"])
+        self.assertGreater(handicap["weights"]["agf_score"], 0)
+        self.assertGreater(handicap["weights"]["pace_score"], handicap["weights"]["agf_score"])
+        self.assertGreater(handicap["weights"]["form_trend"], 0)
+        self.assertGreater(handicap["weights"]["trainer_score"], 0)
+        self.assertGreater(handicap["weights"]["track_suit"], 0)
+
 
     def test_shadow_ml_does_not_treat_sartli_19_as_sartli_1(self):
         features = feature_dict({
@@ -115,7 +119,7 @@ class V416RulesTest(unittest.TestCase):
         }
         apply_v4_shadow_mode([horse], "Handikap 15", "1400", "Kum")
         self.assertEqual(horse["v4Score"], max(0, horse["v4BaseScore"] - 5))
-        self.assertFalse(horse["agfAllowedForRanking"])
+        self.assertTrue(horse["agfAllowedForRanking"])
 
     def test_training_does_not_cancel_layoff_penalty(self):
         result = calculate_v4_ranking_penalties([], "14.06.2026", "45")
@@ -180,20 +184,35 @@ class V416RulesTest(unittest.TestCase):
         self.assertLess(result["score"], 35)
         self.assertEqual(result["similarDistanceRaceCount"], 0)
 
-    def test_handikap_agf_redistribution_uses_stronger_signals(self):
+    def test_handikap_agf_is_allowed_without_redistribution(self):
         profile = extract_v4_race_profile("Handikap 15", "1400", "Kum", 10)
-        weights, allowed = _v416_apply_agf_policy(profile, {
+        weights, allowed = _v417_apply_agf_policy(profile, {
             "agf_score": 20,
             "degree_avg": 10,
             "training_fitness": 10,
             "pace_score": 10,
         })
-        self.assertFalse(allowed)
-        self.assertEqual(weights["agf_score"], 0)
+        self.assertTrue(allowed)
+        self.assertEqual(weights["agf_score"], 20)
         self.assertEqual(weights["degree_avg"], 10)
-        self.assertGreater(weights["pace_score"], 10)
-        self.assertGreater(weights["surface_transition_score"], 0)
-        self.assertGreater(weights["distance_transition_score"], 0)
+        self.assertEqual(weights["pace_score"], 10)
+
+    def test_handikap_agf_value_is_capped_in_score(self):
+        weights = {"agf_score": 1.0}
+        self.assertEqual(
+            calculate_v4_shadow_score(
+                {"agf_score": 100, "_has_agf": True, "_v4_handikap_agf_capped": True},
+                weights,
+            ),
+            82.0,
+        )
+        self.assertEqual(
+            calculate_v4_shadow_score(
+                {"agf_score": 10, "_has_agf": True, "_v4_handikap_agf_capped": True},
+                weights,
+            ),
+            35.0,
+        )
 
 
 if __name__ == "__main__":
