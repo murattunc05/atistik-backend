@@ -771,7 +771,12 @@ def format_v4_rankings(rankings: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def build_summary(day: date, analysis: dict[str, Any] | None, results: dict[str, Any] | None) -> str:
+def build_summary(
+    day: date,
+    analysis: dict[str, Any] | None,
+    results: dict[str, Any] | None,
+    evaluation: dict[str, Any] | None = None,
+) -> str:
     lines = [f"# Atistik Automation Summary - {date_iso(day)}", ""]
 
     if analysis:
@@ -855,7 +860,99 @@ def build_summary(day: date, analysis: dict[str, Any] | None, results: dict[str,
         if rows:
             lines.extend([markdown_table(["City", "No", "RaceId", "Status", "Matched", "Ratio"], rows), ""])
 
+    if evaluation:
+        totals = evaluation.get("totals", {}) or {}
+        eval_data = evaluation.get("evaluation", {}) or {}
+        model = (eval_data.get("models", {}) or {}).get("v418_agf_free", {}) or {}
+        lines.extend(
+            [
+                "## v4.18 AGF-Free Gate",
+                "",
+                markdown_table(
+                    ["Metric", "Value"],
+                    [
+                        ["Status", evaluation.get("status", "")],
+                        ["Races", model.get("races", totals.get("races", 0))],
+                        ["Winner Top3", model.get("winner_top3", "")],
+                        ["Winner Top5", model.get("winner_top5", "")],
+                        ["Top1", model.get("top1", "")],
+                        ["MAE", model.get("mae", "")],
+                        ["Rho", model.get("rho", "")],
+                        ["NDCG@5", model.get("ndcg5", "")],
+                        ["AGF violations", totals.get("agfWeightViolations", "")],
+                    ],
+                ),
+                "",
+            ]
+        )
+        gate_rows = [
+            [item.get("check", ""), item.get("status", ""), item.get("evidence", "")]
+            for item in eval_data.get("acceptance_gate", []) or []
+        ]
+        if gate_rows:
+            lines.extend([markdown_table(["Check", "Status", "Evidence"], gate_rows), ""])
+
     return "\n".join(lines).rstrip() + "\n"
+
+
+def evaluate_gate_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    from evaluate_v418_agf_free import (
+        build_acceptance_checks,
+        build_summary as build_evaluation_summary,
+        collect_agf_weight_violations,
+        gate_has_blocking_failure,
+        group_races,
+        load_entries,
+        segment_key,
+    )
+
+    export_url = endpoint(args.backend_url, "/api/ml-export", {"labeled_only": "true"})
+    report: dict[str, Any] = {
+        "mode": args.mode,
+        "date": date_iso(args.day),
+        "startedAt": now_utc_iso(),
+        "exportUrl": export_url,
+        "status": "failed",
+        "totals": {},
+    }
+
+    entries = load_entries(export_url)
+    races = group_races(entries)
+    by_segment: dict[str, list[list[dict[str, Any]]]] = defaultdict(list)
+    for rows in races:
+        by_segment[segment_key(rows)].append(rows)
+
+    violations = collect_agf_weight_violations(races)
+    checks = build_acceptance_checks(races, by_segment, violations)
+    evaluation = build_evaluation_summary(races, by_segment, violations, checks)
+    status_counts = defaultdict(int)
+    for item in checks:
+        status_counts[str(item.get("status", "UNKNOWN"))] += 1
+
+    strict = bool(getattr(args, "strict_gate", False))
+    failed = gate_has_blocking_failure(checks, strict=strict)
+    report.update(
+        {
+            "finishedAt": now_utc_iso(),
+            "status": "failed" if failed else "passed",
+            "strictGate": strict,
+            "totals": {
+                "races": evaluation.get("models", {}).get("v418_agf_free", {}).get("races", len(races)),
+                "checks": len(checks),
+                "pass": status_counts.get("PASS", 0),
+                "warn": status_counts.get("WARN", 0),
+                "review": status_counts.get("REVIEW", 0),
+                "fail": status_counts.get("FAIL", 0),
+                "agfWeightViolations": len(violations),
+            },
+            "evaluation": evaluation,
+        }
+    )
+    return report
 
 
 def persist_report(args: argparse.Namespace, report: dict[str, Any]) -> None:
@@ -872,13 +969,24 @@ def persist_report(args: argparse.Namespace, report: dict[str, Any]) -> None:
         write_json(results_path, report)
         analysis = read_json(out_dir / "analysis.json")
         results = report
+        evaluation = read_json(out_dir / "v418-evaluation.json")
+    elif args.mode == "evaluate-gate":
+        evaluation_path = out_dir / "v418-evaluation.json"
+        write_json(evaluation_path, report)
+        analysis = read_json(out_dir / "analysis.json")
+        results = read_json(out_dir / "results.json")
+        evaluation = report
     else:
         replay_path = out_dir / "replay-results.json"
         write_json(replay_path, report)
         analysis = read_json(out_dir / "analysis.json")
         results = read_json(out_dir / "results.json")
+        evaluation = read_json(out_dir / "v418-evaluation.json")
 
-    summary = build_summary(args.day, analysis, results)
+    if args.mode in ("analyze", "analyze-dry-run"):
+        evaluation = read_json(out_dir / "v418-evaluation.json")
+
+    summary = build_summary(args.day, analysis, results, evaluation)
     (out_dir / "summary.md").write_text(summary, encoding="utf-8")
 
 
@@ -886,7 +994,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Atistik daily automation")
     parser.add_argument(
         "--mode",
-        choices=["analyze-dry-run", "analyze", "results-dry-run", "results", "replay-results"],
+        choices=["analyze-dry-run", "analyze", "results-dry-run", "results", "replay-results", "evaluate-gate"],
         default=os.environ.get("AUTOMATION_MODE", "analyze-dry-run"),
     )
     parser.add_argument("--date", default=os.environ.get("AUTOMATION_DATE"))
@@ -899,6 +1007,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cities", nargs="*", help="Override configured city list for this run")
     parser.add_argument("--max-attempts", type=int, default=int(os.environ.get("RESULT_MAX_ATTEMPTS", "1")))
     parser.add_argument("--replay-race-id", default=os.environ.get("REPLAY_RACE_ID", ""))
+    parser.add_argument(
+        "--strict-gate",
+        action="store_true",
+        default=os.environ.get("STRICT_GATE", "").lower() in {"1", "true", "yes"},
+        help="Fail evaluate-gate mode on WARN or REVIEW as well as FAIL.",
+    )
     return parser.parse_args()
 
 
@@ -916,6 +1030,8 @@ def main() -> int:
         report = analyze_mode(args, config)
     elif args.mode in ("results", "results-dry-run"):
         report = results_mode(args, config)
+    elif args.mode == "evaluate-gate":
+        report = evaluate_gate_mode(args, config)
     else:
         report = replay_results_mode(args, config)
 

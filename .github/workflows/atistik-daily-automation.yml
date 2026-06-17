@@ -21,6 +21,7 @@ on:
           - results-dry-run
           - results
           - replay-results
+          - evaluate-gate
       date:
         description: "Run date: YYYY-MM-DD, DD.MM.YYYY, or DD/MM/YYYY. Empty = today in Istanbul."
         required: false
@@ -33,6 +34,11 @@ on:
         description: "Optional result retry attempts. Empty = scheduled results use 5, manual runs use 1."
         required: false
         default: ""
+      strict_gate:
+        description: "Fail evaluation gate on WARN/REVIEW as well as FAIL."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -108,22 +114,65 @@ jobs:
           fi
 
           BACKEND_URL="${ATISTIK_BACKEND_URL:-https://atistik-backend.onrender.com}"
+          STRICT_GATE="${{ inputs.strict_gate }}"
+          if [[ "$STRICT_GATE" != "true" ]]; then
+            STRICT_GATE="false"
+          fi
 
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "date=$RUN_DATE" >> "$GITHUB_OUTPUT"
           echo "max_attempts=$MAX_ATTEMPTS" >> "$GITHUB_OUTPUT"
           echo "backend_url=$BACKEND_URL" >> "$GITHUB_OUTPUT"
+          echo "strict_gate=$STRICT_GATE" >> "$GITHUB_OUTPUT"
+
+      - name: Install evaluation dependencies
+        if: steps.resolve.outputs.mode == 'results' || steps.resolve.outputs.mode == 'evaluate-gate'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
       - name: Run automation
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          STRICT_GATE_ARGS=()
+          if [[ "${{ steps.resolve.outputs.mode }}" == "evaluate-gate" && "${{ steps.resolve.outputs.strict_gate }}" == "true" ]]; then
+            STRICT_GATE_ARGS+=(--strict-gate)
+          fi
           python automation/atistik_daily_job.py \
             --mode "${{ steps.resolve.outputs.mode }}" \
             --date "${{ steps.resolve.outputs.date }}" \
             --backend-url "${{ steps.resolve.outputs.backend_url }}" \
             --data-dir "$GITHUB_WORKSPACE/ml-data" \
-            --max-attempts "${{ steps.resolve.outputs.max_attempts }}"
+            --max-attempts "${{ steps.resolve.outputs.max_attempts }}" \
+            "${STRICT_GATE_ARGS[@]}"
+          automation_status="$?"
+          if [[ "${{ steps.resolve.outputs.mode }}" == "evaluate-gate" ]]; then
+            echo "EVALUATION_GATE_EXIT=$automation_status" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          exit "$automation_status"
+
+      - name: Run v4.18 evaluation gate
+        if: steps.resolve.outputs.mode == 'results'
+        shell: bash
+        run: |
+          set +e
+          STRICT_GATE_ARGS=()
+          if [[ "${{ steps.resolve.outputs.strict_gate }}" == "true" ]]; then
+            STRICT_GATE_ARGS+=(--strict-gate)
+          fi
+          python automation/atistik_daily_job.py \
+            --mode evaluate-gate \
+            --date "${{ steps.resolve.outputs.date }}" \
+            --backend-url "${{ steps.resolve.outputs.backend_url }}" \
+            --data-dir "$GITHUB_WORKSPACE/ml-data" \
+            "${STRICT_GATE_ARGS[@]}"
+          gate_status="$?"
+          echo "EVALUATION_GATE_EXIT=$gate_status" >> "$GITHUB_ENV"
+          exit 0
 
       - name: Commit automation reports
         shell: bash
@@ -159,3 +208,10 @@ jobs:
               sleep 5
             done
           fi
+
+      - name: Fail on evaluation gate failure
+        if: env.EVALUATION_GATE_EXIT != '' && env.EVALUATION_GATE_EXIT != '0'
+        shell: bash
+        run: |
+          echo "v4.18 evaluation gate failed with exit code $EVALUATION_GATE_EXIT"
+          exit "$EVALUATION_GATE_EXIT"

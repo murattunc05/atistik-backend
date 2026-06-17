@@ -14,11 +14,11 @@ from api_server import (
 from train_shadow_ml import feature_dict
 
 
-class V417RulesTest(unittest.TestCase):
+class V418RulesTest(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(_V4_VERSION, "4.17")
+        self.assertEqual(_V4_VERSION, "4.18")
 
-    def test_agf_is_allowed_for_maiden_sartli_one_and_capped_handikap(self):
+    def test_agf_is_allowed_only_for_maiden_and_sartli_one(self):
         maiden = resolve_v4_profile_weights(
             extract_v4_race_profile("Maiden", "1400", "Kum", 10)
         )
@@ -38,12 +38,99 @@ class V417RulesTest(unittest.TestCase):
         self.assertGreater(sart1["weights"]["agf_score"], 0)
         self.assertFalse(sart4["agfAllowedForRanking"])
         self.assertEqual(sart4["weights"]["agf_score"], 0)
-        self.assertTrue(handicap["agfAllowedForRanking"])
-        self.assertGreater(handicap["weights"]["agf_score"], 0)
+        self.assertFalse(handicap["agfAllowedForRanking"])
+        self.assertEqual(handicap["weights"]["agf_score"], 0)
         self.assertGreater(handicap["weights"]["pace_score"], handicap["weights"]["agf_score"])
         self.assertGreater(handicap["weights"]["form_trend"], 0)
         self.assertGreater(handicap["weights"]["trainer_score"], 0)
-        self.assertGreater(handicap["weights"]["track_suit"], 0)
+        self.assertGreater(handicap["weights"]["handicap_efficiency_score"], 0)
+
+    def test_core_profile_weights_are_normalized_and_agf_policy_is_explicit(self):
+        cases = [
+            ("Handikap 16", "Kum", False, 0.0),
+            ("KV-6", "Cim", False, 0.0),
+            ("Grup 2", "Cim", False, 0.0),
+            ("Satis 3", "Kum", False, 0.0),
+            ("Sartli 4", "Kum", False, 0.0),
+            ("Maiden", "Kum", True, 0.22),
+            ("Sartli 1", "Kum", True, 0.18),
+        ]
+        for race_type, track, agf_allowed, expected_agf_weight in cases:
+            with self.subTest(race_type=race_type):
+                resolved = resolve_v4_profile_weights(
+                    extract_v4_race_profile(race_type, "1400", track, 10)
+                )
+                self.assertEqual(resolved["agfAllowedForRanking"], agf_allowed)
+                self.assertAlmostEqual(sum(resolved["weights"].values()), 1.0, places=3)
+                self.assertAlmostEqual(
+                    resolved["weights"].get("agf_score", 0.0),
+                    expected_agf_weight,
+                    places=6,
+                )
+
+    def test_special_handikap_profiles_are_normalized_without_changing_ratios(self):
+        kum = resolve_v4_profile_weights(
+            extract_v4_race_profile("Handikap 15", "1500", "Kum", 12)
+        )
+        cim = resolve_v4_profile_weights(
+            extract_v4_race_profile("Handikap 15", "1600", "Cim", 12)
+        )
+
+        self.assertAlmostEqual(sum(kum["weights"].values()), 1.0, places=3)
+        self.assertAlmostEqual(kum["weights"]["pace_score"], 0.30, places=6)
+        self.assertEqual(kum["weights"].get("agf_score", 0.0), 0)
+
+        self.assertAlmostEqual(sum(cim["weights"].values()), 1.0, places=3)
+        self.assertAlmostEqual(cim["weights"]["form_trend"], 22.0 / 91.0, places=4)
+        self.assertAlmostEqual(cim["weights"]["distance_suit"], 10.0 / 91.0, places=4)
+        self.assertEqual(cim["weights"].get("agf_score", 0.0), 0)
+
+    def test_mojibake_sartli_profiles_as_sartli(self):
+        profile = extract_v4_race_profile("ŢARTLI 4/DHÖW", "1400", "Kum", 10)
+        self.assertEqual(profile["category"], "SARTLI")
+        self.assertEqual(profile["subtype"], "SART4")
+
+    def test_handikap15_kum_uses_special_agf_free_profile(self):
+        resolved = resolve_v4_profile_weights(
+            extract_v4_race_profile("Handikap 15", "1500", "Kum", 12)
+        )
+        self.assertEqual(resolved["selectedKey"], "HANDIKAP15|Kum")
+        self.assertFalse(resolved["agfAllowedForRanking"])
+        self.assertEqual(resolved["weights"]["agf_score"], 0)
+        self.assertGreater(resolved["weights"]["pace_score"], 0.25)
+        self.assertGreater(resolved["weights"]["running_style_proxy_score"], 0.10)
+
+    def test_handikap15_cim_uses_special_agf_free_profile(self):
+        resolved = resolve_v4_profile_weights(
+            extract_v4_race_profile("Handikap 15", "1600", "Cim", 12)
+        )
+        self.assertEqual(resolved["selectedKey"], "HANDIKAP15|Cim")
+        self.assertFalse(resolved["agfAllowedForRanking"])
+        self.assertEqual(resolved["weights"]["agf_score"], 0)
+        self.assertGreater(resolved["weights"]["form_trend"], resolved["weights"]["pace_score"])
+        self.assertGreater(resolved["weights"]["distance_suit"], 0.10)
+
+
+    def test_kv_profile_uses_agf_free_hp_calibration(self):
+        resolved = resolve_v4_profile_weights(
+            extract_v4_race_profile("KV-6", "1600", "Cim", 8)
+        )
+        self.assertEqual(resolved["selectedKey"], "KV")
+        self.assertFalse(resolved["agfAllowedForRanking"])
+        self.assertEqual(resolved["weights"]["agf_score"], 0)
+        self.assertGreater(resolved["weights"]["hp_score"], resolved["weights"]["degree_avg"])
+        self.assertEqual(resolved["weights"]["weight_impact"], 0)
+        self.assertEqual(resolved["weights"]["training_degree_score"], 0)
+
+    def test_sartli_two_plus_reduces_degree_average_weight(self):
+        resolved = resolve_v4_profile_weights(
+            extract_v4_race_profile("Sartli 4", "1400", "Kum", 10)
+        )
+        self.assertEqual(resolved["selectedKey"], "SART4")
+        self.assertFalse(resolved["agfAllowedForRanking"])
+        self.assertEqual(resolved["weights"]["agf_score"], 0)
+        self.assertGreater(resolved["weights"]["hp_score"], 0.07)
+        self.assertLess(resolved["weights"]["degree_avg"], 0.09)
 
 
     def test_shadow_ml_does_not_treat_sartli_19_as_sartli_1(self):
@@ -119,7 +206,7 @@ class V417RulesTest(unittest.TestCase):
         }
         apply_v4_shadow_mode([horse], "Handikap 15", "1400", "Kum")
         self.assertEqual(horse["v4Score"], max(0, horse["v4BaseScore"] - 5))
-        self.assertTrue(horse["agfAllowedForRanking"])
+        self.assertFalse(horse["agfAllowedForRanking"])
 
     def test_training_does_not_cancel_layoff_penalty(self):
         result = calculate_v4_ranking_penalties([], "14.06.2026", "45")
@@ -184,7 +271,7 @@ class V417RulesTest(unittest.TestCase):
         self.assertLess(result["score"], 35)
         self.assertEqual(result["similarDistanceRaceCount"], 0)
 
-    def test_handikap_agf_is_allowed_without_redistribution(self):
+    def test_handikap_agf_is_removed_and_redistributed(self):
         profile = extract_v4_race_profile("Handikap 15", "1400", "Kum", 10)
         weights, allowed = _v417_apply_agf_policy(profile, {
             "agf_score": 20,
@@ -192,26 +279,43 @@ class V417RulesTest(unittest.TestCase):
             "training_fitness": 10,
             "pace_score": 10,
         })
-        self.assertTrue(allowed)
-        self.assertEqual(weights["agf_score"], 20)
+        self.assertFalse(allowed)
+        self.assertEqual(weights["agf_score"], 0)
         self.assertEqual(weights["degree_avg"], 10)
-        self.assertEqual(weights["pace_score"], 10)
+        self.assertGreater(weights["pace_score"], 10)
+        self.assertGreater(weights["handicap_efficiency_score"], 0)
+        self.assertGreater(weights["handicap_class_transition_score"], 0)
 
-    def test_handikap_agf_value_is_capped_in_score(self):
-        weights = {"agf_score": 1.0}
+    def test_handikap_score_ignores_agf_value_after_policy(self):
+        profile = extract_v4_race_profile("Handikap 15", "1400", "Kum", 10)
+        resolved = resolve_v4_profile_weights(profile)
+        low_agf_metrics = {
+            "pace_score": 60,
+            "handicap_efficiency_score": 60,
+            "handicap_class_transition_score": 60,
+            "form_trend": 60,
+            "distance_suit": 60,
+            "distance_transition_score": 60,
+            "surface_transition_score": 60,
+            "weight_impact": 60,
+            "degree_avg": 60,
+            "degree_trend": 60,
+            "training_fitness": 60,
+            "training_degree_score": 60,
+            "jockey_score": 60,
+            "trainer_score": 60,
+            "bounce_score": 60,
+            "hp_score": 60,
+            "track_experience_score": 60,
+            "agf_score": 0,
+            "_has_agf": True,
+        }
+        high_agf_metrics = dict(low_agf_metrics)
+        high_agf_metrics["agf_score"] = 100
+        self.assertFalse(resolved["agfAllowedForRanking"])
         self.assertEqual(
-            calculate_v4_shadow_score(
-                {"agf_score": 100, "_has_agf": True, "_v4_handikap_agf_capped": True},
-                weights,
-            ),
-            82.0,
-        )
-        self.assertEqual(
-            calculate_v4_shadow_score(
-                {"agf_score": 10, "_has_agf": True, "_v4_handikap_agf_capped": True},
-                weights,
-            ),
-            35.0,
+            calculate_v4_shadow_score(low_agf_metrics, resolved["weights"]),
+            calculate_v4_shadow_score(high_agf_metrics, resolved["weights"]),
         )
 
 

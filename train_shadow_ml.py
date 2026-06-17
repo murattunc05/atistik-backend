@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 import re
+import unicodedata
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -97,10 +98,28 @@ def fold_text(value):
         "ü": "U",
         "ö": "O",
         "ç": "C",
+        "Ţ": "S",
+        "ţ": "S",
+        "Ț": "S",
+        "ț": "S",
+        "Þ": "S",
+        "Åž": "S",
+        "ÅŸ": "S",
+        "Ä°": "I",
+        "Ä±": "I",
+        "Äž": "G",
+        "ÄŸ": "G",
+        "Ãœ": "U",
+        "Ã¼": "U",
+        "Ã–": "O",
+        "Ã¶": "O",
+        "Ã‡": "C",
+        "Ã§": "C",
     }
     for src, dst in replacements.items():
         text = text.replace(src, dst)
-    return text
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def track_bucket(track):
@@ -184,7 +203,7 @@ def feature_dict(entry):
     is_handikap = "HANDIKAP" in folded_type
     is_sartli = "SART" in folded_type
     is_sart1 = bool(is_sartli and re.search(r"\bSART(?:LI)?\s*[-/]?\s*1\b", folded_type))
-    agf_allowed = bool(entry.get("agf_allowed_for_ranking", is_maiden or is_sart1 or is_handikap))
+    agf_allowed = bool(entry.get("agf_allowed_for_ranking", is_maiden or is_sart1))
 
     features = {key: safe_float(metrics.get(key), 50.0) for key in score_keys}
     if not agf_allowed:

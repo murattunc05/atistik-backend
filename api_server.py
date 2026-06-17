@@ -10,6 +10,7 @@ import numpy as np
 import time
 import re
 import urllib3
+import unicodedata
 from datetime import datetime
 
 app = Flask(__name__)
@@ -4769,6 +4770,14 @@ def calculate_dynamic_weights(metrics, race_type='default'):
         w['age_score']             = 0.02
         print(f"[WEIGHTS] Satis -> Form:%20 Hiz:%20 Bounce:%8")
 
+    is_maiden_for_agf = any(k in race_type_lower for k in ['maiden', 'mdn', 'md'])
+    is_sartli_1_for_agf = bool(
+        any(k in race_type_lower for k in ['şartl', 'sartl'])
+        and re.search(r'\b(?:şartli|şartlı|sartli|sartlı|sartl)\s*[-/]?\s*1\b', race_type_lower)
+    )
+    if not (is_maiden_for_agf or is_sartli_1_for_agf):
+        w['agf_score'] = 0.0
+
     # ── SENARYO: MAİDEN (İlk koşu — hiç yarış verisi yok) ──────────
     if total_races == 0:
         w['degree_avg']            = 0.0
@@ -5051,7 +5060,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.17"
+_V4_VERSION = "4.18"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -5439,6 +5448,222 @@ _V4_WEIGHT_PROFILES = {
     },
 }
 
+_V4_SARTLI_2_PLUS_WEIGHTS = {
+    'form_trend': 20.0,
+    'degree_avg': 8.0,
+    'degree_trend': 5.0,
+    'handicap_class_transition_score': 12.0,
+    'distance_suit': 8.0,
+    'distance_transition_score': 5.0,
+    'surface_transition_score': 5.0,
+    'pace_score': 7.0,
+    'running_style_proxy_score': 3.0,
+    'training_fitness': 5.0,
+    'training_degree_score': 3.0,
+    'jockey_score': 5.0,
+    'hp_score': 8.0,
+    'weight_impact': 3.0,
+    'trainer_score': 1.0,
+}
+
+_V4_PROFILE_WEIGHT_OVERRIDES = {
+    'HANDIKAP': {
+        'pace_score': 12.0,
+        'running_style_proxy_score': 6.0,
+        'handicap_efficiency_score': 12.0,
+        'handicap_class_transition_score': 12.0,
+        'form_trend': 11.0,
+        'distance_suit': 6.0,
+        'distance_transition_score': 5.0,
+        'surface_transition_score': 4.0,
+        'weight_impact': 8.0,
+        'degree_avg': 4.0,
+        'degree_trend': 3.0,
+        'training_fitness': 4.0,
+        'training_degree_score': 2.0,
+        'jockey_score': 3.0,
+        'trainer_score': 1.0,
+        'bounce_score': 2.0,
+        'hp_score': 4.0,
+        'track_experience_score': 1.0,
+    },
+    'MAIDEN': {
+        'agf_score': 22.0,
+        'pedigree': 18.0,
+        'training_fitness': 12.0,
+        'training_degree_score': 6.0,
+        'jockey_score': 8.0,
+        'trainer_score': 4.0,
+        'pace_score': 7.0,
+        'running_style_proxy_score': 3.0,
+        'hp_score': 4.0,
+        'weight_impact': 2.0,
+        'form_trend': 4.0,
+        'degree_avg': 3.0,
+        'degree_stability': 1.0,
+        'distance_suit': 3.0,
+        'surface_transition_score': 2.0,
+        'age_score': 1.0,
+    },
+    'SART1': {
+        'agf_score': 18.0,
+        'pedigree': 16.0,
+        'training_fitness': 12.0,
+        'training_degree_score': 6.0,
+        'jockey_score': 8.0,
+        'trainer_score': 4.0,
+        'pace_score': 7.0,
+        'running_style_proxy_score': 3.0,
+        'form_trend': 7.0,
+        'degree_avg': 5.0,
+        'hp_score': 3.0,
+        'weight_impact': 3.0,
+        'distance_suit': 4.0,
+        'surface_transition_score': 2.0,
+        'age_score': 2.0,
+    },
+    'SARTLI': _V4_SARTLI_2_PLUS_WEIGHTS,
+    'SART3': _V4_SARTLI_2_PLUS_WEIGHTS,
+    'SART4': _V4_SARTLI_2_PLUS_WEIGHTS,
+    'SART5': _V4_SARTLI_2_PLUS_WEIGHTS,
+    'KV': {
+        'degree_avg': 10.0,
+        'degree_trend': 6.0,
+        'degree_stability': 0.0,
+        'form_trend': 18.0,
+        'distance_suit': 10.0,
+        'distance_transition_score': 4.0,
+        'surface_transition_score': 3.0,
+        'jockey_score': 8.0,
+        'trainer_score': 4.0,
+        'pace_score': 7.0,
+        'running_style_proxy_score': 3.0,
+        'hp_score': 12.0,
+        'weight_impact': 0.0,
+        'training_fitness': 4.0,
+        'training_degree_score': 0.0,
+        'bounce_score': 4.0,
+        'age_score': 2.0,
+    },
+    'GRUP': {
+        'degree_avg': 18.0,
+        'degree_trend': 5.0,
+        'degree_stability': 2.0,
+        'form_trend': 18.0,
+        'distance_suit': 8.0,
+        'distance_transition_score': 4.0,
+        'surface_transition_score': 3.0,
+        'jockey_score': 8.0,
+        'trainer_score': 4.0,
+        'pace_score': 7.0,
+        'running_style_proxy_score': 3.0,
+        'hp_score': 5.0,
+        'weight_impact': 3.0,
+        'training_fitness': 4.0,
+        'training_degree_score': 2.0,
+        'bounce_score': 4.0,
+        'age_score': 2.0,
+    },
+    'SATIS': {
+        'form_trend': 15.0,
+        'degree_avg': 13.0,
+        'handicap_class_transition_score': 10.0,
+        'hp_score': 7.0,
+        'weight_impact': 7.0,
+        'distance_suit': 8.0,
+        'distance_transition_score': 4.0,
+        'surface_transition_score': 2.0,
+        'pace_score': 7.0,
+        'running_style_proxy_score': 3.0,
+        'jockey_score': 5.0,
+        'trainer_score': 3.0,
+        'training_fitness': 4.0,
+        'training_degree_score': 2.0,
+        'bounce_score': 4.0,
+        'age_score': 2.0,
+    },
+    'GLOBAL': {
+        'degree_avg': 12.0,
+        'form_trend': 12.0,
+        'hp_score': 10.0,
+        'distance_suit': 10.0,
+        'distance_transition_score': 6.0,
+        'surface_transition_score': 6.0,
+        'pace_score': 8.0,
+        'running_style_proxy_score': 4.0,
+        'training_fitness': 5.0,
+        'training_degree_score': 5.0,
+        'jockey_score': 5.0,
+        'weight_impact': 5.0,
+        'pedigree': 5.0,
+        'bounce_score': 4.0,
+        'age_score': 3.0,
+    },
+}
+
+for _profile_key, _weights in _V4_PROFILE_WEIGHT_OVERRIDES.items():
+    if _profile_key not in _V4_WEIGHT_PROFILES:
+        _V4_WEIGHT_PROFILES[_profile_key] = {
+            'level': 'subtype' if _profile_key.startswith('SART') and _profile_key != 'SARTLI' else 'category',
+            'sample_races': 0,
+            'status': 'visible_controlled',
+            'weights': {},
+        }
+    _V4_WEIGHT_PROFILES[_profile_key]['weights'] = dict(_weights)
+
+for _profile_key in [
+    'HANDIKAP14', 'HANDIKAP14|Kum',
+    'HANDIKAP15', 'HANDIKAP15|Kum', 'HANDIKAP15|Cim',
+    'HANDIKAP16', 'HANDIKAP16|Kum', 'HANDIKAP16|Cim',
+]:
+    if _profile_key in _V4_WEIGHT_PROFILES:
+        _V4_WEIGHT_PROFILES[_profile_key]['weights'] = dict(_V4_PROFILE_WEIGHT_OVERRIDES['HANDIKAP'])
+
+_V4_HANDIKAP15_KUM_WEIGHTS = {
+    'pace_score': 30.0,
+    'form_trend': 15.0,
+    'running_style_proxy_score': 12.0,
+    'handicap_class_transition_score': 9.0,
+    'handicap_efficiency_score': 8.0,
+    'jockey_score': 5.0,
+    'weight_impact': 4.0,
+    'hp_score': 4.0,
+    'degree_avg': 3.0,
+    'distance_suit': 2.0,
+    'training_fitness': 2.0,
+    'bounce_score': 2.0,
+    'surface_transition_score': 1.0,
+    'degree_trend': 1.0,
+    'track_experience_score': 1.0,
+    'trainer_score': 1.0,
+}
+
+_V4_HANDIKAP15_CIM_WEIGHTS = {
+    'form_trend': 22.0,
+    'running_style_proxy_score': 12.0,
+    'distance_suit': 10.0,
+    'pace_score': 8.0,
+    'weight_impact': 8.0,
+    'handicap_efficiency_score': 6.0,
+    'jockey_score': 5.0,
+    'degree_avg': 4.0,
+    'hp_score': 4.0,
+    'surface_transition_score': 4.0,
+    'handicap_class_transition_score': 2.0,
+    'track_experience_score': 2.0,
+    'trainer_score': 2.0,
+    'degree_trend': 1.0,
+    'training_fitness': 1.0,
+}
+
+if 'HANDIKAP15|Kum' in _V4_WEIGHT_PROFILES:
+    _V4_WEIGHT_PROFILES['HANDIKAP15|Kum']['sample_races'] = 21
+    _V4_WEIGHT_PROFILES['HANDIKAP15|Kum']['weights'] = dict(_V4_HANDIKAP15_KUM_WEIGHTS)
+
+if 'HANDIKAP15|Cim' in _V4_WEIGHT_PROFILES:
+    _V4_WEIGHT_PROFILES['HANDIKAP15|Cim']['sample_races'] = 19
+    _V4_WEIGHT_PROFILES['HANDIKAP15|Cim']['weights'] = dict(_V4_HANDIKAP15_CIM_WEIGHTS)
+
 
 def _v4_fold_text(value):
     text = str(value or '').upper()
@@ -5450,11 +5675,13 @@ def _v4_fold_text(value):
         'Ü': 'U', 'Ãœ': 'U', 'Ã¼': 'U',
         'Ö': 'O', 'Ã–': 'O', 'Ã¶': 'O',
         'Ç': 'C', 'Ã‡': 'C', 'Ã§': 'C',
-        'Ţ': 'S', 'ţ': 'S',
+        'Ţ': 'S', 'ţ': 'S', 'Ț': 'S', 'ț': 'S',
+        'Ð': 'D', 'Ý': 'I',
     }
     for src, dst in replacements.items():
         text = text.replace(src, dst)
-    return text
+    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 def _v4_distance_bucket(distance):
@@ -5560,11 +5787,10 @@ def _v417_is_handikap_profile(profile):
 
 
 def _v417_agf_allowed(profile):
-    """AGF is a ranking signal for Maiden, Sartli 1, and capped Handikap races."""
+    """AGF is a ranking signal only for low-data Maiden and Sartli 1 races."""
     return (
         profile.get('category') == 'MAIDEN'
         or profile.get('subtype') == 'SART1'
-        or _v417_is_handikap_profile(profile)
     )
 
 
@@ -5580,7 +5806,12 @@ def _v417_apply_agf_policy(profile, raw_weights):
     category = profile.get('category')
     subtype = profile.get('subtype')
 
-    if subtype == 'SART4':
+    if _v417_is_handikap_profile(profile):
+        weights['pace_score'] += agf_weight * 0.35
+        weights['handicap_efficiency_score'] += agf_weight * 0.25
+        weights['handicap_class_transition_score'] += agf_weight * 0.25
+        weights['distance_transition_score'] += agf_weight * 0.15
+    elif subtype == 'SART4':
         weights['hp_score'] += agf_weight
     elif category == 'SARTLI':
         weights['degree_stability'] += agf_weight
@@ -6157,9 +6388,8 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
     agf_allowed = bool(
         horse.get(
             'agfAllowedForRanking',
-            profile.get('category') in ('MAIDEN', 'HANDIKAP')
+            profile.get('category') == 'MAIDEN'
             or profile.get('subtype') == 'SART1'
-            or str(profile.get('subtype', '')).startswith('HANDIKAP'),
         )
     )
     if not agf_allowed:
