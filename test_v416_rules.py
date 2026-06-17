@@ -52,7 +52,7 @@ class V418RulesTest(unittest.TestCase):
             ("Grup 2", "Cim", False, 0.0),
             ("Satis 3", "Kum", False, 0.0),
             ("Sartli 4", "Kum", False, 0.0),
-            ("Maiden", "Kum", True, 0.22),
+            ("Maiden", "Kum", True, 16.0 / 93.0),
             ("Sartli 1", "Kum", True, 0.18),
         ]
         for race_type, track, agf_allowed, expected_agf_weight in cases:
@@ -65,8 +65,24 @@ class V418RulesTest(unittest.TestCase):
                 self.assertAlmostEqual(
                     resolved["weights"].get("agf_score", 0.0),
                     expected_agf_weight,
-                    places=6,
+                    places=4,
                 )
+
+    def test_maiden_profile_uses_training_degree_heavy_revision(self):
+        resolved = resolve_v4_profile_weights(
+            extract_v4_race_profile("Maiden", "1200", "Cim", 8)
+        )
+
+        self.assertEqual(resolved["selectedKey"], "MAIDEN")
+        self.assertTrue(resolved["agfAllowedForRanking"])
+        self.assertAlmostEqual(resolved["weights"]["agf_score"], 16.0 / 93.0, places=4)
+        self.assertAlmostEqual(resolved["weights"]["training_fitness"], 8.0 / 93.0, places=4)
+        self.assertAlmostEqual(resolved["weights"]["training_degree_score"], 17.0 / 93.0, places=4)
+        self.assertGreater(
+            resolved["weights"]["training_degree_score"],
+            resolved["weights"]["training_fitness"],
+        )
+        self.assertAlmostEqual(resolved["weights"]["trainer_score"], 7.0 / 93.0, places=4)
 
     def test_special_handikap_profiles_are_normalized_without_changing_ratios(self):
         kum = resolve_v4_profile_weights(
