@@ -443,7 +443,7 @@ def _github_file_text(data):
     return ''
 
 
-def github_restore():
+def github_restore(force=False):
     """
     Sunucu başlangıcında predictions.jsonl'ı GitHub'dan indirir.
     Dosya zaten varsa (ve boş değilse) dokunmaz.
@@ -455,7 +455,7 @@ def github_restore():
 
     local_stats = _prediction_file_stats()
     # Eğer dosya zaten gerçek JSON kayıtları içeriyorsa restore etme.
-    if local_stats['valid_json_lines'] > 0:
+    if local_stats['valid_json_lines'] > 0 and not force:
         print(f"[GH-BACKUP] predictions.jsonl zaten mevcut ({local_stats['valid_json_lines']} kayıt), restore atlanıyor.")
         # Yine de SHA'yı al (sonraki update için gerekli)
         try:
@@ -559,12 +559,15 @@ github_restore()
 def ml_restore():
     """GitHub yedeğinden predictions.jsonl dosyasını manuel geri yükler."""
     try:
+        payload = request.get_json(silent=True) or {}
+        force = str(request.args.get('force', payload.get('force', ''))).lower() in {'1', 'true', 'yes'}
         before = _prediction_file_stats()
-        restored = github_restore()
+        restored = github_restore(force=force)
         after = _prediction_file_stats()
         return jsonify({
             'success': True,
             'restored': bool(restored),
+            'force': force,
             'github_backup_configured': bool(_GITHUB_TOKEN and _GITHUB_ML_REPO),
             'before': before,
             'after': after,
