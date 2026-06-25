@@ -14,9 +14,9 @@ from api_server import (
 from train_shadow_ml import feature_dict
 
 
-class V418RulesTest(unittest.TestCase):
+class V419RulesTest(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(_V4_VERSION, "4.18")
+        self.assertEqual(_V4_VERSION, "4.19")
 
     def test_agf_is_allowed_only_for_maiden_and_sartli_one(self):
         maiden = resolve_v4_profile_weights(
@@ -97,8 +97,8 @@ class V418RulesTest(unittest.TestCase):
         self.assertEqual(kum["weights"].get("agf_score", 0.0), 0)
 
         self.assertAlmostEqual(sum(cim["weights"].values()), 1.0, places=3)
-        self.assertAlmostEqual(cim["weights"]["form_trend"], 22.0 / 91.0, places=4)
-        self.assertAlmostEqual(cim["weights"]["distance_suit"], 10.0 / 91.0, places=4)
+        self.assertAlmostEqual(cim["weights"]["form_trend"], 24.0 / 90.0, places=4)
+        self.assertAlmostEqual(cim["weights"]["distance_suit"], 10.0 / 90.0, places=4)
         self.assertEqual(cim["weights"].get("agf_score", 0.0), 0)
 
     def test_mojibake_sartli_profiles_as_sartli(self):
@@ -125,6 +125,19 @@ class V418RulesTest(unittest.TestCase):
         self.assertEqual(resolved["weights"]["agf_score"], 0)
         self.assertGreater(resolved["weights"]["form_trend"], resolved["weights"]["pace_score"])
         self.assertGreater(resolved["weights"]["distance_suit"], 0.10)
+        self.assertEqual(resolved["weights"]["handicap_class_transition_score"], 0)
+        self.assertEqual(resolved["weights"]["training_fitness"], 0)
+
+    def test_handikap16_kum_uses_v419_profile_without_distance_overconfidence(self):
+        resolved = resolve_v4_profile_weights(
+            extract_v4_race_profile("Handikap 16", "1500", "Kum", 12)
+        )
+        self.assertEqual(resolved["selectedKey"], "HANDIKAP16|Kum")
+        self.assertFalse(resolved["agfAllowedForRanking"])
+        self.assertEqual(resolved["weights"]["agf_score"], 0)
+        self.assertEqual(resolved["weights"]["handicap_class_transition_score"], 0)
+        self.assertEqual(resolved["weights"]["distance_suit"], 0)
+        self.assertGreater(resolved["weights"]["pace_score"], resolved["weights"]["handicap_efficiency_score"])
 
 
     def test_kv_profile_uses_agf_free_hp_calibration(self):

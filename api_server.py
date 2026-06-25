@@ -5063,7 +5063,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.18"
+_V4_VERSION = "4.19"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -5658,6 +5658,33 @@ _V4_HANDIKAP15_CIM_WEIGHTS = {
     'degree_trend': 1.0,
     'training_fitness': 1.0,
 }
+
+_V4_HANDIKAP_CLASS_FLAT_WEIGHTS = dict(_V4_PROFILE_WEIGHT_OVERRIDES['HANDIKAP'])
+_V4_HANDIKAP_CLASS_FLAT_WEIGHTS['handicap_class_transition_score'] = 0.0
+
+_V4_HANDIKAP16_PROFILE_WEIGHTS = dict(_V4_PROFILE_WEIGHT_OVERRIDES['HANDIKAP'])
+_V4_HANDIKAP16_PROFILE_WEIGHTS.update({
+    'handicap_class_transition_score': 0.0,
+    'distance_suit': 0.0,
+    'pace_score': _V4_HANDIKAP16_PROFILE_WEIGHTS['pace_score'] + 3.0,
+    'form_trend': _V4_HANDIKAP16_PROFILE_WEIGHTS['form_trend'] + 3.0,
+    'running_style_proxy_score': _V4_HANDIKAP16_PROFILE_WEIGHTS['running_style_proxy_score'] + 2.0,
+    'weight_impact': _V4_HANDIKAP16_PROFILE_WEIGHTS['weight_impact'] + 2.0,
+})
+
+_V4_HANDIKAP15_CIM_WEIGHTS['handicap_class_transition_score'] = 0.0
+_V4_HANDIKAP15_CIM_WEIGHTS['training_fitness'] = 0.0
+_V4_HANDIKAP15_CIM_WEIGHTS['hp_score'] *= 0.5
+_V4_HANDIKAP15_CIM_WEIGHTS['form_trend'] += 2.0
+_V4_HANDIKAP15_CIM_WEIGHTS['surface_transition_score'] += 2.0
+
+for _profile_key in ['HANDIKAP', 'HANDIKAP15']:
+    if _profile_key in _V4_WEIGHT_PROFILES:
+        _V4_WEIGHT_PROFILES[_profile_key]['weights'] = dict(_V4_HANDIKAP_CLASS_FLAT_WEIGHTS)
+
+for _profile_key in ['HANDIKAP16', 'HANDIKAP16|Kum', 'HANDIKAP16|Cim']:
+    if _profile_key in _V4_WEIGHT_PROFILES:
+        _V4_WEIGHT_PROFILES[_profile_key]['weights'] = dict(_V4_HANDIKAP16_PROFILE_WEIGHTS)
 
 if 'HANDIKAP15|Kum' in _V4_WEIGHT_PROFILES:
     _V4_WEIGHT_PROFILES['HANDIKAP15|Kum']['sample_races'] = 21
@@ -7639,6 +7666,8 @@ def analyze_race():
                     'v4_data_quality': _h.get('v4DataQuality', {}),
                     'days_since_last_race': _h.get('daysSinceLastRace'),
                     'last_race_distance': _h.get('lastRaceDistance'),
+                    'race_count': _h.get('raceCount'),
+                    'filtered_race_count': _h.get('filteredRaceCount'),
                     'rest_data_source': _h.get('restDataSource', 'unknown'),
                     'ranking_penalties': _h.get('rankingPenalties', []),
                     'agf_allowed_for_ranking': _h.get('agfAllowedForRanking', False),
