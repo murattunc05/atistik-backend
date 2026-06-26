@@ -40,6 +40,8 @@ DEFAULT_CONFIG = {
     "requestTimeoutSeconds": 180,
     "analyzeMaxAttempts": 3,
     "analyzeRetryDelaySeconds": 12,
+    "failedRaceRecoveryPasses": 2,
+    "failedRaceRecoveryDelaySeconds": 90,
 }
 
 
@@ -374,12 +376,117 @@ def analyze_race(
     return summary
 
 
+def refresh_analysis_totals(report: dict[str, Any]) -> None:
+    totals = report["totals"]
+    totals["ready"] = 0
+    totals["analyzed"] = 0
+    totals["skipped"] = 0
+    totals["failed"] = 0
+    for city in report.get("cities", []) or []:
+        for race in city.get("races", []) or []:
+            status = race.get("status")
+            if status == "ready":
+                totals["ready"] += 1
+            elif status == "analyzed":
+                totals["analyzed"] += 1
+            elif status == "failed":
+                totals["failed"] += 1
+            else:
+                totals["skipped"] += 1
+
+
+def set_analysis_status(report: dict[str, Any]) -> None:
+    totals = report["totals"]
+    if totals["failed"] and totals["analyzed"]:
+        report["status"] = "partial_success"
+    elif totals["failed"]:
+        report["status"] = "failed"
+    else:
+        report["status"] = "completed"
+
+
+def recover_failed_analysis_races(
+    args: argparse.Namespace,
+    report: dict[str, Any],
+    timeout: int,
+    dry_run: bool,
+    analyze_attempts: int,
+    retry_delay_seconds: int,
+    recovery_passes: int,
+    recovery_delay_seconds: int,
+) -> None:
+    if dry_run or recovery_passes <= 0:
+        return
+
+    failed_slots: list[tuple[dict[str, Any], int, dict[str, Any], dict[str, Any]]] = []
+    for city_entry in report.get("cities", []) or []:
+        for index, race_result in enumerate(city_entry.get("races", []) or []):
+            if race_result.get("status") == "failed":
+                failed_slots.append((city_entry, index, race_result, race_result))
+
+    if not failed_slots:
+        return
+
+    report["recovery"] = {
+        "enabled": True,
+        "passes": recovery_passes,
+        "delaySeconds": recovery_delay_seconds,
+        "initialFailed": len(failed_slots),
+        "recovered": 0,
+    }
+
+    for recovery_pass in range(1, recovery_passes + 1):
+        remaining = [
+            (city_entry, index, original, current)
+            for city_entry, index, original, current in failed_slots
+            if current.get("status") == "failed"
+        ]
+        if not remaining:
+            break
+        if recovery_delay_seconds > 0:
+            time.sleep(recovery_delay_seconds)
+
+        for city_entry, index, original, current in remaining:
+            source_race = dict(original)
+            source_race["city"] = city_entry.get("city", source_race.get("city", ""))
+            source_race["horses"] = source_race.get("horses", [])
+            recovered = analyze_race(
+                args.backend_url,
+                args.day,
+                source_race,
+                timeout,
+                dry_run,
+                analyze_attempts,
+                retry_delay_seconds,
+            )
+            recovered["recoveryPass"] = recovery_pass
+            if recovered.get("status") == "analyzed":
+                recovered["recoveredFromError"] = current.get("error", "")
+                recovered["previousRetryErrors"] = current.get("retryErrors", [])
+                city_entry["races"][index] = recovered
+                failed_slots = [
+                    (slot_city, slot_index, slot_original, recovered if slot_index == index and slot_city is city_entry else slot_current)
+                    for slot_city, slot_index, slot_original, slot_current in failed_slots
+                ]
+            else:
+                current["recoveryPassesTried"] = recovery_pass
+                current["latestRecoveryError"] = recovered.get("error", "")
+                current["latestRecoveryRetryErrors"] = recovered.get("retryErrors", [])
+
+    refresh_analysis_totals(report)
+    set_analysis_status(report)
+    report["recovery"]["finalFailed"] = report["totals"]["failed"]
+    report["recovery"]["recovered"] = report["recovery"]["initialFailed"] - report["recovery"]["finalFailed"]
+
+
 def analyze_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
     dry_run = args.mode == "analyze-dry-run"
     cities = args.cities or config.get("cities") or DEFAULT_CITIES
     timeout = int(config.get("requestTimeoutSeconds", 180))
     analyze_attempts = int(config.get("analyzeMaxAttempts", 3))
     analyze_retry_delay = int(config.get("analyzeRetryDelaySeconds", 12))
+    recovery_passes = int(config.get("failedRaceRecoveryPasses", 2))
+    recovery_delay = int(config.get("failedRaceRecoveryDelaySeconds", 90))
     started = now_utc_iso()
 
     report: dict[str, Any] = {
@@ -446,14 +553,18 @@ def analyze_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
                 report["totals"]["skipped"] += 1
         report["cities"].append(city_entry)
 
+    recover_failed_analysis_races(
+        args,
+        report,
+        timeout,
+        dry_run,
+        analyze_attempts,
+        analyze_retry_delay,
+        recovery_passes,
+        recovery_delay,
+    )
     report["finishedAt"] = now_utc_iso()
-    totals = report["totals"]
-    if totals["failed"] and totals["analyzed"]:
-        report["status"] = "partial_success"
-    elif totals["failed"]:
-        report["status"] = "failed"
-    else:
-        report["status"] = "completed"
+    set_analysis_status(report)
     return report
 
 
