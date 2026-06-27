@@ -14,9 +14,9 @@ from api_server import (
 from train_shadow_ml import feature_dict
 
 
-class V419RulesTest(unittest.TestCase):
+class V420RulesTest(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(_V4_VERSION, "4.19")
+        self.assertEqual(_V4_VERSION, "4.20")
 
     def test_agf_is_allowed_only_for_maiden_and_sartli_one(self):
         maiden = resolve_v4_profile_weights(
@@ -151,15 +151,30 @@ class V419RulesTest(unittest.TestCase):
         self.assertEqual(resolved["weights"]["weight_impact"], 0)
         self.assertEqual(resolved["weights"]["training_degree_score"], 0)
 
-    def test_sartli_two_plus_reduces_degree_average_weight(self):
+    def test_sartli_two_plus_profiles_use_v420_subtype_weights(self):
         resolved = resolve_v4_profile_weights(
             extract_v4_race_profile("Sartli 4", "1400", "Kum", 10)
         )
         self.assertEqual(resolved["selectedKey"], "SART4")
         self.assertFalse(resolved["agfAllowedForRanking"])
         self.assertEqual(resolved["weights"]["agf_score"], 0)
-        self.assertGreater(resolved["weights"]["hp_score"], 0.07)
-        self.assertLess(resolved["weights"]["degree_avg"], 0.09)
+        self.assertAlmostEqual(resolved["weights"]["hp_score"], 0.2838, places=4)
+        self.assertAlmostEqual(resolved["weights"]["trainer_score"], 0.1591, places=4)
+        self.assertGreater(resolved["weights"]["distance_suit"], resolved["weights"]["form_trend"])
+
+        sart3 = resolve_v4_profile_weights(
+            extract_v4_race_profile("Sartli 3", "1400", "Kum", 10)
+        )
+        self.assertEqual(sart3["selectedKey"], "SART3")
+        self.assertAlmostEqual(sart3["weights"]["form_trend"], 0.2824, places=4)
+        self.assertGreater(sart3["weights"]["track_experience_score"], 0.15)
+
+        sart5 = resolve_v4_profile_weights(
+            extract_v4_race_profile("Sartli 5", "1400", "Kum", 10)
+        )
+        self.assertEqual(sart5["selectedKey"], "SART5")
+        self.assertAlmostEqual(sart5["weights"]["form_trend"], 0.3047, places=4)
+        self.assertGreater(sart5["weights"]["track_suit"], 0.13)
 
 
     def test_shadow_ml_does_not_treat_sartli_19_as_sartli_1(self):

@@ -5063,7 +5063,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.19"
+_V4_VERSION = "4.20"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -5469,6 +5469,51 @@ _V4_SARTLI_2_PLUS_WEIGHTS = {
     'trainer_score': 1.0,
 }
 
+_V4_SART3_PROFILE_WEIGHTS = {
+    'form_trend': 28.236,
+    'hp_score': 18.056,
+    'distance_suit': 15.733,
+    'track_experience_score': 15.046,
+    'trainer_score': 6.984,
+    'degree_stability': 4.302,
+    'bounce_score': 3.376,
+    'jockey_score': 2.837,
+    'training_fitness': 2.069,
+    'pace_score': 1.512,
+    'degree_avg': 1.414,
+    'track_suit': 0.435,
+}
+
+_V4_SART4_PROFILE_WEIGHTS = {
+    'hp_score': 28.381,
+    'trainer_score': 15.908,
+    'distance_suit': 15.371,
+    'training_fitness': 12.122,
+    'bounce_score': 8.761,
+    'degree_avg': 4.765,
+    'degree_trend': 3.507,
+    'degree_stability': 3.417,
+    'track_suit': 2.074,
+    'pace_score': 1.941,
+    'jockey_score': 1.949,
+    'form_trend': 1.803,
+}
+
+_V4_SART5_PROFILE_WEIGHTS = {
+    'form_trend': 30.469,
+    'hp_score': 14.190,
+    'track_suit': 14.002,
+    'degree_stability': 7.867,
+    'bounce_score': 6.926,
+    'degree_trend': 5.776,
+    'training_degree_score': 5.746,
+    'degree_avg': 5.649,
+    'training_fitness': 4.415,
+    'pace_score': 4.366,
+    'jockey_score': 0.480,
+    'distance_suit': 0.116,
+}
+
 _V4_PROFILE_WEIGHT_OVERRIDES = {
     'HANDIKAP': {
         'pace_score': 12.0,
@@ -5526,9 +5571,9 @@ _V4_PROFILE_WEIGHT_OVERRIDES = {
         'age_score': 2.0,
     },
     'SARTLI': _V4_SARTLI_2_PLUS_WEIGHTS,
-    'SART3': _V4_SARTLI_2_PLUS_WEIGHTS,
-    'SART4': _V4_SARTLI_2_PLUS_WEIGHTS,
-    'SART5': _V4_SARTLI_2_PLUS_WEIGHTS,
+    'SART3': _V4_SART3_PROFILE_WEIGHTS,
+    'SART4': _V4_SART4_PROFILE_WEIGHTS,
+    'SART5': _V4_SART5_PROFILE_WEIGHTS,
     'KV': {
         'degree_avg': 10.0,
         'degree_trend': 6.0,
