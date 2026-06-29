@@ -2,10 +2,8 @@ name: Atistik Daily Automation
 
 on:
   schedule:
-    # 06:30 Europe/Istanbul early fallback for delayed/missed GitHub schedules
-    - cron: "30 3 * * *"
-    # 09:30 Europe/Istanbul
-    - cron: "30 6 * * *"
+    # 06:37 Europe/Istanbul
+    - cron: "37 3 * * *"
     # 22:45 Europe/Istanbul
     - cron: "45 19 * * *"
   workflow_dispatch:
@@ -82,7 +80,7 @@ jobs:
           MODE="${{ inputs.mode }}"
           SCHEDULE="${{ github.event.schedule }}"
           if [[ -z "$MODE" ]]; then
-            if [[ "$SCHEDULE" == "30 3 * * *" || "$SCHEDULE" == "30 6 * * *" ]]; then
+            if [[ "$SCHEDULE" == "37 3 * * *" ]]; then
               MODE="analyze"
             elif [[ "$SCHEDULE" == "45 19 * * *" ]]; then
               MODE="results"

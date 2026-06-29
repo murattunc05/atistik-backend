@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     "enabled": True,
     "timezone": "Europe/Istanbul",
     "cities": ["İstanbul", "Ankara", "İzmir", "Bursa", "Kocaeli"],
-    "analysisTime": "09:30",
+    "analysisTime": "06:37",
     "resultTime": "22:45",
     "resultRetryUntil": "23:30",
     "resultRetryIntervalMinutes": 10,
