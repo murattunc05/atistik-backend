@@ -3,7 +3,11 @@ import unittest
 from api_server import (
     _V4_VERSION,
     _v417_apply_agf_policy,
+    apply_v421_contextual_metrics,
     apply_v4_shadow_mode,
+    calculate_handicap_weight_relief_score,
+    calculate_pace_map_edge_score,
+    calculate_surface_switch_safety_score,
     calculate_v4_shadow_score,
     calculate_distance_transition_score,
     calculate_surface_transition_score,
@@ -14,9 +18,9 @@ from api_server import (
 from train_shadow_ml import feature_dict
 
 
-class V420RulesTest(unittest.TestCase):
+class V421RulesTest(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(_V4_VERSION, "4.20")
+        self.assertEqual(_V4_VERSION, "4.21")
 
     def test_agf_is_allowed_only_for_maiden_and_sartli_one(self):
         maiden = resolve_v4_profile_weights(
@@ -335,6 +339,11 @@ class V420RulesTest(unittest.TestCase):
         resolved = resolve_v4_profile_weights(profile)
         low_agf_metrics = {
             "pace_score": 60,
+            "pace_map_edge_score": 60,
+            "field_relative_value_score": 60,
+            "handicap_weight_relief_score": 60,
+            "surface_switch_safety_score": 60,
+            "favorite_risk_guard_score": 60,
             "handicap_efficiency_score": 60,
             "handicap_class_transition_score": 60,
             "form_trend": 60,
@@ -353,6 +362,11 @@ class V420RulesTest(unittest.TestCase):
             "track_experience_score": 60,
             "agf_score": 0,
             "_has_agf": True,
+            "_has_pace_map_edge": True,
+            "_has_field_relative_value": True,
+            "_has_handicap_weight_relief": True,
+            "_has_surface_switch_safety": True,
+            "_has_favorite_risk_guard": True,
         }
         high_agf_metrics = dict(low_agf_metrics)
         high_agf_metrics["agf_score"] = 100
@@ -361,6 +375,129 @@ class V420RulesTest(unittest.TestCase):
             calculate_v4_shadow_score(low_agf_metrics, resolved["weights"]),
             calculate_v4_shadow_score(high_agf_metrics, resolved["weights"]),
         )
+
+    def test_v421_handicap_weight_relief_rewards_hp_value_not_raw_weight(self):
+        all_hps = [35, 45, 55, 65, 75]
+        all_weights = [50, 52, 54, 56, 58]
+        efficient = calculate_handicap_weight_relief_score(65, 52, all_hps, all_weights)
+        burdened = calculate_handicap_weight_relief_score(65, 58, all_hps, all_weights)
+        self.assertGreater(efficient, burdened)
+        self.assertGreaterEqual(efficient, 50)
+
+    def test_v421_surface_switch_safety_penalizes_unproven_surface_switch(self):
+        unsafe = calculate_surface_switch_safety_score({
+            "score": 45,
+            "targetTrackRaceCount": 0,
+            "otherTrackRaceCount": 5,
+            "dominantTrack": "Cim",
+            "dominantTrackShare": 0.9,
+            "lastTrack": "Cim",
+            "lastThreeTargetCount": 0,
+        }, 45)
+        safe = calculate_surface_switch_safety_score({
+            "score": 65,
+            "targetTrackRaceCount": 4,
+            "otherTrackRaceCount": 2,
+            "dominantTrack": "Kum",
+            "dominantTrackShare": 0.7,
+            "lastTrack": "Kum",
+            "lastThreeTargetCount": 2,
+        }, 70)
+        self.assertLess(unsafe, 40)
+        self.assertGreater(safe, unsafe)
+
+    def test_v421_pace_map_edge_rewards_lone_speed_and_hot_pace_closer(self):
+        self.assertGreater(
+            calculate_pace_map_edge_score("KAÇAK", "YAVAŞ", 65, 8),
+            calculate_pace_map_edge_score("BEKLEME", "YAVAŞ", 45, 8),
+        )
+        self.assertGreater(
+            calculate_pace_map_edge_score("BEKLEME", "HIZLI", 65, 60),
+            calculate_pace_map_edge_score("KAÇAK", "HIZLI", 40, 60),
+        )
+
+    def test_v421_contextual_metrics_attach_without_agf_for_handicap_and_grup(self):
+        horses = [
+            {
+                "name": "A",
+                "_mf": {
+                    "form_trend": 70, "hp_score": 65, "degree_avg": 80,
+                    "distance_suit": 60, "surface_transition_score": 35,
+                    "weight_impact": 55, "handicap_efficiency_score": 45,
+                    "handicap_weight_relief_score": 50, "pace_score": 55,
+                    "pace_pressure": 35, "jockey_score": 70, "agf_score": 100,
+                    "distance_transition_score": 50,
+                },
+                "metricSourceFlags": {
+                    "hasSurfaceTransition": True,
+                    "targetTrackRaceCount": 0,
+                    "otherTrackRaceCount": 4,
+                },
+                "paceInfo": {"runningStyle": "KAÇAK", "paceScenario": "HIZLI"},
+                "scoreBreakdown": {},
+            },
+            {
+                "name": "B",
+                "_mf": {
+                    "form_trend": 50, "hp_score": 50, "degree_avg": 50,
+                    "distance_suit": 50, "surface_transition_score": 65,
+                    "weight_impact": 50, "handicap_efficiency_score": 60,
+                    "handicap_weight_relief_score": 64, "pace_score": 65,
+                    "pace_pressure": 35, "jockey_score": 50, "agf_score": 10,
+                    "distance_transition_score": 60,
+                },
+                "metricSourceFlags": {"hasSurfaceTransition": True, "targetTrackRaceCount": 3},
+                "paceInfo": {"runningStyle": "BEKLEME", "paceScenario": "HIZLI"},
+                "scoreBreakdown": {},
+            },
+            {
+                "name": "C",
+                "_mf": {
+                    "form_trend": 40, "hp_score": 40, "degree_avg": 40,
+                    "distance_suit": 45, "surface_transition_score": 55,
+                    "weight_impact": 50, "handicap_efficiency_score": 50,
+                    "handicap_weight_relief_score": 50, "pace_score": 50,
+                    "pace_pressure": 35, "jockey_score": 45, "agf_score": 5,
+                    "distance_transition_score": 50,
+                },
+                "metricSourceFlags": {"hasSurfaceTransition": True, "targetTrackRaceCount": 1},
+                "paceInfo": {"runningStyle": "TAKİPÇİ", "paceScenario": "HIZLI"},
+                "scoreBreakdown": {},
+            },
+        ]
+        apply_v421_contextual_metrics(horses, "Handikap 15")
+        self.assertTrue(horses[0]["metricSourceFlags"]["hasFavoriteRiskGuard"])
+        self.assertIn("field_relative_value_score", horses[0]["_mf"])
+        self.assertLess(horses[0]["_mf"]["favorite_risk_guard_score"], 70)
+
+    def test_shadow_ml_feature_dict_includes_v421_features(self):
+        entry = {
+            "race_type": "Handikap 15",
+            "track": "Kum",
+            "distance": "1400",
+            "features": {
+                "handicap_weight_relief_score": 61,
+                "field_relative_value_score": 62,
+                "pace_map_edge_score": 63,
+                "surface_switch_safety_score": 64,
+                "favorite_risk_guard_score": 65,
+                "class_peak_score": 66,
+                "elite_consensus_score": 67,
+            },
+            "metric_source_flags": {
+                "hasHandicapWeightRelief": True,
+                "hasFieldRelativeValue": True,
+                "hasPaceMapEdge": True,
+                "hasSurfaceSwitchSafety": True,
+                "hasFavoriteRiskGuard": True,
+                "hasClassPeak": True,
+                "hasEliteConsensus": True,
+            },
+        }
+        features = feature_dict(entry)
+        self.assertEqual(features["handicap_weight_relief_score"], 61)
+        self.assertEqual(features["elite_consensus_score"], 67)
+        self.assertEqual(features["has_field_relative_value"], 1.0)
 
 
 if __name__ == "__main__":

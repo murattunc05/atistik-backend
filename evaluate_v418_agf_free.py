@@ -73,7 +73,14 @@ def build_metric_flags(entry):
         "_has_surface_transition": has_source("hasSurfaceTransition", "surface_transition_score"),
         "_has_distance_transition": has_source("hasDistanceTransition", "distance_transition_score"),
         "_has_handicap_efficiency": has_source("hasHandicapEfficiency", "handicap_efficiency_score"),
+        "_has_handicap_weight_relief": has_source("hasHandicapWeightRelief", "handicap_weight_relief_score"),
         "_has_handicap_class_history": has_source("hasHandicapClassHistory", "handicap_class_transition_score"),
+        "_has_field_relative_value": has_source("hasFieldRelativeValue", "field_relative_value_score"),
+        "_has_pace_map_edge": has_source("hasPaceMapEdge", "pace_map_edge_score"),
+        "_has_surface_switch_safety": has_source("hasSurfaceSwitchSafety", "surface_switch_safety_score"),
+        "_has_favorite_risk_guard": has_source("hasFavoriteRiskGuard", "favorite_risk_guard_score"),
+        "_has_class_peak": has_source("hasClassPeak", "class_peak_score"),
+        "_has_elite_consensus": has_source("hasEliteConsensus", "elite_consensus_score"),
     }
 
 
@@ -402,7 +409,14 @@ SOURCE_GUARDS = {
     "surface_transition_score": "_has_surface_transition",
     "distance_transition_score": "_has_distance_transition",
     "handicap_efficiency_score": "_has_handicap_efficiency",
+    "handicap_weight_relief_score": "_has_handicap_weight_relief",
     "handicap_class_transition_score": "_has_handicap_class_history",
+    "field_relative_value_score": "_has_field_relative_value",
+    "pace_map_edge_score": "_has_pace_map_edge",
+    "surface_switch_safety_score": "_has_surface_switch_safety",
+    "favorite_risk_guard_score": "_has_favorite_risk_guard",
+    "class_peak_score": "_has_class_peak",
+    "elite_consensus_score": "_has_elite_consensus",
 }
 
 

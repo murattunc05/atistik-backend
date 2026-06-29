@@ -3350,6 +3350,30 @@ def calculate_handicap_efficiency_score(horse_hp, current_weight, all_hps, all_w
     return round(max(0.0, min(100.0, 50.0 + residual * 50.0)), 1)
 
 
+def calculate_handicap_weight_relief_score(horse_hp, current_weight, all_hps, all_weights):
+    """Score HP/kilo value relative to the current field.
+
+    High HP with a manageable carried weight should be rewarded. A high-HP
+    horse that is also top-weighted receives a smaller edge, and a light horse
+    with useful HP can still earn value in handicap races.
+    """
+    if horse_hp is None or current_weight is None or len(all_hps) < 3 or len(all_weights) < 3:
+        return 50.0
+
+    hp_min, hp_max = min(all_hps), max(all_hps)
+    weight_min, weight_max = min(all_weights), max(all_weights)
+    if hp_max <= hp_min or weight_max <= weight_min:
+        return 50.0
+
+    hp_pct = (float(horse_hp) - hp_min) / (hp_max - hp_min)
+    weight_pct = (float(current_weight) - weight_min) / (weight_max - weight_min)
+    hp_vs_weight = hp_pct - weight_pct
+    lightness_edge = 0.5 - weight_pct
+    practical_value = (hp_pct * 0.65) + ((1.0 - weight_pct) * 0.35)
+    score = 50.0 + hp_vs_weight * 34.0 + lightness_edge * 10.0 + (practical_value - 0.5) * 22.0
+    return round(max(0.0, min(100.0, score)), 1)
+
+
 def extract_handicap_level(race_type):
     """Return the numeric Handicap level from values such as ``Handikap 16/H2``."""
     folded = _v4_fold_text(race_type)
@@ -3834,6 +3858,304 @@ def calculate_pace_score(horse_style, pace_scenario):
 # ══════════════════════════════════════════════════════════════════
 # FAZ 6.2: ANTRENÖR WIN-RATE KATMANI (K13)
 # ══════════════════════════════════════════════════════════════════
+
+def calculate_pace_map_edge_score(horse_style, pace_scenario, pace_score=50.0, pace_pressure=0.0):
+    """Return a field-context pace edge score."""
+    try:
+        base = float(pace_score)
+    except (TypeError, ValueError):
+        base = 50.0
+    try:
+        pressure = float(pace_pressure)
+    except (TypeError, ValueError):
+        pressure = 0.0
+
+    style = str(horse_style or '').upper()
+    scenario = str(pace_scenario or '').upper()
+    bonus = 0.0
+    if scenario in {'HIZLI', 'FAST'}:
+        if 'BEKLEME' in style:
+            bonus += min(12.0, pressure * 0.18)
+        elif 'KA' in style:
+            bonus -= min(10.0, pressure * 0.14)
+    elif scenario in {'YAVAS', 'YAVAŞ', 'SLOW'}:
+        if 'KA' in style:
+            bonus += 12.0
+        elif 'BEKLEME' in style:
+            bonus -= 6.0
+    elif 'COK' in scenario or 'ÇOK' in scenario:
+        if 'TAK' in style:
+            bonus += 6.0
+        elif 'BEKLEME' in style:
+            bonus -= 9.0
+    return round(max(0.0, min(100.0, base + bonus)), 1)
+
+
+def calculate_surface_switch_safety_score(surface_transition, track_experience_score=50.0):
+    """Convert surface transition diagnostics into a positive safety score."""
+    if not isinstance(surface_transition, dict):
+        return 50.0
+    try:
+        base = float(surface_transition.get('score', 50.0))
+    except (TypeError, ValueError):
+        base = 50.0
+    try:
+        experience = float(track_experience_score)
+    except (TypeError, ValueError):
+        experience = 50.0
+
+    target_count = int(surface_transition.get('targetTrackRaceCount') or 0)
+    other_count = int(surface_transition.get('otherTrackRaceCount') or 0)
+    last_three_target = int(surface_transition.get('lastThreeTargetCount') or 0)
+    dominant_share = float(surface_transition.get('dominantTrackShare') or 0.0)
+    last_track = _v4_track_bucket(surface_transition.get('lastTrack') or '')
+    dominant_track = _v4_track_bucket(surface_transition.get('dominantTrack') or '')
+    has_switch = bool(last_track and dominant_track and last_track != dominant_track)
+
+    score = base * 0.65 + experience * 0.35
+    if target_count <= 0 and other_count >= 3:
+        score -= 18.0
+    elif target_count <= 1 and other_count >= 4:
+        score -= 10.0
+    if has_switch and target_count <= 1:
+        score -= 8.0
+    if last_three_target >= 2:
+        score += 8.0
+    if target_count >= 3:
+        score += 5.0
+    if dominant_share >= 0.75 and target_count == 0:
+        score -= 7.0
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+def _race_class_level(race_type):
+    folded = _v4_fold_text(race_type)
+    if re.search(r'\bG\s*[-/]?\s*1\b', folded) or 'GRUP 1' in folded or 'GROUP 1' in folded:
+        return 5.0
+    if re.search(r'\bG\s*[-/]?\s*2\b', folded) or 'GRUP 2' in folded or 'GROUP 2' in folded:
+        return 4.4
+    if re.search(r'\bG\s*[-/]?\s*3\b', folded) or 'GRUP 3' in folded or 'GROUP 3' in folded:
+        return 3.8
+    if 'GRUP' in folded or 'GROUP' in folded:
+        return 3.4
+    if 'LISTED' in folded or 'ACIK' in folded or 'AÇIK' in folded:
+        return 3.1
+    if 'KV' in folded:
+        return 2.4
+    if 'SART' in folded:
+        return 1.5
+    if 'HANDIKAP' in folded or 'HNDIKAP' in folded:
+        return 1.4
+    if 'MAIDEN' in folded:
+        return 1.0
+    return 1.2
+
+
+def calculate_class_peak_score(races, current_race_type):
+    """Measure proven class ceiling for elite races without using AGF."""
+    current_level = _race_class_level(current_race_type)
+    samples = []
+    peak_level = None
+    for race in (races or [])[:12]:
+        past_level = _race_class_level(race.get('raceType', '') or race.get('group', ''))
+        peak_level = past_level if peak_level is None else max(peak_level, past_level)
+        rank = _to_int(race.get('rank'))
+        if rank <= 0:
+            continue
+        class_fit = max(0.0, min(1.0, past_level / max(current_level, 1.0)))
+        if rank == 1:
+            finish_score = 1.0
+        elif rank == 2:
+            finish_score = 0.82
+        elif rank == 3:
+            finish_score = 0.68
+        elif rank <= 5:
+            finish_score = 0.48
+        else:
+            finish_score = 0.25
+        recency = max(0.45, 1.0 - len(samples) * 0.06)
+        samples.append((45.0 + class_fit * 35.0 + finish_score * 20.0) * recency)
+    if not samples:
+        return {
+            'score': 50.0,
+            'hasHistory': False,
+            'sampleCount': 0,
+            'currentLevel': current_level,
+            'peakLevel': peak_level,
+        }
+    score = max(samples) * 0.70 + (sum(samples) / len(samples)) * 0.30
+    return {
+        'score': round(max(0.0, min(100.0, score)), 1),
+        'hasHistory': True,
+        'sampleCount': len(samples),
+        'currentLevel': current_level,
+        'peakLevel': peak_level,
+    }
+
+
+def calculate_elite_consensus_score(metrics, class_peak_score=50.0):
+    """AGF-free consensus for group-class races."""
+    if not metrics:
+        return 50.0
+    pairs = [
+        ('hp_score', 0.18),
+        ('form_trend', 0.16),
+        ('trainer_score', 0.14),
+        ('track_experience_score', 0.13),
+        ('training_degree_score', 0.12),
+        ('surface_transition_score', 0.10),
+        ('distance_suit', 0.08),
+        ('degree_stability', 0.05),
+    ]
+    total = 0.0
+    weight = 0.0
+    for key, w in pairs:
+        try:
+            value = float(metrics.get(key, 50.0))
+        except (TypeError, ValueError):
+            value = 50.0
+        total += value * w
+        weight += w
+    try:
+        class_value = float(class_peak_score)
+    except (TypeError, ValueError):
+        class_value = 50.0
+    total += class_value * 0.18
+    weight += 0.18
+    return round(max(0.0, min(100.0, total / max(weight, 0.01))), 1)
+
+
+def _relative_score(value, values, spread_floor=4.0):
+    try:
+        clean_values = [float(v) for v in values if v is not None]
+        current = float(value)
+    except (TypeError, ValueError):
+        return 50.0
+    if len(clean_values) < 3:
+        return 50.0
+    spread = float(np.std(clean_values))
+    if spread < spread_floor:
+        return 50.0
+    mean = float(np.mean(clean_values))
+    z = (current - mean) / spread
+    return round(max(0.0, min(100.0, 50.0 + z * 14.0)), 1)
+
+
+def apply_v421_contextual_metrics(analyzed_horses, race_type=''):
+    """Attach v4.21 contextual scores that need the full race field."""
+    if not analyzed_horses:
+        return
+    profile = extract_v4_race_profile(race_type, '', '', len(analyzed_horses))
+    is_handikap = _v417_is_handikap_profile(profile)
+    is_grup = profile.get('category') == 'GRUP'
+    field_metric_keys = [
+        'form_trend', 'hp_score', 'degree_avg', 'distance_suit',
+        'surface_transition_score', 'weight_impact',
+        'handicap_efficiency_score', 'pace_score',
+    ]
+    field_values = {
+        key: [
+            (horse.get('_mf') or {}).get(key)
+            for horse in analyzed_horses
+            if horse.get('_mf')
+        ]
+        for key in field_metric_keys
+    }
+
+    for horse in analyzed_horses:
+        metrics = horse.get('_mf') or {}
+        if not metrics:
+            continue
+        flags = horse.get('metricSourceFlags') or {}
+        breakdown = horse.get('scoreBreakdown') or {}
+
+        if is_handikap:
+            relative_components = [
+                _relative_score(metrics.get(key), field_values.get(key, []))
+                for key in field_metric_keys
+            ]
+            actionable = [score for score in relative_components if abs(score - 50.0) >= 0.5]
+            field_relative = round(sum(actionable) / len(actionable), 1) if actionable else 50.0
+            metrics['field_relative_value_score'] = field_relative
+            metrics['_has_field_relative_value'] = bool(actionable)
+            flags['hasFieldRelativeValue'] = bool(actionable)
+            breakdown['fieldRelativeValueScore'] = field_relative
+
+            pace_edge = calculate_pace_map_edge_score(
+                (horse.get('paceInfo') or {}).get('runningStyle'),
+                (horse.get('paceInfo') or {}).get('paceScenario'),
+                metrics.get('pace_score', 50.0),
+                metrics.get('pace_pressure', 0.0),
+            )
+            metrics['pace_map_edge_score'] = pace_edge
+            metrics['_has_pace_map_edge'] = True
+            flags['hasPaceMapEdge'] = True
+            breakdown['paceMapEdgeScore'] = pace_edge
+
+            surface_safety = calculate_surface_switch_safety_score(
+                {
+                    'score': metrics.get('surface_transition_score', 50.0),
+                    'targetTrackRaceCount': flags.get('targetTrackRaceCount', 0),
+                    'otherTrackRaceCount': flags.get('otherTrackRaceCount', 0),
+                    'dominantTrack': flags.get('surfaceTransitionDominantTrack'),
+                    'dominantTrackShare': flags.get('surfaceTransitionDominantShare', 0.0),
+                    'lastTrack': flags.get('surfaceTransitionLastTrack'),
+                    'lastThreeTargetCount': flags.get('surfaceTransitionLastThreeTargetCount', 0),
+                },
+                metrics.get('track_experience_score', 50.0),
+            )
+            metrics['surface_switch_safety_score'] = surface_safety
+            metrics['_has_surface_switch_safety'] = flags.get('hasSurfaceTransition', False)
+            flags['hasSurfaceSwitchSafety'] = flags.get('hasSurfaceTransition', False)
+            breakdown['surfaceSwitchSafetyScore'] = surface_safety
+
+            visibility = (
+                float(metrics.get('degree_avg', 50.0)) * 0.25
+                + float(metrics.get('form_trend', 50.0)) * 0.20
+                + float(metrics.get('hp_score', 50.0)) * 0.20
+                + float(metrics.get('jockey_score', 50.0)) * 0.15
+                + float(metrics.get('agf_score', 50.0)) * 0.20
+            )
+            real_edge = (
+                field_relative * 0.26
+                + float(metrics.get('handicap_weight_relief_score', metrics.get('handicap_efficiency_score', 50.0))) * 0.24
+                + pace_edge * 0.20
+                + surface_safety * 0.18
+                + float(metrics.get('distance_transition_score', 50.0)) * 0.12
+            )
+            risk_gap = max(0.0, visibility - real_edge)
+            favorite_guard = round(max(0.0, min(100.0, 70.0 - risk_gap * 0.65 + max(0.0, real_edge - 55.0) * 0.20)), 1)
+            metrics['favorite_risk_guard_score'] = favorite_guard
+            metrics['_has_favorite_risk_guard'] = True
+            flags['hasFavoriteRiskGuard'] = True
+            breakdown['favoriteRiskGuardScore'] = favorite_guard
+        else:
+            for key in [
+                'field_relative_value_score', 'pace_map_edge_score',
+                'surface_switch_safety_score', 'favorite_risk_guard_score',
+            ]:
+                metrics.setdefault(key, 50.0)
+
+        if is_grup:
+            class_peak = calculate_class_peak_score(metrics.get('_horse_races', []), race_type)
+            metrics['class_peak_score'] = class_peak['score']
+            metrics['elite_consensus_score'] = calculate_elite_consensus_score(metrics, class_peak['score'])
+            metrics['_has_class_peak'] = class_peak['hasHistory']
+            metrics['_has_elite_consensus'] = True
+            flags['hasClassPeak'] = class_peak['hasHistory']
+            flags['classPeakSampleCount'] = class_peak['sampleCount']
+            flags['classPeakCurrentLevel'] = class_peak['currentLevel']
+            flags['classPeakLevel'] = class_peak['peakLevel']
+            flags['hasEliteConsensus'] = True
+            breakdown['classPeakScore'] = class_peak['score']
+            breakdown['eliteConsensusScore'] = metrics['elite_consensus_score']
+        else:
+            metrics.setdefault('class_peak_score', 50.0)
+            metrics.setdefault('elite_consensus_score', 50.0)
+
+        horse['metricSourceFlags'] = flags
+        horse['scoreBreakdown'] = breakdown
+
 
 _trainer_cache = {}  # { 'ANTRENOR_ADI_UPPER': { ...stats... } }
 _trainer_id_cache = {}
@@ -5063,7 +5385,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.20"
+_V4_VERSION = "4.21"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -5071,7 +5393,11 @@ _V4_METRIC_KEYS = [
     'distance_suit', 'distance_transition_score',
     'training_fitness', 'training_degree_score',
     'weight_impact', 'handicap_efficiency_score',
-    'handicap_class_transition_score', 'running_style_proxy_score',
+    'handicap_weight_relief_score', 'handicap_class_transition_score',
+    'field_relative_value_score', 'pace_map_edge_score',
+    'surface_switch_safety_score', 'favorite_risk_guard_score',
+    'class_peak_score', 'elite_consensus_score',
+    'running_style_proxy_score',
     'jockey_score', 'bounce_score',
     'pace_score', 'pedigree', 'hp_score', 'trainer_score', 'agf_score',
     'age_score',
@@ -5594,23 +5920,17 @@ _V4_PROFILE_WEIGHT_OVERRIDES = {
         'age_score': 2.0,
     },
     'GRUP': {
-        'degree_avg': 18.0,
-        'degree_trend': 5.0,
-        'degree_stability': 2.0,
-        'form_trend': 18.0,
-        'distance_suit': 8.0,
-        'distance_transition_score': 4.0,
-        'surface_transition_score': 3.0,
-        'jockey_score': 8.0,
-        'trainer_score': 4.0,
-        'pace_score': 7.0,
-        'running_style_proxy_score': 3.0,
-        'hp_score': 5.0,
-        'weight_impact': 3.0,
-        'training_fitness': 4.0,
-        'training_degree_score': 2.0,
-        'bounce_score': 4.0,
-        'age_score': 2.0,
+        'elite_consensus_score': 24.0,
+        'class_peak_score': 18.0,
+        'hp_score': 12.0,
+        'trainer_score': 10.0,
+        'track_experience_score': 10.0,
+        'form_trend': 8.0,
+        'training_degree_score': 6.0,
+        'surface_switch_safety_score': 4.0,
+        'distance_suit': 3.0,
+        'pace_map_edge_score': 3.0,
+        'degree_avg': 2.0,
     },
     'SATIS': {
         'form_trend': 15.0,
@@ -6052,7 +6372,14 @@ def calculate_v4_shadow_score(metrics, weights):
         'surface_transition_score': '_has_surface_transition',
         'distance_transition_score': '_has_distance_transition',
         'handicap_efficiency_score': '_has_handicap_efficiency',
+        'handicap_weight_relief_score': '_has_handicap_weight_relief',
         'handicap_class_transition_score': '_has_handicap_class_history',
+        'field_relative_value_score': '_has_field_relative_value',
+        'pace_map_edge_score': '_has_pace_map_edge',
+        'surface_switch_safety_score': '_has_surface_switch_safety',
+        'favorite_risk_guard_score': '_has_favorite_risk_guard',
+        'class_peak_score': '_has_class_peak',
+        'elite_consensus_score': '_has_elite_consensus',
     }
     for key, weight in weights.items():
         if weight <= 0:
@@ -6098,6 +6425,13 @@ def calculate_v4_data_quality(scored_horses):
     age_source_count = sum(1 for flags in source_flags if flags.get('hasAgeActionable'))
     track_experience_count = sum(1 for flags in source_flags if flags.get('hasTrackExperience'))
     handicap_efficiency_count = sum(1 for flags in source_flags if flags.get('hasHandicapEfficiency'))
+    handicap_weight_relief_count = sum(1 for flags in source_flags if flags.get('hasHandicapWeightRelief'))
+    field_relative_count = sum(1 for flags in source_flags if flags.get('hasFieldRelativeValue'))
+    pace_map_edge_count = sum(1 for flags in source_flags if flags.get('hasPaceMapEdge'))
+    surface_switch_safety_count = sum(1 for flags in source_flags if flags.get('hasSurfaceSwitchSafety'))
+    favorite_risk_guard_count = sum(1 for flags in source_flags if flags.get('hasFavoriteRiskGuard'))
+    class_peak_count = sum(1 for flags in source_flags if flags.get('hasClassPeak'))
+    elite_consensus_count = sum(1 for flags in source_flags if flags.get('hasEliteConsensus'))
 
     return {
         'zeroScoreCount': zero_count,
@@ -6112,6 +6446,13 @@ def calculate_v4_data_quality(scored_horses):
             'ageCount': age_source_count,
             'trackExperienceCount': track_experience_count,
             'handicapEfficiencyCount': handicap_efficiency_count,
+            'handicapWeightReliefCount': handicap_weight_relief_count,
+            'fieldRelativeValueCount': field_relative_count,
+            'paceMapEdgeCount': pace_map_edge_count,
+            'surfaceSwitchSafetyCount': surface_switch_safety_count,
+            'favoriteRiskGuardCount': favorite_risk_guard_count,
+            'classPeakCount': class_peak_count,
+            'eliteConsensusCount': elite_consensus_count,
             'runnerCount': runner_count,
         },
         'allZeroRace': all_zero,
@@ -6336,7 +6677,11 @@ _ML_FEATURE_KEYS = [
     "surface_transition_score", "distance_suit", "distance_transition_score",
     "training_fitness", "training_degree_score",
     "weight_impact", "handicap_efficiency_score",
-    "handicap_class_transition_score", "running_style_proxy_score",
+    "handicap_weight_relief_score", "handicap_class_transition_score",
+    "field_relative_value_score", "pace_map_edge_score",
+    "surface_switch_safety_score", "favorite_risk_guard_score",
+    "class_peak_score", "elite_consensus_score",
+    "running_style_proxy_score",
     "jockey_score", "bounce_score",
     "pace_score", "pedigree", "hp_score", "trainer_score",
 ]
@@ -6455,7 +6800,10 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'track_suit', 'track_experience_score', 'surface_transition_score',
         'distance_suit', 'distance_transition_score',
         'training_fitness', 'training_degree_score', 'weight_impact',
-        'handicap_efficiency_score',
+        'handicap_efficiency_score', 'handicap_weight_relief_score',
+        'field_relative_value_score', 'pace_map_edge_score',
+        'surface_switch_safety_score', 'favorite_risk_guard_score',
+        'class_peak_score', 'elite_consensus_score',
         'jockey_score', 'bounce_score', 'pace_score', 'pedigree',
         'hp_score', 'trainer_score', 'agf_score', 'age_score',
     ]
@@ -6473,6 +6821,13 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
     features.update({
         'handicap_class_transition_score': _shadow_safe_float(metrics.get('handicap_class_transition_score'), 50.0),
         'handicap_class_delta': _shadow_safe_float(metrics.get('handicap_class_delta'), 0.0),
+        'handicap_weight_relief_score': _shadow_safe_float(metrics.get('handicap_weight_relief_score'), 50.0),
+        'field_relative_value_score': _shadow_safe_float(metrics.get('field_relative_value_score'), 50.0),
+        'pace_map_edge_score': _shadow_safe_float(metrics.get('pace_map_edge_score'), 50.0),
+        'surface_switch_safety_score': _shadow_safe_float(metrics.get('surface_switch_safety_score'), 50.0),
+        'favorite_risk_guard_score': _shadow_safe_float(metrics.get('favorite_risk_guard_score'), 50.0),
+        'class_peak_score': _shadow_safe_float(metrics.get('class_peak_score'), 50.0),
+        'elite_consensus_score': _shadow_safe_float(metrics.get('elite_consensus_score'), 50.0),
         'running_style_proxy_score': _shadow_safe_float(metrics.get('running_style_proxy_score'), 50.0),
         'pace_pressure': _shadow_safe_float(metrics.get('pace_pressure'), 0.0),
     })
@@ -6502,7 +6857,14 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'has_surface_transition': 1.0 if flags.get('hasSurfaceTransition') else 0.0,
         'has_distance_transition': 1.0 if flags.get('hasDistanceTransition') else 0.0,
         'has_handicap_efficiency': 1.0 if flags.get('hasHandicapEfficiency') else 0.0,
+        'has_handicap_weight_relief': 1.0 if flags.get('hasHandicapWeightRelief') else 0.0,
         'has_handicap_class_history': 1.0 if flags.get('hasHandicapClassHistory') else 0.0,
+        'has_field_relative_value': 1.0 if flags.get('hasFieldRelativeValue') else 0.0,
+        'has_pace_map_edge': 1.0 if flags.get('hasPaceMapEdge') else 0.0,
+        'has_surface_switch_safety': 1.0 if flags.get('hasSurfaceSwitchSafety') else 0.0,
+        'has_favorite_risk_guard': 1.0 if flags.get('hasFavoriteRiskGuard') else 0.0,
+        'has_class_peak': 1.0 if flags.get('hasClassPeak') else 0.0,
+        'has_elite_consensus': 1.0 if flags.get('hasEliteConsensus') else 0.0,
         'days_since_last_race': _shadow_safe_float(horse.get('daysSinceLastRace'), -1.0),
         'last_race_distance': _shadow_safe_float(horse.get('lastRaceDistance'), 0.0),
         'long_layoff_bucket': _shadow_safe_float(metrics.get('_long_layoff_bucket'), 0.0),
@@ -6967,6 +7329,12 @@ def analyze_race():
                         valid_hps,
                         valid_current_weights,
                     ) if has_handicap_efficiency else 50.0
+                    handicap_weight_relief_score = calculate_handicap_weight_relief_score(
+                        horse_hp if has_valid_hp else None,
+                        current_weight_value,
+                        valid_hps,
+                        valid_current_weights,
+                    ) if has_handicap_efficiency else 50.0
 
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
                     original_horse['_raw_hp'] = raw_hp if raw_hp else '-';
@@ -7024,9 +7392,16 @@ def analyze_race():
                         'weight_impact': weight_impact_score,   # FAZ 4.2
                         # Shadow feature: HP ile taşınan kiloyu birlikte değerlendirir.
                         'handicap_efficiency_score': handicap_efficiency_score,
+                        'handicap_weight_relief_score': handicap_weight_relief_score,
                         'handicap_class_transition_score': handicap_class_transition['score'],
                         'handicap_class_delta': handicap_class_transition['delta'],
                         'running_style_proxy_score': 50.0,
+                        'field_relative_value_score': 50.0,
+                        'pace_map_edge_score': 50.0,
+                        'surface_switch_safety_score': 50.0,
+                        'favorite_risk_guard_score': 50.0,
+                        'class_peak_score': 50.0,
+                        'elite_consensus_score': 50.0,
                         'pace_pressure': 0.0,
                         'jockey_score': jockey_score_val,       # FAZ 4.3
                         'bounce_score': bounce_score_val,       # FAZ 4.4
@@ -7049,7 +7424,14 @@ def analyze_race():
                         '_has_hp':        has_hp_source,
                         '_has_weight':    has_weight_source,
                         '_has_handicap_efficiency': has_handicap_efficiency,
+                        '_has_handicap_weight_relief': has_handicap_efficiency,
                         '_has_handicap_class_history': handicap_class_transition['hasHistory'],
+                        '_has_field_relative_value': False,
+                        '_has_pace_map_edge': False,
+                        '_has_surface_switch_safety': False,
+                        '_has_favorite_risk_guard': False,
+                        '_has_class_peak': False,
+                        '_has_elite_consensus': False,
                         '_has_jockey':    has_jockey_source,
                         '_has_age':       has_age_actionable,
                         '_has_track_experience': has_track_experience,
@@ -7103,10 +7485,12 @@ def analyze_race():
                         'rawHp': raw_hp or None,
                         'validHpCountInRace': len(valid_hps),
                         'hasHandicapEfficiency': has_handicap_efficiency,
+                        'hasHandicapWeightRelief': has_handicap_efficiency,
                         'rawCurrentWeight': current_weight or None,
                         'parsedCurrentWeight': current_weight_value,
                         'validWeightCountInRace': len(valid_current_weights),
                         'handicapEfficiencyScore': handicap_efficiency_score,
+                        'handicapWeightReliefScore': handicap_weight_relief_score,
                         'hasHandicapClassHistory': handicap_class_transition['hasHistory'],
                         'handicapClassCurrentLevel': handicap_class_transition['currentLevel'],
                         'handicapClassHistoricalLevel': handicap_class_transition['historicalLevel'],
@@ -7244,6 +7628,7 @@ def analyze_race():
                         'scoreBreakdown': {
                             'weightImpactScore': weight_impact_score,
                             'handicapEfficiencyScore': handicap_efficiency_score,
+                            'handicapWeightReliefScore': handicap_weight_relief_score,
                             'handicapClassTransitionScore': handicap_class_transition['score'],
                             'handicapClassDelta': handicap_class_transition['delta'],
                             'jockeyScore': jockey_score_val,
@@ -7468,6 +7853,8 @@ def analyze_race():
         # ═══════════════════════════════════════════════════════════
         # FAZ 8: ML BLEND (XGBoost + Kural Tabanlı Hibrit Skor)
         # ═══════════════════════════════════════════════════════════
+        apply_v421_contextual_metrics(analyzed_horses, race_type=race_type)
+
         blend_mode = 'rules_only'
         if _ml_model is not None:
             try:
@@ -7743,7 +8130,11 @@ def analyze_race():
                             'surface_transition_score','distance_suit','distance_transition_score',
                             'training_fitness','training_degree_score',
                             'weight_impact','handicap_efficiency_score',
+                            'handicap_weight_relief_score',
                             'handicap_class_transition_score','handicap_class_delta',
+                            'field_relative_value_score','pace_map_edge_score',
+                            'surface_switch_safety_score','favorite_risk_guard_score',
+                            'class_peak_score','elite_consensus_score',
                             'jockey_score','bounce_score','pace_score',
                             'running_style_proxy_score','pace_pressure','pedigree','hp_score',
                             'agf_score','trainer_score','age_score',
