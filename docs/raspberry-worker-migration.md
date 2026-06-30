@@ -74,6 +74,15 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now atistik-raspberry-api.service
 ```
 
+Kod veya dependency guncelledikten sonra image'i manuel yenile:
+
+```bash
+cd /opt/atistik/backend
+git pull --ff-only origin main
+docker compose -f docker-compose.raspberry.yml build atistik-api
+sudo systemctl restart atistik-raspberry-api.service
+```
+
 Cutover gunune kadar timer'lari acma:
 
 ```bash

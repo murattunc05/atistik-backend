@@ -8,7 +8,7 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/atistik/backend
-ExecStart=/usr/bin/docker compose -f docker-compose.raspberry.yml up -d --build atistik-api
+ExecStart=/usr/bin/docker compose -f docker-compose.raspberry.yml up -d atistik-api
 ExecStop=/usr/bin/docker compose -f docker-compose.raspberry.yml stop atistik-api
 TimeoutStartSec=600
 

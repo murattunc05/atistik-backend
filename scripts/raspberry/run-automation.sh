@@ -41,7 +41,7 @@ else
   git_ml -C "$DATA_DIR" pull --rebase origin main
 fi
 
-docker compose -f "$COMPOSE_FILE" up -d --build atistik-api
+docker compose -f "$COMPOSE_FILE" up -d atistik-api
 
 DATE_ARGS=()
 if [[ -n "$RUN_DATE" ]]; then
