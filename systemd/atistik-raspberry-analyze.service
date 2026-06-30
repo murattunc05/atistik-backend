@@ -1,0 +1,10 @@
+[Unit]
+Description=Atistik Raspberry morning analysis
+After=atistik-raspberry-api.service network-online.target
+Wants=atistik-raspberry-api.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/atistik/backend
+ExecStart=/opt/atistik/backend/scripts/raspberry/run-automation.sh analyze
+TimeoutStartSec=7200

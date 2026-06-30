@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Atistik Raspberry evening results at 22:45 Istanbul
+
+[Timer]
+OnCalendar=*-*-* 22:45:00
+Persistent=true
+Unit=atistik-raspberry-results.service
+
+[Install]
+WantedBy=timers.target

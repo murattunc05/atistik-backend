@@ -1,0 +1,14 @@
+.git
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+env/
+automation/__pycache__/
+reports/
+*.log
+predictions.jsonl
+.env
+state/
+ml-data/

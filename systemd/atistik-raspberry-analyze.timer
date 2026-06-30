@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Atistik Raspberry morning analysis at 06:37 Istanbul
+
+[Timer]
+OnCalendar=*-*-* 06:37:00
+Persistent=true
+Unit=atistik-raspberry-analyze.service
+
+[Install]
+WantedBy=timers.target

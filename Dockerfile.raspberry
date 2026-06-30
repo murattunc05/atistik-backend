@@ -1,0 +1,28 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=5000
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        git \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+RUN chmod +x scripts/raspberry/entrypoint-api.sh \
+    && chmod +x scripts/raspberry/run-automation.sh
+
+EXPOSE 5000
+
+ENTRYPOINT ["scripts/raspberry/entrypoint-api.sh"]
+CMD ["gunicorn", "api_server:app", "--bind", "0.0.0.0:5000", "--timeout", "240"]

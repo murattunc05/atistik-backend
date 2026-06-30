@@ -1,0 +1,42 @@
+services:
+  atistik-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.raspberry
+    image: atistik-api:raspberry
+    container_name: atistik-api
+    restart: unless-stopped
+    env_file:
+      - .env.raspberry
+    environment:
+      PORT: "5000"
+      ATISTIK_PREDICTIONS_PATH: /state/predictions.jsonl
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./state:/state
+      - ./logs:/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  atistik-worker:
+    image: atistik-api:raspberry
+    depends_on:
+      atistik-api:
+        condition: service_healthy
+    env_file:
+      - .env.raspberry
+    environment:
+      ATISTIK_BACKEND_URL: http://atistik-api:5000
+      AUTOMATION_DATA_DIR: /ml-data
+      ATISTIK_WORKER_MODE: docker
+    volumes:
+      - ./ml-data:/ml-data
+      - ./logs:/logs
+      - ./state:/state
+    entrypoint: []
+    command: ["python", "automation/atistik_daily_job.py", "--mode", "analyze-dry-run", "--backend-url", "http://atistik-api:5000", "--data-dir", "/ml-data"]
