@@ -1178,7 +1178,7 @@ def get_daily_races():
             'Şanlıurfa':'6',
             'Diyarbakır':'8',
             'Elazığ':   '9',
-            'Kocaeli':  '10'
+            'Kocaeli':  '9'
         }
 
         city = data.get('city', 'İstanbul')

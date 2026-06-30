@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from automation.atistik_daily_job import analyze_mode
+from automation.atistik_daily_job import analyze_mode, load_city_program
 
 
 class FailedRaceRecoveryTest(unittest.TestCase):
@@ -76,6 +76,29 @@ class FailedRaceRecoveryTest(unittest.TestCase):
         self.assertEqual(report["recovery"]["initialFailed"], 1)
         self.assertEqual(report["recovery"]["recovered"], 1)
         self.assertTrue(report["cities"][0]["races"][0]["recoveredFromError"] == "")
+
+    def test_load_city_program_retries_transient_daily_program_failure(self):
+        first_failure = {"success": False, "error": "HTTP 503", "http_status": 503}
+        city_list = {
+            "success": True,
+            "cities": [{"id": "9", "name": "Kocaeli"}],
+            "races": [],
+        }
+        city_program = {
+            "success": True,
+            "city": "Kocaeli",
+            "cityId": "9",
+            "races": [{"raceId": "225890", "raceNo": "1", "horses": [{"name": "A"}]}],
+        }
+
+        with patch("automation.atistik_daily_job.http_json", side_effect=[first_failure, city_list, city_program]) as http, \
+             patch("automation.atistik_daily_job.time.sleep"):
+            program = load_city_program("https://example.test", date(2026, 6, 30), "Kocaeli", 30)
+
+        self.assertEqual(http.call_count, 3)
+        self.assertEqual(program["status"], "ok")
+        self.assertEqual(program["cityId"], "9")
+        self.assertEqual(len(program["races"]), 1)
 
 
 if __name__ == "__main__":

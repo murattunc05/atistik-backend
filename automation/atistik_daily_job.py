@@ -147,9 +147,13 @@ def http_json(
         except Exception:
             parsed = {"error": body}
         parsed["http_status"] = exc.code
+        if not str(parsed.get("error", "")).strip():
+            parsed["error"] = f"HTTP {exc.code}"
         return {"success": False, **parsed}
     except URLError as exc:
         return {"success": False, "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": repr(exc)}
 
 
 def load_config(data_dir: Path) -> dict[str, Any]:
@@ -201,10 +205,33 @@ def find_city(cities: list[dict[str, Any]], wanted: str) -> dict[str, str] | Non
     return None
 
 
+def get_json_with_retries(
+    method: str,
+    url: str,
+    *,
+    timeout: int,
+    attempts: int = 3,
+    delay_seconds: int = 5,
+) -> dict[str, Any]:
+    last: dict[str, Any] = {}
+    for attempt in range(1, max(1, attempts) + 1):
+        last = http_json(method, url, timeout=timeout)
+        if last.get("success"):
+            if attempt > 1:
+                last["_retryAttempts"] = attempt
+            return last
+        if attempt < attempts:
+            time.sleep(delay_seconds)
+    if attempts > 1:
+        last["_retryAttempts"] = attempts
+    return last
+
+
 def load_city_program(base_url: str, day: date, city: str, timeout: int) -> dict[str, Any]:
-    first = http_json(
+    first_url = endpoint(base_url, "/daily-program", {"date": date_slash(day)})
+    first = get_json_with_retries(
         "GET",
-        endpoint(base_url, "/daily-program", {"date": date_slash(day)}),
+        first_url,
         timeout=timeout,
     )
     if not first.get("success"):
@@ -212,6 +239,8 @@ def load_city_program(base_url: str, day: date, city: str, timeout: int) -> dict
             "city": city,
             "status": "failed",
             "error": first.get("error", "daily-program failed"),
+            "url": first_url,
+            "retryAttempts": first.get("_retryAttempts"),
             "races": [],
         }
 
@@ -225,13 +254,14 @@ def load_city_program(base_url: str, day: date, city: str, timeout: int) -> dict
             "races": [],
         }
 
-    program = http_json(
+    program_url = endpoint(
+        base_url,
+        "/daily-program",
+        {"date": date_slash(day), "cityId": match["id"], "cityName": match["name"]},
+    )
+    program = get_json_with_retries(
         "GET",
-        endpoint(
-            base_url,
-            "/daily-program",
-            {"date": date_slash(day), "cityId": match["id"], "cityName": match["name"]},
-        ),
+        program_url,
         timeout=timeout,
     )
     if not program.get("success"):
@@ -240,6 +270,8 @@ def load_city_program(base_url: str, day: date, city: str, timeout: int) -> dict
             "cityId": match["id"],
             "status": "failed",
             "error": program.get("error", "daily-program city failed"),
+            "url": program_url,
+            "retryAttempts": program.get("_retryAttempts"),
             "races": [],
         }
 
