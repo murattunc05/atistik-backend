@@ -5,6 +5,8 @@ Wants=atistik-raspberry-api.service network-online.target
 
 [Service]
 Type=oneshot
+User=pi
+Group=pi
 WorkingDirectory=/opt/atistik/backend
 ExecStart=/opt/atistik/backend/scripts/raspberry/run-automation.sh analyze
 TimeoutStartSec=7200

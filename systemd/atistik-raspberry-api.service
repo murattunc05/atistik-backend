@@ -7,6 +7,8 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+User=pi
+Group=pi
 WorkingDirectory=/opt/atistik/backend
 ExecStart=/usr/bin/docker compose -f docker-compose.raspberry.yml up -d atistik-api
 ExecStop=/usr/bin/docker compose -f docker-compose.raspberry.yml stop atistik-api
