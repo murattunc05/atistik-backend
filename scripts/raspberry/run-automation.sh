@@ -32,10 +32,20 @@ git_ml() {
   git -c "http.https://github.com/.extraheader=$GIT_AUTH_HEADER" "$@"
 }
 
+fix_data_permissions() {
+  if [[ -d "$DATA_DIR/automation" ]]; then
+    docker compose -f "$COMPOSE_FILE" run --rm atistik-worker \
+      sh -c "chown -R $(id -u):$(id -g) /ml-data/automation" >/dev/null 2>&1 || true
+  fi
+}
+
+trap fix_data_permissions EXIT
+
 if [[ ! -d "$DATA_DIR/.git" ]]; then
   rm -rf "$DATA_DIR"
   git_ml clone "https://github.com/${ML_DATA_REPO}.git" "$DATA_DIR"
 else
+  fix_data_permissions
   git_ml -C "$DATA_DIR" fetch origin main
   git -C "$DATA_DIR" checkout main
   git_ml -C "$DATA_DIR" pull --rebase origin main
@@ -61,6 +71,8 @@ docker compose -f "$COMPOSE_FILE" run --rm atistik-worker \
     --backend-url "$BACKEND_URL" \
     --data-dir /ml-data \
   | tee "$LOG_FILE"
+
+fix_data_permissions
 
 git -C "$DATA_DIR" config user.name "atistik-raspberry"
 git -C "$DATA_DIR" config user.email "atistik-raspberry@users.noreply.github.com"
