@@ -43,6 +43,10 @@ fi
 
 docker compose -f "$COMPOSE_FILE" up -d atistik-api
 
+echo "[ATISTIK] Syncing predictions.jsonl from GitHub backup before ${MODE}..."
+docker compose -f "$COMPOSE_FILE" run --rm atistik-worker \
+  curl -fsS -X POST "${BACKEND_URL}/api/ml-restore?force=true" >/dev/null
+
 DATE_ARGS=()
 if [[ -n "$RUN_DATE" ]]; then
   DATE_ARGS=(--date "$RUN_DATE")
