@@ -1,11 +1,6 @@
 name: Atistik Daily Automation
 
 on:
-  schedule:
-    # 06:37 Europe/Istanbul
-    - cron: "37 3 * * *"
-    # 22:45 Europe/Istanbul
-    - cron: "45 19 * * *"
   workflow_dispatch:
     inputs:
       mode:

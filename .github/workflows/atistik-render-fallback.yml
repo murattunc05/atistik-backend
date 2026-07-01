@@ -1,6 +1,11 @@
 name: Atistik Render Fallback
 
 on:
+  schedule:
+    # 07:45 Europe/Istanbul: use Render only if Raspberry did not publish analysis.
+    - cron: "45 4 * * *"
+    # 23:40 Europe/Istanbul: use Render only if Raspberry did not publish results.
+    - cron: "40 20 * * *"
   workflow_dispatch:
     inputs:
       kind:
@@ -52,28 +57,59 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Resolve date and backend
+      - name: Resolve fallback mode, date, and backend
         id: resolve
         shell: bash
         run: |
           set -euo pipefail
+
+          KIND="${{ inputs.kind }}"
+          SCHEDULE="${{ github.event.schedule }}"
+          if [[ -z "$KIND" ]]; then
+            if [[ "$SCHEDULE" == "45 4 * * *" ]]; then
+              KIND="analyze"
+            elif [[ "$SCHEDULE" == "40 20 * * *" ]]; then
+              KIND="results"
+            else
+              KIND="analyze"
+            fi
+          fi
+
           RUN_DATE="${{ inputs.date }}"
           if [[ -z "$RUN_DATE" ]]; then
-            RUN_DATE="$(TZ=Europe/Istanbul date +%Y-%m-%d)"
+            LOCAL_HOUR="$(TZ=Europe/Istanbul date +%H)"
+            LOCAL_HOUR_NUM=$((10#$LOCAL_HOUR))
+            if [[ "$KIND" == "results" && "$LOCAL_HOUR_NUM" -lt 6 ]]; then
+              RUN_DATE="$(TZ=Europe/Istanbul date -d 'yesterday' +%Y-%m-%d)"
+            else
+              RUN_DATE="$(TZ=Europe/Istanbul date +%Y-%m-%d)"
+            fi
           fi
+
+          MAX_ATTEMPTS="${{ inputs.max_attempts }}"
+          if [[ -z "$MAX_ATTEMPTS" ]]; then
+            if [[ "$KIND" == "results" ]]; then
+              MAX_ATTEMPTS="5"
+            else
+              MAX_ATTEMPTS="1"
+            fi
+          fi
+
           BACKEND_URL="${ATISTIK_RENDER_BACKEND_URL:-https://atistik-backend.onrender.com}"
+          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
           echo "date=$RUN_DATE" >> "$GITHUB_OUTPUT"
+          echo "max_attempts=$MAX_ATTEMPTS" >> "$GITHUB_OUTPUT"
           echo "backend_url=$BACKEND_URL" >> "$GITHUB_OUTPUT"
 
       - name: Run fallback checker
         shell: bash
         run: |
           python automation/fallback_checker.py \
-            --kind "${{ inputs.kind }}" \
+            --kind "${{ steps.resolve.outputs.kind }}" \
             --date "${{ steps.resolve.outputs.date }}" \
             --backend-url "${{ steps.resolve.outputs.backend_url }}" \
             --data-dir "$GITHUB_WORKSPACE/ml-data" \
-            --max-attempts "${{ inputs.max_attempts }}" \
+            --max-attempts "${{ steps.resolve.outputs.max_attempts }}" \
             --allow-render-run
 
       - name: Commit fallback reports
@@ -96,7 +132,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No fallback report changes."
           else
-            git commit -m "Atistik Render fallback ${{ inputs.kind }} ${{ steps.resolve.outputs.date }}"
+            git commit -m "Atistik Render fallback ${{ steps.resolve.outputs.kind }} ${{ steps.resolve.outputs.date }}"
             for attempt in 1 2 3 4 5; do
               if git push; then
                 break
