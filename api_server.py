@@ -1416,6 +1416,10 @@ def _parse_daily_horses(table):
             'name': name,
             'jockey': cell_text('.gunluk-GunlukYarisProgrami-JokeAdi'),
             'weight': cell_text('.gunluk-GunlukYarisProgrami-Kilo'),
+            'startNo': (
+                cell_text('.gunluk-GunlukYarisProgrami-StartId')
+                or cell_text('.gunluk-GunlukYarisProgrami-St')
+            ),
             'age': cell_text('.gunluk-GunlukYarisProgrami-Yas'),
             'owner': cell_text('.gunluk-GunlukYarisProgrami-SahipAdi'),
             'last6': cell_text('.gunluk-GunlukYarisProgrami-Son6Yaris'),
@@ -1928,6 +1932,8 @@ def fetch_horse_details_safe(horse_data, target_distance=None, race_date_str=Non
                     degree = cells[5].text.strip()   # Derece (süre)
                     weight = cells[6].text.strip()   # Sıklet
                     jockey = cells[8].text.strip()   # Jokey
+                    start_no = cells[9].text.strip() if len(cells) > 9 else ''
+                    ganyan = cells[10].text.strip() if len(cells) > 10 else ''
                     group_info = cells[11].text.strip() if len(cells) > 11 else ''  # Grup
                     race_type = cells[13].text.strip() if len(cells) > 13 else ''   # Koşu Cinsi (Kcins)
                     
@@ -1947,6 +1953,9 @@ def fetch_horse_details_safe(horse_data, target_distance=None, race_date_str=Non
                         'trackCondition': track_condition, # Pist durumu: Normal/Sulu/Islak/Ağır vb.
                         'rank': rank,
                         'weight': weight,
+                        'startNo': start_no,
+                        'ganyan': ganyan,
+                        'lateStart': '',
                         'jockey': jockey,
                         'degree': degree,
                         'degreeInSeconds': degree_in_seconds,
@@ -2947,11 +2956,47 @@ def _confidence_blend(score, sample_size, full_sample=5):
 def _parse_rank_value(race):
     try:
         raw = str((race or {}).get('rank', '')).strip()
-        digits = re.sub(r'[^0-9]', '', raw)
-        value = int(digits) if digits else 0
+        match = re.search(r'\d+', raw)
+        value = int(match.group(0)) if match else 0
         return value if value > 0 else None
     except (ValueError, TypeError):
         return None
+
+
+def _recent_finish_ranks(races, limit=5):
+    ranks = []
+    for race in (races or [])[:limit]:
+        rank = _parse_rank_value(race)
+        if rank:
+            ranks.append(rank)
+    return ranks
+
+
+def calculate_recent_finish_position_score(races):
+    """Score recent finish positions with recency weighting."""
+    ranks = _recent_finish_ranks(races)
+    if not ranks:
+        return 50.0
+
+    weights = [1.0, 0.82, 0.68, 0.56, 0.48][:len(ranks)]
+    weighted_avg = sum(rank * weight for rank, weight in zip(ranks, weights)) / sum(weights)
+    score = max(0.0, min(100.0, 100.0 - (weighted_avg - 1.0) * 12.0))
+
+    last_three = ranks[:3]
+    top3_ratio = sum(1 for rank in last_three if rank <= 3) / len(last_three)
+    poor_ratio = sum(1 for rank in last_three if rank >= 7) / len(last_three)
+    score += top3_ratio * 6.0
+    score -= poor_ratio * 5.0
+
+    if len(ranks) >= 3:
+        older_avg = float(np.mean(ranks[1:4]))
+        if ranks[0] + 1.0 <= older_avg:
+            score += 4.0
+        elif ranks[0] >= older_avg + 1.5:
+            score -= 4.0
+
+    score = _confidence_blend(score, len(ranks), full_sample=4)
+    return round(max(0.0, min(100.0, score)), 1)
 
 
 def _surface_switch_penalty(source_key, target_key):
@@ -3374,6 +3419,160 @@ def calculate_handicap_weight_relief_score(horse_hp, current_weight, all_hps, al
     return round(max(0.0, min(100.0, score)), 1)
 
 
+def calculate_handicap_load_value_score(horse_hp, current_weight, all_hps, all_weights, target_distance=None):
+    """Field-relative HP/load value for handicap races.
+
+    This is stricter than the old last-race weight change signal. It asks
+    whether the horse has enough HP for the weight it carries today.
+    """
+    if horse_hp is None or current_weight is None or len(all_hps) < 3 or len(all_weights) < 3:
+        return 50.0
+
+    hp_min, hp_max = min(all_hps), max(all_hps)
+    weight_min, weight_max = min(all_weights), max(all_weights)
+    if hp_max <= hp_min or weight_max <= weight_min:
+        return 50.0
+
+    hp_pct = (float(horse_hp) - hp_min) / (hp_max - hp_min)
+    weight_pct = (float(current_weight) - weight_min) / (weight_max - weight_min)
+    score = 50.0 + (hp_pct - weight_pct) * 35.0 + (hp_pct - 0.5) * 12.0
+
+    try:
+        distance_num = int(str(target_distance or '').replace('m', '').strip())
+    except (TypeError, ValueError):
+        distance_num = 0
+
+    heavy_risk = 0.0
+    if weight_pct >= 0.75 and hp_pct < 0.60:
+        heavy_risk += 8.0
+    if distance_num >= 1800 and weight_pct >= 0.70:
+        heavy_risk += 4.0
+    if weight_pct <= 0.25 and hp_pct >= 0.45:
+        score += 5.0
+
+    return round(max(0.0, min(100.0, score - heavy_risk)), 1)
+
+
+def calculate_weight_change_risk_score(current_weight_str, last_weight_str, target_distance, load_value_score=50.0):
+    """Risk-only interpretation of weight change since the last race."""
+    cw = parse_carried_weight(current_weight_str)
+    lw = parse_carried_weight(last_weight_str)
+    if cw is None or lw is None:
+        return 50.0
+
+    try:
+        distance_num = int(str(target_distance or '').replace('m', '').strip())
+    except (TypeError, ValueError):
+        distance_num = 0
+
+    diff = cw - lw
+    score = 50.0
+    if diff >= 4.0:
+        score -= 14.0
+    elif diff >= 2.0:
+        score -= 8.0
+    elif diff <= -3.0 and float(load_value_score or 50.0) >= 55.0:
+        score += 6.0
+    elif diff <= -3.0:
+        score += 2.0
+
+    if distance_num >= 1600 and diff >= 2.0:
+        score -= 4.0
+    if distance_num >= 2000 and diff >= 2.0:
+        score -= 3.0
+
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+def _parse_start_value(value):
+    match = re.search(r'\d+', str(value or ''))
+    if not match:
+        return None
+    try:
+        parsed = int(match.group(0))
+        return parsed if parsed > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def calculate_start_draw_score(start_no, field_size, target_distance=None, target_track=''):
+    """Heuristic current stall/start draw score.
+
+    Full draw-bias learning needs richer historical start outcomes. Until that
+    pool exists, this produces a guarded signal and stays neutral if start is
+    missing.
+    """
+    start = _parse_start_value(start_no)
+    try:
+        field = int(field_size or 0)
+    except (TypeError, ValueError):
+        field = 0
+    if start is None or field < 5:
+        return 50.0
+
+    try:
+        distance_num = int(str(target_distance or '').replace('m', '').strip())
+    except (TypeError, ValueError):
+        distance_num = 0
+
+    pct = (start - 1) / max(1, field - 1)
+    track_key = _track_key(target_track)
+    score = 50.0
+    if distance_num and distance_num <= 1400:
+        if pct <= 0.25:
+            score += 7.0
+        elif pct >= 0.75:
+            score -= 7.0 if field >= 10 else 4.0
+    elif distance_num >= 1800:
+        if pct >= 0.85 and field >= 12:
+            score -= 4.0
+        elif 0.25 <= pct <= 0.65:
+            score += 2.0
+
+    if track_key == 'cim' and field >= 12 and pct >= 0.80:
+        score -= 3.0
+    if track_key == 'kum' and distance_num <= 1400 and pct <= 0.20:
+        score += 2.0
+
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+def calculate_late_start_risk_score(races):
+    """Penalty for repeated late-start notes when source data exposes it."""
+    if not races:
+        return 50.0
+
+    recent = list(races or [])[:6]
+    last3 = recent[:3]
+    last3_count = sum(1 for race in last3 if _has_late_start_note(race))
+    last6_count = sum(1 for race in recent if _has_late_start_note(race))
+    if last3_count >= 2:
+        return 24.0
+    if last3_count == 1:
+        return 38.0
+    if last6_count >= 2:
+        return 42.0
+    if last6_count == 1:
+        return 46.0
+    return 55.0 if len(recent) >= 3 else 50.0
+
+
+def _has_late_start_note(race):
+    direct_raw = ' '.join(str((race or {}).get(key, '') or '') for key in ('lateStart', 'gecCikis', 'gCikis'))
+    direct = _v4_fold_text(direct_raw)
+    if direct and direct not in {'0', 'YOK', 'FALSE', 'NONE', '-'}:
+        return True
+
+    notes = _v4_fold_text((race or {}).get('notes', ''))
+    if not notes:
+        return False
+    return bool(
+        re.search(r'\bGEC\b.*\bCIK', notes)
+        or re.search(r'\bGEC\b.*\bSTART', notes)
+        or re.search(r'\bGEC\b.*\bKAL', notes)
+    )
+
+
 def extract_handicap_level(race_type):
     """Return the numeric Handicap level from values such as ``Handikap 16/H2``."""
     folded = _v4_fold_text(race_type)
@@ -3434,6 +3633,88 @@ def calculate_handicap_class_transition(races, current_race_type):
         'score': round(score, 1),
         'sampleCount': len(recent_levels),
     }
+
+
+def calculate_handicap_class_load_transition_score(handicap_transition, hp_score=50.0, load_value_score=50.0, form_trend_score=50.0):
+    """Read handicap class movement together with HP, load value and form."""
+    if not isinstance(handicap_transition, dict) or not handicap_transition.get('hasHistory'):
+        return 50.0
+
+    try:
+        delta = float(handicap_transition.get('delta') or 0.0)
+        hp = float(hp_score or 50.0)
+        load_value = float(load_value_score or 50.0)
+        form = float(form_trend_score or 50.0)
+    except (TypeError, ValueError):
+        return 50.0
+
+    support = (hp * 0.35) + (load_value * 0.40) + (form * 0.25)
+    score = 50.0
+    if delta >= 1.0:
+        score += (support - 50.0) * 0.55
+        if support < 45.0:
+            score -= min(14.0, delta * 5.0)
+        elif support >= 62.0:
+            score += min(8.0, delta * 3.0)
+    elif delta <= -1.0:
+        score += (form - 50.0) * 0.35
+        if form >= 58.0:
+            score += min(8.0, abs(delta) * 3.0)
+        elif form < 42.0:
+            score -= 6.0
+    else:
+        score += (support - 50.0) * 0.20
+
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+def _track_condition_key(value):
+    folded = _v4_fold_text(value)
+    if not folded:
+        return ''
+    if 'AGIR' in folded:
+        return 'agir'
+    if 'ISLAK' in folded:
+        return 'islak'
+    if 'SULU' in folded:
+        return 'sulu'
+    if 'NORMAL' in folded:
+        return 'normal'
+    return folded.split()[0].lower()
+
+
+def calculate_track_condition_suit_score(races, target_condition):
+    """Score today's track condition against historical condition results."""
+    target = _track_condition_key(target_condition)
+    if not target or not races:
+        return 50.0
+
+    matching = []
+    other = []
+    for race in (races or [])[:10]:
+        condition = _track_condition_key(race.get('trackCondition', ''))
+        rank = _parse_rank_value(race)
+        if not condition or not rank:
+            continue
+        if condition == target:
+            matching.append(rank)
+        else:
+            other.append(rank)
+
+    if not matching and not other:
+        return 50.0
+    if not matching:
+        return 42.0 if len(other) >= 4 else 46.0
+
+    score = _confidence_blend(_rank_average_score(matching), len(matching), full_sample=4)
+    if matching and other:
+        match_avg = float(np.mean(matching))
+        other_avg = float(np.mean(other))
+        if match_avg + 1.5 <= other_avg:
+            score += min(10.0, (other_avg - match_avg) * 3.0)
+        elif other_avg + 1.5 <= match_avg:
+            score -= min(12.0, (match_avg - other_avg) * 3.0)
+    return round(max(20.0, min(90.0, score)), 1)
 
 
 def calculate_weight_impact(current_weight_str, last_weight_str, target_distance):
@@ -4042,7 +4323,7 @@ def _relative_score(value, values, spread_floor=4.0):
 
 
 def apply_v421_contextual_metrics(analyzed_horses, race_type=''):
-    """Attach v4.21 contextual scores that need the full race field."""
+    """Attach v4.22 contextual scores that need the full race field."""
     if not analyzed_horses:
         return
     profile = extract_v4_race_profile(race_type, '', '', len(analyzed_horses))
@@ -4050,8 +4331,10 @@ def apply_v421_contextual_metrics(analyzed_horses, race_type=''):
     is_grup = profile.get('category') == 'GRUP'
     field_metric_keys = [
         'form_trend', 'hp_score', 'degree_avg', 'distance_suit',
-        'surface_transition_score', 'weight_impact',
-        'handicap_efficiency_score', 'pace_score',
+        'surface_transition_score', 'distance_transition_score',
+        'handicap_load_value_score', 'handicap_class_load_transition_score',
+        'track_condition_suit_score', 'late_start_risk_score',
+        'handicap_efficiency_score', 'recent_finish_position_score',
     ]
     field_values = {
         key: [
@@ -4114,14 +4397,16 @@ def apply_v421_contextual_metrics(analyzed_horses, race_type=''):
                 + float(metrics.get('form_trend', 50.0)) * 0.20
                 + float(metrics.get('hp_score', 50.0)) * 0.20
                 + float(metrics.get('jockey_score', 50.0)) * 0.15
-                + float(metrics.get('agf_score', 50.0)) * 0.20
+                + float(metrics.get('recent_finish_position_score', metrics.get('running_style_proxy_score', 50.0))) * 0.20
             )
             real_edge = (
-                field_relative * 0.26
-                + float(metrics.get('handicap_weight_relief_score', metrics.get('handicap_efficiency_score', 50.0))) * 0.24
-                + pace_edge * 0.20
-                + surface_safety * 0.18
+                field_relative * 0.22
+                + float(metrics.get('handicap_load_value_score', metrics.get('handicap_weight_relief_score', 50.0))) * 0.22
+                + surface_safety * 0.16
                 + float(metrics.get('distance_transition_score', 50.0)) * 0.12
+                + float(metrics.get('late_start_risk_score', 50.0)) * 0.10
+                + float(metrics.get('handicap_class_load_transition_score', 50.0)) * 0.10
+                + float(metrics.get('start_draw_score', 50.0)) * 0.08
             )
             risk_gap = max(0.0, visibility - real_edge)
             favorite_guard = round(max(0.0, min(100.0, 70.0 - risk_gap * 0.65 + max(0.0, real_edge - 55.0) * 0.20)), 1)
@@ -4133,6 +4418,10 @@ def apply_v421_contextual_metrics(analyzed_horses, race_type=''):
             for key in [
                 'field_relative_value_score', 'pace_map_edge_score',
                 'surface_switch_safety_score', 'favorite_risk_guard_score',
+                'handicap_load_value_score', 'weight_change_risk_score',
+                'handicap_class_load_transition_score', 'recent_finish_position_score',
+                'start_draw_score', 'late_start_risk_score',
+                'track_condition_suit_score', 'handicap_age_curve_score',
             ]:
                 metrics.setdefault(key, 50.0)
 
@@ -4981,6 +5270,47 @@ def calculate_age_score(age_value, race_age_values, race_type=''):
     return round(max(0.0, min(100.0, raw_score)), 1)
 
 
+def calculate_handicap_age_curve_scores(age_value, race_age_values):
+    """Return non-linear age candidates for handicap races."""
+    if age_value is None or not race_age_values or len(race_age_values) < 2:
+        return {
+            'selected': 50.0,
+            'youngEdge': 50.0,
+            'oldEdge': 50.0,
+            'middlePeak': 50.0,
+            'selectedCurve': 'neutral',
+        }
+
+    min_age = min(race_age_values)
+    max_age = max(race_age_values)
+    age_range = max_age - min_age
+    if age_range <= 1:
+        return {
+            'selected': 50.0,
+            'youngEdge': 50.0,
+            'oldEdge': 50.0,
+            'middlePeak': 50.0,
+            'selectedCurve': 'neutral',
+        }
+
+    age_pct = (float(age_value) - min_age) / age_range
+    age_pct = max(0.0, min(1.0, age_pct))
+    young_edge = round(max(0.0, min(100.0, (1.0 - age_pct) * 100.0)), 1)
+    old_edge = round(max(0.0, min(100.0, age_pct * 100.0)), 1)
+    middle_peak = round(max(0.0, min(100.0, 100.0 - abs(age_pct - 0.5) * 160.0)), 1)
+
+    # Current handicap pool favors the younger side more than the old-linear score.
+    # Keep the exact curve visible in diagnostics so this can be reselected by profile.
+    selected = round((young_edge * 0.65) + (middle_peak * 0.35), 1)
+    return {
+        'selected': selected,
+        'youngEdge': young_edge,
+        'oldEdge': old_edge,
+        'middlePeak': middle_peak,
+        'selectedCurve': 'young_middle_blend',
+    }
+
+
 def calculate_dynamic_weights(metrics, race_type='default'):
     """
     FAZ A + 4.7: Her at için veri durumuna göre katmanların ağırlıklarını
@@ -5386,6 +5716,7 @@ def calculate_master_score(metrics):
 # ============================================================================
 
 _V4_VERSION = "4.21"
+_V422_CANDIDATE_VERSION = "4.22-handicap-candidate"
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -5394,14 +5725,30 @@ _V4_METRIC_KEYS = [
     'training_fitness', 'training_degree_score',
     'weight_impact', 'handicap_efficiency_score',
     'handicap_weight_relief_score', 'handicap_class_transition_score',
+    'handicap_load_value_score', 'weight_change_risk_score',
+    'handicap_class_load_transition_score',
     'field_relative_value_score', 'pace_map_edge_score',
     'surface_switch_safety_score', 'favorite_risk_guard_score',
     'class_peak_score', 'elite_consensus_score',
-    'running_style_proxy_score',
+    'running_style_proxy_score', 'recent_finish_position_score',
+    'start_draw_score', 'late_start_risk_score',
+    'track_condition_suit_score', 'handicap_age_curve_score',
     'jockey_score', 'bounce_score',
     'pace_score', 'pedigree', 'hp_score', 'trainer_score', 'agf_score',
     'age_score',
 ]
+
+_V422_HANDIKAP_CANDIDATE_WEIGHTS = {
+    'form_trend': 16.0,
+    'recent_finish_position_score': 32.0,
+    'distance_transition_score': 32.0,
+    'surface_switch_safety_score': 14.0,
+    'handicap_load_value_score': 12.0,
+    'training_fitness': 8.0,
+    'handicap_age_curve_score': 8.0,
+    'hp_score': 4.0,
+    'jockey_score': 2.0,
+}
 
 _V4_MIN_SAMPLE_RACES = {
     'exact': 8,
@@ -6374,12 +6721,20 @@ def calculate_v4_shadow_score(metrics, weights):
         'handicap_efficiency_score': '_has_handicap_efficiency',
         'handicap_weight_relief_score': '_has_handicap_weight_relief',
         'handicap_class_transition_score': '_has_handicap_class_history',
+        'handicap_load_value_score': '_has_handicap_load_value',
+        'weight_change_risk_score': '_has_weight_change_risk',
+        'handicap_class_load_transition_score': '_has_handicap_class_load_transition',
         'field_relative_value_score': '_has_field_relative_value',
         'pace_map_edge_score': '_has_pace_map_edge',
         'surface_switch_safety_score': '_has_surface_switch_safety',
         'favorite_risk_guard_score': '_has_favorite_risk_guard',
         'class_peak_score': '_has_class_peak',
         'elite_consensus_score': '_has_elite_consensus',
+        'recent_finish_position_score': '_has_recent_finish_position',
+        'start_draw_score': '_has_start_draw',
+        'late_start_risk_score': '_has_late_start_risk',
+        'track_condition_suit_score': '_has_track_condition_suit',
+        'handicap_age_curve_score': '_has_handicap_age_curve',
     }
     for key, weight in weights.items():
         if weight <= 0:
@@ -6398,6 +6753,14 @@ def calculate_v4_shadow_score(metrics, weights):
     if total <= 0:
         return 50.0
     return round(max(0.0, min(100.0, weighted_sum / total)), 1)
+
+
+def calculate_v422_handicap_candidate_score(metrics):
+    """AGF-free HANDIKAP candidate score kept out of visible ranking."""
+    if not metrics:
+        return None
+    weights = _v4_normalize_weights(_V422_HANDIKAP_CANDIDATE_WEIGHTS)
+    return calculate_v4_shadow_score(metrics, weights)
 
 
 def calculate_v4_data_quality(scored_horses):
@@ -6426,6 +6789,12 @@ def calculate_v4_data_quality(scored_horses):
     track_experience_count = sum(1 for flags in source_flags if flags.get('hasTrackExperience'))
     handicap_efficiency_count = sum(1 for flags in source_flags if flags.get('hasHandicapEfficiency'))
     handicap_weight_relief_count = sum(1 for flags in source_flags if flags.get('hasHandicapWeightRelief'))
+    handicap_load_value_count = sum(1 for flags in source_flags if flags.get('hasHandicapLoadValue'))
+    recent_finish_position_count = sum(1 for flags in source_flags if flags.get('hasRecentFinishPosition'))
+    start_draw_count = sum(1 for flags in source_flags if flags.get('hasStartDraw'))
+    late_start_risk_count = sum(1 for flags in source_flags if flags.get('hasLateStartRisk'))
+    track_condition_suit_count = sum(1 for flags in source_flags if flags.get('hasTrackConditionSuit'))
+    handicap_age_curve_count = sum(1 for flags in source_flags if flags.get('hasHandicapAgeCurve'))
     field_relative_count = sum(1 for flags in source_flags if flags.get('hasFieldRelativeValue'))
     pace_map_edge_count = sum(1 for flags in source_flags if flags.get('hasPaceMapEdge'))
     surface_switch_safety_count = sum(1 for flags in source_flags if flags.get('hasSurfaceSwitchSafety'))
@@ -6447,6 +6816,12 @@ def calculate_v4_data_quality(scored_horses):
             'trackExperienceCount': track_experience_count,
             'handicapEfficiencyCount': handicap_efficiency_count,
             'handicapWeightReliefCount': handicap_weight_relief_count,
+            'handicapLoadValueCount': handicap_load_value_count,
+            'recentFinishPositionCount': recent_finish_position_count,
+            'startDrawCount': start_draw_count,
+            'lateStartRiskCount': late_start_risk_count,
+            'trackConditionSuitCount': track_condition_suit_count,
+            'handicapAgeCurveCount': handicap_age_curve_count,
             'fieldRelativeValueCount': field_relative_count,
             'paceMapEdgeCount': pace_map_edge_count,
             'surfaceSwitchSafetyCount': surface_switch_safety_count,
@@ -6603,6 +6978,12 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
 
     scored = []
     is_handikap_profile = _v417_is_handikap_profile(profile)
+    v422_candidate_weights = _v4_normalize_weights(_V422_HANDIKAP_CANDIDATE_WEIGHTS) if is_handikap_profile else {}
+    v422_candidate_weights_pct = {
+        k: round(v * 100, 1)
+        for k, v in v422_candidate_weights.items()
+        if v > 0
+    }
     for horse in analyzed_horses:
         metrics = horse.get('_mf', {}) or {}
         if metrics:
@@ -6636,6 +7017,23 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
             'eligible': resolved['eligible'],
             'status': resolved['status'],
         }
+        if is_handikap_profile:
+            v422_score = calculate_v422_handicap_candidate_score(metrics)
+            horse['v422CandidateVersion'] = _V422_CANDIDATE_VERSION
+            horse['v422CandidateMode'] = 'shadow'
+            horse['v422CandidateScore'] = v422_score
+            horse['v422CandidateRank'] = None
+            horse['v422CandidateUsedForRanking'] = False
+            horse['v422CandidateWeights'] = v422_candidate_weights_pct
+            horse['v422CandidateProfile'] = {
+                **profile,
+                'selectedKey': 'HANDIKAP_CANDIDATE',
+                'fallbackLevel': 'candidate',
+            }
+            horse['v422CandidateReason'] = (
+                'HANDIKAP v4.22 candidate is logged for evaluation only; '
+                'visible ranking remains v4.21.'
+            )
         scored.append(horse)
 
     data_quality = calculate_v4_data_quality(scored)
@@ -6645,6 +7043,16 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
     scored.sort(key=lambda h: h.get('v4Score', 0), reverse=True)
     for index, horse in enumerate(scored):
         horse['v4Rank'] = index + 1
+
+    if is_handikap_profile:
+        candidate_ranked = [
+            horse
+            for horse in scored
+            if horse.get('v422CandidateScore') is not None
+        ]
+        candidate_ranked.sort(key=lambda h: h.get('v422CandidateScore', 0), reverse=True)
+        for index, horse in enumerate(candidate_ranked):
+            horse['v422CandidateRank'] = index + 1
 
     use_visible_v4 = bool(decision['useForRanking'])
 
@@ -6801,9 +7209,14 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'distance_suit', 'distance_transition_score',
         'training_fitness', 'training_degree_score', 'weight_impact',
         'handicap_efficiency_score', 'handicap_weight_relief_score',
+        'handicap_load_value_score', 'weight_change_risk_score',
+        'handicap_class_load_transition_score',
         'field_relative_value_score', 'pace_map_edge_score',
         'surface_switch_safety_score', 'favorite_risk_guard_score',
         'class_peak_score', 'elite_consensus_score',
+        'recent_finish_position_score', 'start_draw_score',
+        'late_start_risk_score', 'track_condition_suit_score',
+        'handicap_age_curve_score',
         'jockey_score', 'bounce_score', 'pace_score', 'pedigree',
         'hp_score', 'trainer_score', 'agf_score', 'age_score',
     ]
@@ -6822,6 +7235,9 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'handicap_class_transition_score': _shadow_safe_float(metrics.get('handicap_class_transition_score'), 50.0),
         'handicap_class_delta': _shadow_safe_float(metrics.get('handicap_class_delta'), 0.0),
         'handicap_weight_relief_score': _shadow_safe_float(metrics.get('handicap_weight_relief_score'), 50.0),
+        'handicap_load_value_score': _shadow_safe_float(metrics.get('handicap_load_value_score'), 50.0),
+        'weight_change_risk_score': _shadow_safe_float(metrics.get('weight_change_risk_score'), 50.0),
+        'handicap_class_load_transition_score': _shadow_safe_float(metrics.get('handicap_class_load_transition_score'), 50.0),
         'field_relative_value_score': _shadow_safe_float(metrics.get('field_relative_value_score'), 50.0),
         'pace_map_edge_score': _shadow_safe_float(metrics.get('pace_map_edge_score'), 50.0),
         'surface_switch_safety_score': _shadow_safe_float(metrics.get('surface_switch_safety_score'), 50.0),
@@ -6829,6 +7245,11 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'class_peak_score': _shadow_safe_float(metrics.get('class_peak_score'), 50.0),
         'elite_consensus_score': _shadow_safe_float(metrics.get('elite_consensus_score'), 50.0),
         'running_style_proxy_score': _shadow_safe_float(metrics.get('running_style_proxy_score'), 50.0),
+        'recent_finish_position_score': _shadow_safe_float(metrics.get('recent_finish_position_score'), 50.0),
+        'start_draw_score': _shadow_safe_float(metrics.get('start_draw_score'), 50.0),
+        'late_start_risk_score': _shadow_safe_float(metrics.get('late_start_risk_score'), 50.0),
+        'track_condition_suit_score': _shadow_safe_float(metrics.get('track_condition_suit_score'), 50.0),
+        'handicap_age_curve_score': _shadow_safe_float(metrics.get('handicap_age_curve_score'), 50.0),
         'pace_pressure': _shadow_safe_float(metrics.get('pace_pressure'), 0.0),
     })
 
@@ -6859,6 +7280,14 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'has_handicap_efficiency': 1.0 if flags.get('hasHandicapEfficiency') else 0.0,
         'has_handicap_weight_relief': 1.0 if flags.get('hasHandicapWeightRelief') else 0.0,
         'has_handicap_class_history': 1.0 if flags.get('hasHandicapClassHistory') else 0.0,
+        'has_handicap_load_value': 1.0 if flags.get('hasHandicapLoadValue') else 0.0,
+        'has_weight_change_risk': 1.0 if flags.get('hasWeightChangeRisk') else 0.0,
+        'has_handicap_class_load_transition': 1.0 if flags.get('hasHandicapClassLoadTransition') else 0.0,
+        'has_recent_finish_position': 1.0 if flags.get('hasRecentFinishPosition') else 0.0,
+        'has_start_draw': 1.0 if flags.get('hasStartDraw') else 0.0,
+        'has_late_start_risk': 1.0 if flags.get('hasLateStartRisk') else 0.0,
+        'has_track_condition_suit': 1.0 if flags.get('hasTrackConditionSuit') else 0.0,
+        'has_handicap_age_curve': 1.0 if flags.get('hasHandicapAgeCurve') else 0.0,
         'has_field_relative_value': 1.0 if flags.get('hasFieldRelativeValue') else 0.0,
         'has_pace_map_edge': 1.0 if flags.get('hasPaceMapEdge') else 0.0,
         'has_surface_switch_safety': 1.0 if flags.get('hasSurfaceSwitchSafety') else 0.0,
@@ -7335,13 +7764,26 @@ def analyze_race():
                         valid_hps,
                         valid_current_weights,
                     ) if has_handicap_efficiency else 50.0
+                    handicap_load_value_score = calculate_handicap_load_value_score(
+                        horse_hp if has_valid_hp else None,
+                        current_weight_value,
+                        valid_hps,
+                        valid_current_weights,
+                        target_distance,
+                    ) if has_handicap_efficiency else 50.0
+                    has_weight_source = bool(current_weight and last_weight)
+                    weight_change_risk_score = calculate_weight_change_risk_score(
+                        current_weight,
+                        last_weight,
+                        target_distance,
+                        handicap_load_value_score,
+                    ) if has_weight_source else 50.0
 
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
                     original_horse['_raw_hp'] = raw_hp if raw_hp else '-';
                     raw_agf = str(original_horse.get('agf', '')).strip()
                     has_valid_agf = parse_agf_percent(raw_agf) is not None
                     agf_score_val = calculate_agf_score(original_horse.get('agf', ''), valid_agf_values)
-                    has_weight_source = bool(current_weight and last_weight)
                     raw_age = str(original_horse.get('age', '')).strip()
                     horse_age = parse_horse_age(raw_age)
                     has_age_source = horse_age is not None
@@ -7352,6 +7794,7 @@ def analyze_race():
                         and age_supported_for_ranking
                     )
                     age_score_val = calculate_age_score(horse_age, valid_age_values, race_type)
+                    handicap_age_curves = calculate_handicap_age_curve_scores(horse_age, valid_age_values)
                     track_experience_score_val, target_track_race_count, other_track_race_count, track_experience_reason = calculate_track_experience_score(
                         races,
                         target_track,
@@ -7373,7 +7816,41 @@ def analyze_race():
                         distance_suit,
                     )
                     has_distance_transition = bool(distance_transition['lastDistance'] is not None)
+                    recent_finish_position_score = calculate_recent_finish_position_score(races)
+                    recent_finish_ranks = _recent_finish_ranks(races)
+                    has_recent_finish_position = bool(recent_finish_ranks)
                     handicap_class_transition = calculate_handicap_class_transition(races, race_type)
+                    handicap_class_load_transition_score = calculate_handicap_class_load_transition_score(
+                        handicap_class_transition,
+                        hp_score_val,
+                        handicap_load_value_score,
+                        trend_score,
+                    )
+                    current_start_no = (
+                        original_horse.get('startNo')
+                        or original_horse.get('start')
+                        or original_horse.get('st')
+                        or ''
+                    )
+                    start_draw_score = calculate_start_draw_score(
+                        current_start_no,
+                        len(horses),
+                        target_distance,
+                        target_track,
+                    )
+                    has_start_draw = _parse_start_value(current_start_no) is not None
+                    late_start_risk_score = calculate_late_start_risk_score(races)
+                    has_late_start_history = any(
+                        _has_late_start_note(r)
+                        for r in races[:6]
+                    )
+                    target_condition = (
+                        original_horse.get('trackCondition')
+                        or original_horse.get('track_condition')
+                        or ''
+                    )
+                    track_condition_suit_score = calculate_track_condition_suit_score(races, target_condition)
+                    has_track_condition_suit = bool(_track_condition_key(target_condition))
 
                     metrics_pass1 = {
                         'degree_avg': degree_stats.get('degreeScore', 50),
@@ -7395,7 +7872,15 @@ def analyze_race():
                         'handicap_weight_relief_score': handicap_weight_relief_score,
                         'handicap_class_transition_score': handicap_class_transition['score'],
                         'handicap_class_delta': handicap_class_transition['delta'],
+                        'handicap_load_value_score': handicap_load_value_score,
+                        'weight_change_risk_score': weight_change_risk_score,
+                        'handicap_class_load_transition_score': handicap_class_load_transition_score,
                         'running_style_proxy_score': 50.0,
+                        'recent_finish_position_score': recent_finish_position_score,
+                        'start_draw_score': start_draw_score,
+                        'late_start_risk_score': late_start_risk_score,
+                        'track_condition_suit_score': track_condition_suit_score,
+                        'handicap_age_curve_score': handicap_age_curves['selected'],
                         'field_relative_value_score': 50.0,
                         'pace_map_edge_score': 50.0,
                         'surface_switch_safety_score': 50.0,
@@ -7426,6 +7911,14 @@ def analyze_race():
                         '_has_handicap_efficiency': has_handicap_efficiency,
                         '_has_handicap_weight_relief': has_handicap_efficiency,
                         '_has_handicap_class_history': handicap_class_transition['hasHistory'],
+                        '_has_handicap_load_value': has_handicap_efficiency,
+                        '_has_weight_change_risk': has_weight_source,
+                        '_has_handicap_class_load_transition': handicap_class_transition['hasHistory'],
+                        '_has_recent_finish_position': has_recent_finish_position,
+                        '_has_start_draw': has_start_draw,
+                        '_has_late_start_risk': has_late_start_history,
+                        '_has_track_condition_suit': has_track_condition_suit,
+                        '_has_handicap_age_curve': has_age_actionable,
                         '_has_field_relative_value': False,
                         '_has_pace_map_edge': False,
                         '_has_surface_switch_safety': False,
@@ -7486,17 +7979,26 @@ def analyze_race():
                         'validHpCountInRace': len(valid_hps),
                         'hasHandicapEfficiency': has_handicap_efficiency,
                         'hasHandicapWeightRelief': has_handicap_efficiency,
+                        'hasHandicapLoadValue': has_handicap_efficiency,
+                        'hasWeightChangeRisk': has_weight_source,
                         'rawCurrentWeight': current_weight or None,
                         'parsedCurrentWeight': current_weight_value,
                         'validWeightCountInRace': len(valid_current_weights),
                         'handicapEfficiencyScore': handicap_efficiency_score,
                         'handicapWeightReliefScore': handicap_weight_relief_score,
+                        'handicapLoadValueScore': handicap_load_value_score,
+                        'weightChangeRiskScore': weight_change_risk_score,
+                        'hasRecentFinishPosition': has_recent_finish_position,
+                        'recentFinishPositionSampleCount': len(recent_finish_ranks),
+                        'recentFinishPositionScore': recent_finish_position_score,
                         'hasHandicapClassHistory': handicap_class_transition['hasHistory'],
                         'handicapClassCurrentLevel': handicap_class_transition['currentLevel'],
                         'handicapClassHistoricalLevel': handicap_class_transition['historicalLevel'],
                         'handicapClassDelta': handicap_class_transition['delta'],
                         'handicapClassSampleCount': handicap_class_transition['sampleCount'],
                         'handicapClassTransitionScore': handicap_class_transition['score'],
+                        'hasHandicapClassLoadTransition': handicap_class_transition['hasHistory'],
+                        'handicapClassLoadTransitionScore': handicap_class_load_transition_score,
                         'hasAge': has_age_source,
                         'hasAgeActionable': has_age_actionable,
                         'rawAge': raw_age or None,
@@ -7504,6 +8006,20 @@ def analyze_race():
                         'validAgeCountInRace': len(valid_age_values),
                         'ageRangeInRace': race_age_range,
                         'ageScoreDirection': 'older_relative' if age_supported_for_ranking else 'neutral',
+                        'hasHandicapAgeCurve': has_age_actionable,
+                        'handicapAgeCurveScore': handicap_age_curves['selected'],
+                        'handicapAgeYoungEdge': handicap_age_curves['youngEdge'],
+                        'handicapAgeOldEdge': handicap_age_curves['oldEdge'],
+                        'handicapAgeMiddlePeak': handicap_age_curves['middlePeak'],
+                        'handicapAgeSelectedCurve': handicap_age_curves['selectedCurve'],
+                        'hasStartDraw': has_start_draw,
+                        'rawStartNo': current_start_no or None,
+                        'startDrawScore': start_draw_score,
+                        'hasLateStartRisk': has_late_start_history,
+                        'lateStartRiskScore': late_start_risk_score,
+                        'hasTrackConditionSuit': has_track_condition_suit,
+                        'targetTrackCondition': target_condition or None,
+                        'trackConditionSuitScore': track_condition_suit_score,
                         'hasTrackExperience': has_track_experience,
                         'targetTrackRaceCount': target_track_race_count,
                         'otherTrackRaceCount': other_track_race_count,
@@ -7594,6 +8110,7 @@ def analyze_race():
                         'no': original_horse.get('no', ''),
                         'rawAge': raw_age,
                         'ageScore': age_score_val,
+                        'handicapAgeCurveScore': handicap_age_curves['selected'],
                         'rawHp': original_horse.get('_raw_hp', ''),  # FAZ 5.2 (UI İÇİN)
                         'hpScore': hp_score_val,                     # FAZ 5.2 (UI İÇİN)
                         'aiScore': ai_score_pass1,   # geçici, PASS 2'de güncellenecek
@@ -7629,8 +8146,15 @@ def analyze_race():
                             'weightImpactScore': weight_impact_score,
                             'handicapEfficiencyScore': handicap_efficiency_score,
                             'handicapWeightReliefScore': handicap_weight_relief_score,
+                            'handicapLoadValueScore': handicap_load_value_score,
+                            'weightChangeRiskScore': weight_change_risk_score,
                             'handicapClassTransitionScore': handicap_class_transition['score'],
                             'handicapClassDelta': handicap_class_transition['delta'],
+                            'handicapClassLoadTransitionScore': handicap_class_load_transition_score,
+                            'recentFinishPositionScore': recent_finish_position_score,
+                            'startDrawScore': start_draw_score,
+                            'lateStartRiskScore': late_start_risk_score,
+                            'trackConditionSuitScore': track_condition_suit_score,
                             'jockeyScore': jockey_score_val,
                             'bounceScore': bounce_score_val,
                             'paceScore': 50.0,          # PASS 2'de güncellenecek
@@ -7648,6 +8172,7 @@ def analyze_race():
                             'agfScore': agf_score_val,
                             'trainerScore': trainer_score_val,
                             'ageScore': age_score_val,
+                            'handicapAgeCurveScore': handicap_age_curves['selected'],
                         },
                         # FAZ 4.5+4.6: PASS 1 ara değerleri (PASS 2 için gerekli)
                         '_runningStyle': horse_style,
@@ -7773,6 +8298,10 @@ def analyze_race():
             if 'scoreBreakdown' in h:
                 h['scoreBreakdown']['paceScore'] = pace_score_val
                 h['scoreBreakdown']['runningStyleProxyScore'] = running_style_proxy_score
+                h['scoreBreakdown']['recentFinishPositionScore'] = metrics_p1.get(
+                    'recent_finish_position_score',
+                    50.0,
+                ) if metrics_p1 else 50.0
                 h['scoreBreakdown']['pacePressure'] = pace_pressure
             
             # Temizle: PASS 1 private alanlarını kaldır, pedigreeInfo'yu kalıcıya taşı
@@ -8096,6 +8625,14 @@ def analyze_race():
                     'v4_weights': _h.get('v4Weights', {}),
                     'v4_confidence': _h.get('v4Confidence', {}),
                     'v4_data_quality': _h.get('v4DataQuality', {}),
+                    'v422_candidate_version': _h.get('v422CandidateVersion'),
+                    'v422_candidate_mode': _h.get('v422CandidateMode'),
+                    'v422_candidate_score': _h.get('v422CandidateScore'),
+                    'v422_candidate_rank': _h.get('v422CandidateRank'),
+                    'v422_candidate_used_for_ranking': _h.get('v422CandidateUsedForRanking', False),
+                    'v422_candidate_weights': _h.get('v422CandidateWeights', {}),
+                    'v422_candidate_profile': _h.get('v422CandidateProfile', {}),
+                    'v422_candidate_reason': _h.get('v422CandidateReason'),
                     'days_since_last_race': _h.get('daysSinceLastRace'),
                     'last_race_distance': _h.get('lastRaceDistance'),
                     'race_count': _h.get('raceCount'),
@@ -8132,9 +8669,14 @@ def analyze_race():
                             'weight_impact','handicap_efficiency_score',
                             'handicap_weight_relief_score',
                             'handicap_class_transition_score','handicap_class_delta',
+                            'handicap_load_value_score','weight_change_risk_score',
+                            'handicap_class_load_transition_score',
                             'field_relative_value_score','pace_map_edge_score',
                             'surface_switch_safety_score','favorite_risk_guard_score',
                             'class_peak_score','elite_consensus_score',
+                            'recent_finish_position_score','start_draw_score',
+                            'late_start_risk_score','track_condition_suit_score',
+                            'handicap_age_curve_score',
                             'jockey_score','bounce_score','pace_score',
                             'running_style_proxy_score','pace_pressure','pedigree','hp_score',
                             'agf_score','trainer_score','age_score',
