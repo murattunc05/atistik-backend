@@ -9,6 +9,9 @@ LOG_DIR="${ATISTIK_LOG_DIR:-${ROOT_DIR}/logs}"
 COMPOSE_FILE="${ATISTIK_COMPOSE_FILE:-docker-compose.raspberry.yml}"
 BACKEND_URL="${ATISTIK_BACKEND_URL:-http://atistik-api:5000}"
 IMAGE_NAME="${ATISTIK_IMAGE_NAME:-atistik-api:raspberry}"
+RENDER_BACKEND_URL="${ATISTIK_RENDER_BACKEND_URL:-https://atistik-backend.onrender.com}"
+RENDER_RESTORE_MAX_ATTEMPTS="${ATISTIK_RENDER_RESTORE_MAX_ATTEMPTS:-6}"
+RENDER_RESTORE_SLEEP_SECONDS="${ATISTIK_RENDER_RESTORE_SLEEP_SECONDS:-10}"
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
 cd "$ROOT_DIR"
@@ -40,6 +43,61 @@ current_git_revision() {
 image_revision() {
   docker image inspect "$IMAGE_NAME" \
     --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true
+}
+
+backend_labeled_lines() {
+  local base_url="$1"
+  local status_json
+  status_json="$(curl -fsS "${base_url%/}/api/ml-status" 2>/dev/null)" || return 1
+  python3 -c 'import json, sys
+try:
+    value = (json.load(sys.stdin).get("predictions") or {}).get("labeled_lines")
+    print(int(value))
+except Exception:
+    print("")' \
+    <<<"$status_json" 2>/dev/null
+}
+
+restore_render_from_backup() {
+  if [[ "$MODE" != "results" ]]; then
+    return 0
+  fi
+
+  if [[ -z "$RENDER_BACKEND_URL" ]]; then
+    echo "[ATISTIK] Render restore atlandi: ATISTIK_RENDER_BACKEND_URL bos."
+    return 0
+  fi
+
+  local expected_labeled
+  expected_labeled="$(backend_labeled_lines "$BACKEND_URL" || true)"
+  if [[ -z "$expected_labeled" ]]; then
+    echo "[ATISTIK] Pi local labeled_lines okunamadi; Render restore dogrulanamiyor." >&2
+    return 1
+  fi
+
+  echo "[ATISTIK] Render predictions restore basliyor; hedef labeled_lines=${expected_labeled}."
+
+  local attempt
+  local actual_labeled
+  for ((attempt = 1; attempt <= RENDER_RESTORE_MAX_ATTEMPTS; attempt++)); do
+    if curl -fsS -X POST "${RENDER_BACKEND_URL%/}/api/ml-restore?force=true" >/dev/null; then
+      actual_labeled="$(backend_labeled_lines "$RENDER_BACKEND_URL" || true)"
+      if [[ -n "$actual_labeled" && "$actual_labeled" -ge "$expected_labeled" ]]; then
+        echo "[ATISTIK] Render restore tamam: labeled_lines=${actual_labeled}."
+        return 0
+      fi
+      echo "[ATISTIK] Render restore bekleniyor: ${actual_labeled:-unknown}/${expected_labeled} (attempt ${attempt}/${RENDER_RESTORE_MAX_ATTEMPTS})."
+    else
+      echo "[ATISTIK] Render restore istegi basarisiz (attempt ${attempt}/${RENDER_RESTORE_MAX_ATTEMPTS})." >&2
+    fi
+
+    if [[ "$attempt" -lt "$RENDER_RESTORE_MAX_ATTEMPTS" ]]; then
+      sleep "$RENDER_RESTORE_SLEEP_SECONDS"
+    fi
+  done
+
+  echo "[ATISTIK] Render restore dogrulanamadi; canli backend GitHub backup gerisinde kalabilir." >&2
+  return 1
 }
 
 ensure_image_current() {
@@ -150,3 +208,5 @@ if [[ "$automation_status" -ne 0 ]]; then
   echo "[ATISTIK] Automation ${MODE} hata kodu ile bitti: ${automation_status}" >&2
   exit "$automation_status"
 fi
+
+restore_render_from_backup
