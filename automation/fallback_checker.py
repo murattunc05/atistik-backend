@@ -12,7 +12,7 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,15 @@ def read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def run_dir(data_dir: Path, day: date) -> Path:
     return data_dir / "automation" / "runs" / day.isoformat()
 
@@ -66,6 +75,35 @@ def results_ok(data: dict[str, Any] | None) -> bool:
         and int(totals.get("checked", 0) or 0) > 0
         and int(totals.get("failed", 0) or 0) == 0
     )
+
+
+def report_diagnosis(kind: str, path: Path, data: dict[str, Any] | None) -> dict[str, Any]:
+    if not path.exists():
+        return {"ok": False, "reason": "report_missing", "path": str(path)}
+    if data is None:
+        return {"ok": False, "reason": "report_unreadable", "path": str(path)}
+
+    totals = data.get("totals") or {}
+    ok = analysis_ok(data) if kind == "analyze" else results_ok(data)
+    return {
+        "ok": ok,
+        "reason": "successful_primary_report" if ok else "primary_report_not_successful",
+        "path": str(path),
+        "mode": data.get("mode"),
+        "status": data.get("status"),
+        "totals": totals,
+        "startedAt": data.get("startedAt"),
+        "finishedAt": data.get("finishedAt"),
+    }
+
+
+def preserve_primary_report(out_dir: Path, kind: str, data: dict[str, Any] | None) -> str | None:
+    if not data:
+        return None
+    name = "analysis-before-render-fallback.json" if kind == "analyze" else "results-before-render-fallback.json"
+    path = out_dir / name
+    write_json(path, data)
+    return str(path)
 
 
 def run_automation(
@@ -117,16 +155,50 @@ def main() -> int:
 
     if args.kind == "analyze":
         report_path = out_dir / "analysis.json"
-        if analysis_ok(read_json(report_path)):
+        primary_report = read_json(report_path)
+        diagnosis = report_diagnosis(args.kind, report_path, primary_report)
+        if diagnosis["ok"]:
             print(f"[FALLBACK] Analysis already exists and is successful: {report_path}")
             return 0
-        return run_automation("analyze", day, args.backend_url, data_dir, args.max_attempts, args.allow_render_run)
+        preserved_path = preserve_primary_report(out_dir, args.kind, primary_report)
+        decision_path = out_dir / "analyze-fallback-decision.json"
+        decision = {
+            "kind": args.kind,
+            "date": day.isoformat(),
+            "createdAt": now_utc_iso(),
+            "backendUrl": args.backend_url,
+            "primaryReport": diagnosis,
+            "preservedPrimaryReport": preserved_path,
+        }
+        write_json(decision_path, decision)
+        rc = run_automation("analyze", day, args.backend_url, data_dir, args.max_attempts, args.allow_render_run)
+        decision["finishedAt"] = now_utc_iso()
+        decision["fallbackExitCode"] = rc
+        write_json(decision_path, decision)
+        return rc
 
     report_path = out_dir / "results.json"
-    if results_ok(read_json(report_path)):
+    primary_report = read_json(report_path)
+    diagnosis = report_diagnosis(args.kind, report_path, primary_report)
+    if diagnosis["ok"]:
         print(f"[FALLBACK] Results already exist and are successful: {report_path}")
         return 0
-    return run_automation("results", day, args.backend_url, data_dir, args.max_attempts, args.allow_render_run)
+    preserved_path = preserve_primary_report(out_dir, args.kind, primary_report)
+    decision_path = out_dir / "results-fallback-decision.json"
+    decision = {
+        "kind": args.kind,
+        "date": day.isoformat(),
+        "createdAt": now_utc_iso(),
+        "backendUrl": args.backend_url,
+        "primaryReport": diagnosis,
+        "preservedPrimaryReport": preserved_path,
+    }
+    write_json(decision_path, decision)
+    rc = run_automation("results", day, args.backend_url, data_dir, args.max_attempts, args.allow_render_run)
+    decision["finishedAt"] = now_utc_iso()
+    decision["fallbackExitCode"] = rc
+    write_json(decision_path, decision)
+    return rc
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ DATA_DIR="${ATISTIK_ML_DATA_DIR:-${ROOT_DIR}/ml-data}"
 LOG_DIR="${ATISTIK_LOG_DIR:-${ROOT_DIR}/logs}"
 COMPOSE_FILE="${ATISTIK_COMPOSE_FILE:-docker-compose.raspberry.yml}"
 BACKEND_URL="${ATISTIK_BACKEND_URL:-http://atistik-api:5000}"
+IMAGE_NAME="${ATISTIK_IMAGE_NAME:-atistik-api:raspberry}"
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
 cd "$ROOT_DIR"
@@ -32,11 +33,54 @@ git_ml() {
   git -c "http.https://github.com/.extraheader=$GIT_AUTH_HEADER" "$@"
 }
 
+current_git_revision() {
+  git rev-parse --short=12 HEAD 2>/dev/null || echo "unknown"
+}
+
+image_revision() {
+  docker image inspect "$IMAGE_NAME" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true
+}
+
+ensure_image_current() {
+  local current_rev
+  local built_rev
+  current_rev="$(current_git_revision)"
+  built_rev="$(image_revision)"
+
+  if [[ "$current_rev" == "unknown" ]]; then
+    echo "[ATISTIK] Git revision okunamadi; mevcut Docker image kullanilacak."
+    return 0
+  fi
+
+  if [[ "$built_rev" != "$current_rev" ]]; then
+    echo "[ATISTIK] Docker image eski (${built_rev:-none}); ${current_rev} icin rebuild ediliyor..."
+    docker compose -f "$COMPOSE_FILE" build \
+      --build-arg "ATISTIK_IMAGE_REVISION=$current_rev" \
+      atistik-api
+  fi
+}
+
 fix_data_permissions() {
   if [[ -d "$DATA_DIR/automation" ]]; then
     docker compose -f "$COMPOSE_FILE" run --rm atistik-worker \
       sh -c "chown -R $(id -u):$(id -g) /ml-data/automation" >/dev/null 2>&1 || true
   fi
+}
+
+sync_ml_data() {
+  fix_data_permissions
+  git_ml -C "$DATA_DIR" fetch origin main
+  git -C "$DATA_DIR" checkout main
+  if git_ml -C "$DATA_DIR" pull --rebase origin main; then
+    return 0
+  fi
+
+  echo "[ATISTIK] ML-data rebase conflict; local state backup branch'e alinip origin/main'e hizalaniyor..." >&2
+  git -C "$DATA_DIR" rebase --abort >/dev/null 2>&1 || true
+  local backup_branch="backup/raspberry-sync-$(TZ=Europe/Istanbul date +%Y%m%d-%H%M%S)"
+  git -C "$DATA_DIR" branch "$backup_branch" HEAD >/dev/null 2>&1 || true
+  git -C "$DATA_DIR" reset --hard origin/main
 }
 
 trap fix_data_permissions EXIT
@@ -45,12 +89,10 @@ if [[ ! -d "$DATA_DIR/.git" ]]; then
   rm -rf "$DATA_DIR"
   git_ml clone "https://github.com/${ML_DATA_REPO}.git" "$DATA_DIR"
 else
-  fix_data_permissions
-  git_ml -C "$DATA_DIR" fetch origin main
-  git -C "$DATA_DIR" checkout main
-  git_ml -C "$DATA_DIR" pull --rebase origin main
+  sync_ml_data
 fi
 
+ensure_image_current
 docker compose -f "$COMPOSE_FILE" up -d atistik-api
 
 echo "[ATISTIK] Syncing predictions.jsonl from GitHub backup before ${MODE}..."
@@ -64,6 +106,8 @@ fi
 
 LOG_FILE="${LOG_DIR}/automation-${MODE}-$(TZ=Europe/Istanbul date +%Y%m%d-%H%M%S).log"
 
+automation_status=0
+set +e
 docker compose -f "$COMPOSE_FILE" run --rm atistik-worker \
   python automation/atistik_daily_job.py \
     --mode "$MODE" \
@@ -71,6 +115,8 @@ docker compose -f "$COMPOSE_FILE" run --rm atistik-worker \
     --backend-url "$BACKEND_URL" \
     --data-dir /ml-data \
   | tee "$LOG_FILE"
+automation_status=${PIPESTATUS[0]}
+set -e
 
 fix_data_permissions
 
@@ -80,9 +126,11 @@ git -C "$DATA_DIR" config user.email "atistik-raspberry@users.noreply.github.com
 if ! git -C "$DATA_DIR" diff --quiet -- automation || [[ -n "$(git -C "$DATA_DIR" ls-files --others --exclude-standard automation)" ]]; then
   git -C "$DATA_DIR" add automation
   git -C "$DATA_DIR" commit -m "Atistik raspberry ${MODE} $(TZ=Europe/Istanbul date +%Y-%m-%d)"
+  pushed=0
   for attempt in 1 2 3 4 5; do
     if git_ml -C "$DATA_DIR" push; then
-      exit 0
+      pushed=1
+      break
     fi
     if [[ "$attempt" == "5" ]]; then
       echo "ML-data push 5 denemeden sonra basarisiz." >&2
@@ -91,6 +139,14 @@ if ! git -C "$DATA_DIR" diff --quiet -- automation || [[ -n "$(git -C "$DATA_DIR
     git_ml -C "$DATA_DIR" pull --rebase origin main
     sleep 5
   done
+  if [[ "$pushed" != "1" ]]; then
+    exit 1
+  fi
 else
   echo "ML-data automation degisikligi yok."
+fi
+
+if [[ "$automation_status" -ne 0 ]]; then
+  echo "[ATISTIK] Automation ${MODE} hata kodu ile bitti: ${automation_status}" >&2
+  exit "$automation_status"
 fi

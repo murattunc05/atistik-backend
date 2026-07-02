@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry Atistik Raspberry evening results if the primary run did not publish
+
+[Timer]
+OnCalendar=*-*-* 23:10:00
+OnCalendar=*-*-* 23:35:00
+Persistent=true
+Unit=atistik-raspberry-results-guard.service
+
+[Install]
+WantedBy=timers.target

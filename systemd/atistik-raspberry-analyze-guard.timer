@@ -1,0 +1,12 @@
+[Unit]
+Description=Retry Atistik Raspberry morning analysis if the primary run did not publish
+
+[Timer]
+OnCalendar=*-*-* 07:15:00
+OnCalendar=*-*-* 08:00:00
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+Unit=atistik-raspberry-analyze-guard.service
+
+[Install]
+WantedBy=timers.target

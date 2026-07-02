@@ -1,0 +1,12 @@
+[Unit]
+Description=Verify Atistik Raspberry evening results and retry locally
+After=atistik-raspberry-api.service network-online.target
+Wants=atistik-raspberry-api.service network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+WorkingDirectory=/opt/atistik/backend
+ExecStart=/opt/atistik/backend/scripts/raspberry/ensure-automation.sh results
+TimeoutStartSec=7200

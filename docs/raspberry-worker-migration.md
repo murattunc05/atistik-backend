@@ -79,15 +79,21 @@ Kod veya dependency guncelledikten sonra image'i manuel yenile:
 ```bash
 cd /opt/atistik/backend
 git pull --ff-only origin main
-docker compose -f docker-compose.raspberry.yml build atistik-api
 sudo systemctl restart atistik-raspberry-api.service
 ```
+
+`run-automation.sh` artik Docker image icindeki git revision etiketini kontrol eder.
+Repo guncellenmis ama image eski kalmissa scheduled run oncesi image'i otomatik
+rebuild eder. Yine de buyuk dependency degisikliginden sonra yukaridaki restart
+komutu ile API container'ini tazelemek iyi olur.
 
 Cutover gunune kadar timer'lari acma:
 
 ```bash
 sudo systemctl enable --now atistik-raspberry-analyze.timer
 sudo systemctl enable --now atistik-raspberry-results.timer
+sudo systemctl enable --now atistik-raspberry-analyze-guard.timer
+sudo systemctl enable --now atistik-raspberry-results-guard.timer
 ```
 
 Kontrol:
@@ -95,8 +101,16 @@ Kontrol:
 ```bash
 systemctl list-timers | grep atistik
 journalctl -u atistik-raspberry-analyze.service -n 200 --no-pager
+journalctl -u atistik-raspberry-analyze-guard.service -n 200 --no-pager
 journalctl -u atistik-raspberry-results.service -n 200 --no-pager
+journalctl -u atistik-raspberry-results-guard.service -n 200 --no-pager
 ```
+
+Guard timer'lari GitHub Actions'a bagli degildir. Sabah `07:15`, `08:00` ve
+`09:00` Istanbul saatlerinde ML-data icindeki `analysis.json` raporunu kontrol
+eder; basarili rapor varsa cikar, rapor eksik veya basarisizsa Pi lokal backend
+ile analizi tekrar dener. Aksam guard'i da `23:10` ve `23:35` saatlerinde
+`results.json` icin ayni kontrolu yapar.
 
 ## Cutover Kriterleri
 
@@ -118,11 +132,23 @@ Cutover sonrasi GitHub Actions primary analiz schedule'i kapatilip `Atistik Rend
 
 Fallback checker once ML-data'da o gunun raporunu okur. Basarili Pi raporu varsa Render'a dokunmaz. Rapor yoksa veya basarisizsa Render backend ile yedek isi calistirir ve ML-data'ya commit eder.
 
+Render fallback devreye girerse karar kaniti ML-data'da ayrica saklanir:
+
+- `automation/runs/YYYY-MM-DD/analyze-fallback-decision.json`
+- `automation/runs/YYYY-MM-DD/analysis-before-render-fallback.json`
+- `automation/runs/YYYY-MM-DD/results-fallback-decision.json`
+- `automation/runs/YYYY-MM-DD/results-before-render-fallback.json`
+
+Boylece Render raporu `analysis.json` veya `results.json` dosyasini overwrite
+etse bile Pi'nin onceki rapor durumu kaybolmaz.
+
 ## Rollback
 
 ```bash
 sudo systemctl disable --now atistik-raspberry-analyze.timer
 sudo systemctl disable --now atistik-raspberry-results.timer
+sudo systemctl disable --now atistik-raspberry-analyze-guard.timer
+sudo systemctl disable --now atistik-raspberry-results-guard.timer
 ```
 
 Sonra GitHub Actions eski Render primary schedule'i tekrar acilir veya manuel `workflow_dispatch` ile Render analizi calistirilir.

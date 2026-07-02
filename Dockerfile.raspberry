@@ -6,6 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+ARG ATISTIK_IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$ATISTIK_IMAGE_REVISION
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl \
@@ -20,6 +23,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY . .
 
 RUN chmod +x scripts/raspberry/entrypoint-api.sh \
+    && chmod +x scripts/raspberry/ensure-automation.sh \
     && chmod +x scripts/raspberry/run-automation.sh
 
 EXPOSE 5000

@@ -44,3 +44,22 @@ def test_results_fallback_skips_successful_report(tmp_path):
 
     assert result.returncode == 0
     assert "already exist" in result.stdout
+
+
+def test_analyze_fallback_records_failed_primary_report(tmp_path):
+    run_dir = tmp_path / "automation" / "runs" / "2026-06-30"
+    run_dir.mkdir(parents=True)
+    (run_dir / "analysis.json").write_text(
+        json.dumps({"mode": "analyze", "status": "partial_success", "totals": {"analyzed": 2, "failed": 1}}),
+        encoding="utf-8",
+    )
+
+    result = run_checker(tmp_path, "--kind", "analyze", "--date", "2026-06-30")
+
+    assert result.returncode == 3
+    decision = json.loads((run_dir / "analyze-fallback-decision.json").read_text(encoding="utf-8"))
+    preserved = json.loads((run_dir / "analysis-before-render-fallback.json").read_text(encoding="utf-8"))
+    assert decision["primaryReport"]["reason"] == "primary_report_not_successful"
+    assert decision["primaryReport"]["totals"]["failed"] == 1
+    assert decision["fallbackExitCode"] == 3
+    assert preserved["status"] == "partial_success"
