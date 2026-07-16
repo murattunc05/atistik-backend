@@ -20,7 +20,7 @@ from train_shadow_ml import feature_dict
 
 class V421RulesTest(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(_V4_VERSION, "4.21")
+        self.assertEqual(_V4_VERSION, "4.23")
 
     def test_agf_is_allowed_only_for_maiden_and_sartli_one(self):
         maiden = resolve_v4_profile_weights(
@@ -56,7 +56,7 @@ class V421RulesTest(unittest.TestCase):
             ("Grup 2", "Cim", False, 0.0),
             ("Satis 3", "Kum", False, 0.0),
             ("Sartli 4", "Kum", False, 0.0),
-            ("Maiden", "Kum", True, 16.0 / 93.0),
+            ("Maiden", "Kum", True, 14.72 / 93.0),
             ("Sartli 1", "Kum", True, 0.18),
         ]
         for race_type, track, agf_allowed, expected_agf_weight in cases:
@@ -72,21 +72,22 @@ class V421RulesTest(unittest.TestCase):
                     places=4,
                 )
 
-    def test_maiden_profile_uses_training_degree_heavy_revision(self):
+    def test_maiden_profile_uses_v423_degree_revision(self):
         resolved = resolve_v4_profile_weights(
             extract_v4_race_profile("Maiden", "1200", "Cim", 8)
         )
 
         self.assertEqual(resolved["selectedKey"], "MAIDEN")
         self.assertTrue(resolved["agfAllowedForRanking"])
-        self.assertAlmostEqual(resolved["weights"]["agf_score"], 16.0 / 93.0, places=4)
-        self.assertAlmostEqual(resolved["weights"]["training_fitness"], 8.0 / 93.0, places=4)
-        self.assertAlmostEqual(resolved["weights"]["training_degree_score"], 17.0 / 93.0, places=4)
+        self.assertAlmostEqual(resolved["weights"]["agf_score"], 14.72 / 93.0, places=4)
+        self.assertAlmostEqual(resolved["weights"]["degree_avg"], 8.36 / 93.0, places=4)
+        self.assertAlmostEqual(resolved["weights"]["training_fitness"], 7.36 / 93.0, places=4)
+        self.assertAlmostEqual(resolved["weights"]["training_degree_score"], 15.64 / 93.0, places=4)
         self.assertGreater(
             resolved["weights"]["training_degree_score"],
             resolved["weights"]["training_fitness"],
         )
-        self.assertAlmostEqual(resolved["weights"]["trainer_score"], 7.0 / 93.0, places=4)
+        self.assertAlmostEqual(resolved["weights"]["trainer_score"], 6.44 / 93.0, places=4)
 
     def test_special_handikap_profiles_are_normalized_without_changing_ratios(self):
         kum = resolve_v4_profile_weights(

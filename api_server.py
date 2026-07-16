@@ -5721,7 +5721,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.21"
+_V4_VERSION = "4.23"
 _V422_CANDIDATE_VERSION = "4.22-handicap-candidate"
 
 _V4_METRIC_KEYS = [
@@ -6215,22 +6215,25 @@ _V4_PROFILE_WEIGHT_OVERRIDES = {
         'track_experience_score': 1.0,
     },
     'MAIDEN': {
-        'agf_score': 16.0,
-        'pedigree': 18.0,
-        'training_fitness': 8.0,
-        'training_degree_score': 17.0,
-        'jockey_score': 6.0,
-        'trainer_score': 7.0,
-        'pace_score': 5.0,
-        'running_style_proxy_score': 1.0,
-        'hp_score': 4.0,
-        'weight_impact': 2.0,
-        'form_trend': 4.0,
-        'degree_avg': 1.0,
-        'degree_stability': 1.0,
-        'distance_suit': 1.0,
-        'surface_transition_score': 1.0,
-        'age_score': 1.0,
+        # v4.23: 57 integrity-clean races, chronological 60/20/20 gate.
+        # Move a conservative 8% share to degree_avg; keep AGF below the
+        # previous normalized share and leave the raw total unchanged at 93.
+        'agf_score': 14.72,
+        'pedigree': 16.56,
+        'training_fitness': 7.36,
+        'training_degree_score': 15.64,
+        'jockey_score': 5.52,
+        'trainer_score': 6.44,
+        'pace_score': 4.60,
+        'running_style_proxy_score': 0.92,
+        'hp_score': 3.68,
+        'weight_impact': 1.84,
+        'form_trend': 3.68,
+        'degree_avg': 8.36,
+        'degree_stability': 0.92,
+        'distance_suit': 0.92,
+        'surface_transition_score': 0.92,
+        'age_score': 0.92,
     },
     'SART1': {
         'agf_score': 18.0,
@@ -6411,6 +6414,35 @@ if 'HANDIKAP15|Kum' in _V4_WEIGHT_PROFILES:
 if 'HANDIKAP15|Cim' in _V4_WEIGHT_PROFILES:
     _V4_WEIGHT_PROFILES['HANDIKAP15|Cim']['sample_races'] = 19
     _V4_WEIGHT_PROFILES['HANDIKAP15|Cim']['weights'] = dict(_V4_HANDIKAP15_CIM_WEIGHTS)
+
+# Full-race sample counters refreshed after the 2026-07-16 label repair.
+# Category keys use all integrity-clean races in that category; specific keys
+# use the races that resolve to that profile.  These counters affect confidence
+# metadata only, never the score formula.
+_V423_FULL_ONLY_SAMPLE_RACES = {
+    'GLOBAL': 1,
+    'GRUP': 26,
+    'HANDIKAP': 120,
+    'HANDIKAP14': 5,
+    'HANDIKAP14|Kum': 19,
+    'HANDIKAP15': 2,
+    'HANDIKAP15|Kum': 21,
+    'HANDIKAP15|Cim': 17,
+    'HANDIKAP16': 4,
+    'HANDIKAP16|Kum': 17,
+    'HANDIKAP16|Cim': 17,
+    'KV': 52,
+    'MAIDEN': 57,
+    'SARTLI': 146,
+    'SART1': 7,
+    'SART3': 33,
+    'SART4': 55,
+    'SART5': 38,
+    'SATIS': 14,
+}
+for _profile_key, _sample_races in _V423_FULL_ONLY_SAMPLE_RACES.items():
+    if _profile_key in _V4_WEIGHT_PROFILES:
+        _V4_WEIGHT_PROFILES[_profile_key]['sample_races'] = _sample_races
 
 
 def _v4_fold_text(value):

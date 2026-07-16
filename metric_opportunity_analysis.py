@@ -12,7 +12,7 @@ import csv
 import json
 import math
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -59,6 +59,7 @@ MIN_COVERAGE = 0.25
 MIN_NON_NEUTRAL = 0.10
 MAX_REFINED_METRICS = 12
 MAX_REFINEMENT_PASSES_PER_STEP = 4
+TERMINAL_FINISH_POSITIONS = {99}
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -77,6 +78,128 @@ def safe_int(value: Any, default: int = 999) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return int(default)
+
+
+def load_local_entries(path: str | Path) -> list[dict[str, Any]]:
+    """Load either an API export JSON payload or the raw predictions JSONL."""
+    input_path = Path(path)
+    raw = input_path.read_text(encoding="utf-8")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        entries = []
+        for line_number, line in enumerate(raw.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSONL at line {line_number}: {exc}") from exc
+            if not isinstance(entry, dict):
+                raise ValueError(f"Expected an object at JSONL line {line_number}")
+            entries.append(entry)
+        return entries
+
+    if isinstance(payload, list):
+        entries = payload
+    elif isinstance(payload, dict):
+        entries = payload.get("entries", [])
+    else:
+        raise ValueError("Input must be an export object, entry list, or JSONL file")
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise ValueError("Input entries must be a list of objects")
+    return entries
+
+
+def select_entries_by_label_coverage(
+    entries: list[dict[str, Any]],
+    *,
+    include_partial: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Select optimization rows and report whole-race label coverage.
+
+    A race is fully labeled only when every logged prediction row has a valid,
+    positive finish position.  By default, a partially labeled race contributes
+    no rows at all; retaining only its labeled horses would bias full-order
+    ranking metrics.  Fully labeled races with invalid finish-rank integrity are
+    reported but also excluded.  ``include_partial`` is an explicit legacy-analysis
+    opt-in for partial races only; it never bypasses the integrity guard.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        grouped[str(entry.get("race_id"))].append(entry)
+
+    coverage = {
+        "total_races": len(grouped),
+        "fully_labeled_races": 0,
+        "partially_labeled_races": 0,
+        "unlabeled_races": 0,
+        "total_rows": len(entries),
+        "fully_labeled_race_rows": 0,
+        "partially_labeled_race_rows": 0,
+        "unlabeled_race_rows": 0,
+        "partial_labeled_rows": 0,
+        "partial_unlabeled_rows": 0,
+        "integrity_clean_fully_labeled_races": 0,
+        "integrity_invalid_fully_labeled_races": 0,
+        "integrity_invalid_fully_labeled_rows": 0,
+        "rank_out_of_range_races": 0,
+        "rank_out_of_range_rows": 0,
+        "competition_pattern_invalid_races": 0,
+        "valid_tie_races": 0,
+        "terminal_status_races": 0,
+        "terminal_status_rows": 0,
+        "selected_races": 0,
+    }
+    selected = []
+    for rows in grouped.values():
+        labeled_rows = [row for row in rows if safe_int(row.get("finish_pos"), 0) > 0]
+        if len(labeled_rows) == len(rows):
+            coverage["fully_labeled_races"] += 1
+            coverage["fully_labeled_race_rows"] += len(rows)
+            ranks = [safe_int(row.get("finish_pos"), 0) for row in rows]
+            terminal_status_count = sum(1 for rank in ranks if rank in TERMINAL_FINISH_POSITIONS)
+            ranked_positions = [rank for rank in ranks if rank not in TERMINAL_FINISH_POSITIONS]
+            rank_counts = Counter(ranked_positions)
+            out_of_range_count = sum(1 for rank in ranked_positions if rank > len(rows))
+            expected_rank = 1
+            competition_pattern_valid = True
+            for rank, tied_count in sorted(rank_counts.items()):
+                if rank != expected_rank:
+                    competition_pattern_valid = False
+                    break
+                expected_rank += tied_count
+            if terminal_status_count:
+                coverage["terminal_status_races"] += 1
+                coverage["terminal_status_rows"] += terminal_status_count
+            if out_of_range_count:
+                coverage["rank_out_of_range_races"] += 1
+                coverage["rank_out_of_range_rows"] += out_of_range_count
+            if not competition_pattern_valid:
+                coverage["competition_pattern_invalid_races"] += 1
+            if not out_of_range_count and competition_pattern_valid:
+                coverage["integrity_clean_fully_labeled_races"] += 1
+                if any(count > 1 for count in rank_counts.values()):
+                    coverage["valid_tie_races"] += 1
+                selected.extend(rows)
+                coverage["selected_races"] += 1
+            else:
+                coverage["integrity_invalid_fully_labeled_races"] += 1
+                coverage["integrity_invalid_fully_labeled_rows"] += len(rows)
+        elif labeled_rows:
+            coverage["partially_labeled_races"] += 1
+            coverage["partially_labeled_race_rows"] += len(rows)
+            coverage["partial_labeled_rows"] += len(labeled_rows)
+            coverage["partial_unlabeled_rows"] += len(rows) - len(labeled_rows)
+            if include_partial:
+                selected.extend(labeled_rows)
+                coverage["selected_races"] += 1
+        else:
+            coverage["unlabeled_races"] += 1
+            coverage["unlabeled_race_rows"] += len(rows)
+
+    coverage["selected_rows"] = len(selected)
+    return selected, coverage
 
 
 def parse_date(value: Any) -> datetime:
@@ -462,14 +585,48 @@ def format_metric_delta(candidate: dict[str, Any], baseline: dict[str, Any], met
     return f"{cand} vs {base}"
 
 
-def write_summary(path: Path, analyses: list[dict[str, Any]], export_count: int) -> None:
+def write_summary(
+    path: Path,
+    analyses: list[dict[str, Any]],
+    export_count: int,
+    analysis_entry_count: int,
+    label_coverage: dict[str, int],
+    include_partial: bool,
+) -> None:
     lines = [
         "# Metric Opportunity Analysis",
         "",
-        f"- Export entries used: `{export_count}` labeled rows before race filtering.",
+        f"- Input entries: `{export_count}` rows across `{label_coverage['total_races']}` races.",
+        f"- Entries used for optimization: `{analysis_entry_count}` rows.",
+        f"- Label policy: `{'integrity-valid full races + partial labeled rows (explicit opt-in)' if include_partial else 'integrity-valid fully labeled races only'}`.",
         "- Objective: order closeness (`45% NDCG@5`, `35% normalized Spearman`, `20% MAE component`).",
         "- AGF policy: included only for `MAIDEN` and `SART1`; otherwise diagnostic only.",
         "- This report is analysis-only; live v4 weights are unchanged.",
+        "",
+        "## Label Coverage",
+        "",
+        "| Coverage | Races | Rows |",
+        "|---|---:|---:|",
+        f"| Fully labeled | {label_coverage['fully_labeled_races']} | {label_coverage['fully_labeled_race_rows']} |",
+        f"| Partially labeled | {label_coverage['partially_labeled_races']} | {label_coverage['partially_labeled_race_rows']} |",
+        f"| Unlabeled | {label_coverage['unlabeled_races']} | {label_coverage['unlabeled_race_rows']} |",
+        "",
+        f"Partial-race detail: `{label_coverage['partial_labeled_rows']}` labeled rows and "
+        f"`{label_coverage['partial_unlabeled_rows']}` unlabeled rows. Partial races are "
+        f"`{'included by explicit request' if include_partial else 'excluded as whole races'}`.",
+        "",
+        "## Label Integrity",
+        "",
+        f"- Integrity-clean fully labeled races: `{label_coverage['integrity_clean_fully_labeled_races']}`.",
+        f"- Integrity-invalid fully labeled races excluded from optimization: "
+        f"`{label_coverage['integrity_invalid_fully_labeled_races']}` races / "
+        f"`{label_coverage['integrity_invalid_fully_labeled_rows']}` rows.",
+        f"- Out-of-range finish ranks: `{label_coverage['rank_out_of_range_rows']}` rows in "
+        f"`{label_coverage['rank_out_of_range_races']}` races.",
+        f"- Invalid competition-ranking pattern: `{label_coverage['competition_pattern_invalid_races']}` races.",
+        f"- Valid tied-finish pattern: `{label_coverage['valid_tie_races']}` races (ties are accepted).",
+        f"- Official terminal/DNF status: `{label_coverage['terminal_status_rows']}` rows in "
+        f"`{label_coverage['terminal_status_races']}` races (`99` is accepted as status, not rank).",
         "",
         "## Candidate Summary",
         "",
@@ -564,16 +721,24 @@ def build_outputs(analyses: list[dict[str, Any]], races: list[list[dict[str, Any
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze metric weight opportunities without changing live weights.")
     parser.add_argument("--export-url", default=DEFAULT_EXPORT_URL)
-    parser.add_argument("--input", help="Optional local export JSON.")
+    parser.add_argument("--input", help="Optional local export JSON or predictions JSONL.")
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument(
+        "--include-partial",
+        action="store_true",
+        help="Opt in to legacy analysis of labeled rows from partially labeled races.",
+    )
     args = parser.parse_args()
 
     if args.input:
-        payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
-        entries = payload.get("entries", payload if isinstance(payload, list) else [])
+        entries = load_local_entries(args.input)
     else:
         entries = evaluator.load_entries(args.export_url)
-    races = evaluator.group_races(entries)
+    analysis_entries, label_coverage = select_entries_by_label_coverage(
+        entries,
+        include_partial=args.include_partial,
+    )
+    races = evaluator.group_races(analysis_entries)
     segments = segment_rows(races)
     analyses = [
         analyze_segment(level, segment, segment_races)
@@ -584,7 +749,14 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     group_rows, race_rows, diagnostic_rows = build_outputs(analyses, races)
-    write_summary(output_dir / "summary.md", analyses, len(entries))
+    write_summary(
+        output_dir / "summary.md",
+        analyses,
+        len(entries),
+        len(analysis_entries),
+        label_coverage,
+        args.include_partial,
+    )
     write_csv(
         output_dir / "group_weight_candidates.csv",
         group_rows,
@@ -658,7 +830,14 @@ def main() -> None:
             {
                 "created_at": datetime.now().isoformat(timespec="seconds"),
                 "export_count": len(entries),
+                "analysis_entry_count": len(analysis_entries),
                 "race_count": len(races),
+                "label_policy": (
+                    "integrity_valid_full_plus_partial_labeled_rows"
+                    if args.include_partial
+                    else "integrity_valid_fully_labeled_races_only"
+                ),
+                "label_coverage": label_coverage,
                 "objective": {
                     "ndcg5": 0.45,
                     "spearman_rho_normalized": 0.35,
@@ -672,7 +851,17 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
-    print(json.dumps({"output_dir": str(output_dir), "races": len(races), "segments": len(analyses)}, ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "output_dir": str(output_dir),
+        "races": len(races),
+        "segments": len(analyses),
+        "label_policy": (
+            "integrity_valid_full_plus_partial_labeled_rows"
+            if args.include_partial
+            else "integrity_valid_fully_labeled_races_only"
+        ),
+        "label_coverage": label_coverage,
+    }, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

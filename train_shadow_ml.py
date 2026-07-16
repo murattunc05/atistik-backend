@@ -77,7 +77,35 @@ FEATURE_COLS = [
     "feature_variance",
 ]
 
-NO_AGF_FEATURE_COLS = [col for col in FEATURE_COLS if col not in {"agf_score", "has_agf"}]
+AGF_INFLUENCED_FEATURE_COLS = {
+    "agf_score",
+    "has_agf",
+    # v4 is allowed to consume AGF in MAIDEN/SART1, so its score and rank are
+    # also downstream AGF signals and cannot enter a strict no-AGF artifact.
+    "v4_score",
+    "v4_rank",
+    # These aggregates include agf_score in the exceptional profiles where
+    # AGF is allowed, so a strictly no-AGF artifact must omit them as well.
+    "top3_feature_avg",
+    "feature_variance",
+}
+NO_AGF_FEATURE_COLS = [col for col in FEATURE_COLS if col not in AGF_INFLUENCED_FEATURE_COLS]
+
+# These metrics were added after the currently deployed shadow model.  They
+# must not enter a candidate merely because their neutral fallback is present;
+# require enough races with a real upstream source in the *training* slice.
+SOURCE_FLAG_BY_FEATURE = {
+    "handicap_weight_relief_score": "hasHandicapWeightRelief",
+    "field_relative_value_score": "hasFieldRelativeValue",
+    "pace_map_edge_score": "hasPaceMapEdge",
+    "surface_switch_safety_score": "hasSurfaceSwitchSafety",
+    "favorite_risk_guard_score": "hasFavoriteRiskGuard",
+    "class_peak_score": "hasClassPeak",
+    "elite_consensus_score": "hasEliteConsensus",
+}
+DEFAULT_MIN_SOURCE_RACES = 25
+DEFAULT_MIN_SOURCE_RATIO = 0.05
+TERMINAL_FINISH_POSITIONS = {99}
 
 
 def safe_float(value, default=0.0):
@@ -293,25 +321,155 @@ def feature_dict(entry):
     return features
 
 
-def load_entries(args):
+def race_key(entry):
+    """Return a stable key even if upstream race ids are reused across dates."""
+    raw_date = str(entry.get("race_date") or "unknown-date")
+    race_id = str(entry.get("race_id") or "").strip()
+    if race_id:
+        return f"{raw_date}|{race_id}"
+    city = str(entry.get("city") or entry.get("hippodrome") or "unknown-city")
+    return f"{raw_date}|{city}|{entry.get('race_no') or 'unknown-race'}"
+
+
+def valid_finish_position(value):
+    try:
+        finish = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(finish) and finish > 0
+
+
+def finish_rank_integrity(rows):
+    """Validate competition ranking while treating 99 as terminal status."""
+    ranks = [int(float(row.get("finish_pos"))) for row in rows]
+    terminal_status_count = sum(1 for rank in ranks if rank in TERMINAL_FINISH_POSITIONS)
+    ranked_positions = [rank for rank in ranks if rank not in TERMINAL_FINISH_POSITIONS]
+    rank_counts = Counter(ranked_positions)
+    out_of_range_count = sum(1 for rank in ranked_positions if rank > len(rows))
+    expected_rank = 1
+    competition_pattern_valid = True
+    for rank, tied_count in sorted(rank_counts.items()):
+        if rank != expected_rank:
+            competition_pattern_valid = False
+            break
+        expected_rank += tied_count
+    return {
+        "valid": not out_of_range_count and competition_pattern_valid,
+        "terminal_status_count": terminal_status_count,
+        "out_of_range_count": out_of_range_count,
+        "competition_pattern_valid": competition_pattern_valid,
+        "has_tie": any(count > 1 for count in rank_counts.values()),
+    }
+
+
+def _payload_entries(payload):
+    if isinstance(payload, dict):
+        entries = payload.get("entries", [])
+    elif isinstance(payload, list):
+        entries = payload
+    else:
+        entries = []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _read_local_entries(path):
+    """Read either an API JSON export or the canonical predictions JSONL."""
+    with open(path, "r", encoding="utf-8") as f:
+        try:
+            return _payload_entries(json.load(f))
+        except json.JSONDecodeError:
+            f.seek(0)
+            entries = []
+            for line_number, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Invalid JSONL at {path}:{line_number}: {exc}") from exc
+                if isinstance(item, dict):
+                    entries.append(item)
+            return entries
+
+
+def filter_training_entries(entries, include_partial_races=False):
+    """Select complete races by default so rank groups never contain partial fields."""
+    races = defaultdict(list)
+    for entry in entries:
+        races[race_key(entry)].append(entry)
+
+    clean = []
+    summary = Counter()
+    summary["raw_entries"] = len(entries)
+    summary["raw_races"] = len(races)
+    for key in [
+        "integrity_clean_races",
+        "integrity_invalid_races",
+        "integrity_invalid_rows",
+        "rank_out_of_range_races",
+        "rank_out_of_range_rows",
+        "competition_pattern_invalid_races",
+        "valid_tie_races",
+        "terminal_status_races",
+        "terminal_status_rows",
+    ]:
+        summary[key] = 0
+    for rows in races.values():
+        labeled_rows = [row for row in rows if valid_finish_position(row.get("finish_pos"))]
+        feature_rows = [row for row in rows if row.get("features")]
+        if not labeled_rows:
+            summary["unlabeled_races"] += 1
+            continue
+        if len(labeled_rows) != len(rows):
+            summary["partial_races"] += 1
+            if include_partial_races:
+                clean.extend(row for row in labeled_rows if row.get("features"))
+            continue
+        integrity = finish_rank_integrity(rows)
+        if integrity["terminal_status_count"]:
+            summary["terminal_status_races"] += 1
+            summary["terminal_status_rows"] += integrity["terminal_status_count"]
+        if integrity["out_of_range_count"]:
+            summary["rank_out_of_range_races"] += 1
+            summary["rank_out_of_range_rows"] += integrity["out_of_range_count"]
+        if not integrity["competition_pattern_valid"]:
+            summary["competition_pattern_invalid_races"] += 1
+        if not integrity["valid"]:
+            summary["integrity_invalid_races"] += 1
+            summary["integrity_invalid_rows"] += len(rows)
+            continue
+        summary["integrity_clean_races"] += 1
+        if integrity["has_tie"]:
+            summary["valid_tie_races"] += 1
+        if len(feature_rows) != len(rows):
+            summary["missing_feature_races"] += 1
+            continue
+        if len(rows) < 2:
+            summary["single_runner_races"] += 1
+            continue
+        summary["complete_races"] += 1
+        clean.extend(rows)
+
+    summary["selected_entries"] = len(clean)
+    summary["selected_races"] = len({race_key(entry) for entry in clean})
+    return clean, dict(summary)
+
+
+def load_entries(args, with_summary=False):
     if args.input:
-        with open(args.input, "r", encoding="utf-8") as f:
-            payload = json.load(f)
+        entries = _read_local_entries(args.input)
     else:
         import requests
 
         response = requests.get(args.export_url, timeout=120)
         response.raise_for_status()
-        payload = response.json()
-    entries = payload.get("entries", payload if isinstance(payload, list) else [])
-    clean = []
-    for entry in entries:
-        if entry.get("finish_pos") is None:
-            continue
-        if not entry.get("features"):
-            continue
-        clean.append(entry)
-    return clean
+        entries = _payload_entries(response.json())
+    clean, summary = filter_training_entries(
+        entries,
+        include_partial_races=bool(getattr(args, "include_partial_races", False)),
+    )
+    return (clean, summary) if with_summary else clean
 
 
 def race_sort_key(race_entries):
@@ -321,40 +479,109 @@ def race_sort_key(race_entries):
         date_key = datetime.strptime(raw_date, "%d.%m.%Y")
     except ValueError:
         date_key = datetime.min
-    return (date_key, str(entry.get("race_no") or ""), str(entry.get("race_id") or ""))
+    race_no = safe_float(entry.get("race_no"), 999.0)
+    return (date_key, race_no, str(entry.get("race_id") or ""))
+
+
+def _race_items(entries):
+    races = defaultdict(list)
+    for entry in entries:
+        races[race_key(entry)].append(entry)
+    return sorted(races.items(), key=lambda item: race_sort_key(item[1]))
+
+
+def _date_blocks(entries):
+    blocks = []
+    for race_id, rows in _race_items(entries):
+        raw_date = str(rows[0].get("race_date") or "")
+        if not blocks or blocks[-1][0] != raw_date:
+            blocks.append((raw_date, []))
+        blocks[-1][1].append((race_id, rows))
+    return blocks
+
+
+def _closest_date_boundary(blocks, target_races):
+    if len(blocks) < 2:
+        return 0
+    cumulative = 0
+    choices = []
+    for index, (_, items) in enumerate(blocks[:-1], start=1):
+        cumulative += len(items)
+        choices.append((abs(cumulative - target_races), index))
+    return min(choices)[1]
+
+
+def _dict_from_blocks(blocks):
+    return dict(item for _, block_items in blocks for item in block_items)
 
 
 def split_races(entries, validation_ratio=0.2):
-    races = defaultdict(list)
-    for entry in entries:
-        races[str(entry.get("race_id"))].append(entry)
-    race_items = sorted(races.items(), key=lambda item: race_sort_key(item[1]))
-    split_at = max(1, int(len(race_items) * (1.0 - validation_ratio)))
-    return dict(race_items[:split_at]), dict(race_items[split_at:])
+    blocks = _date_blocks(entries)
+    race_count = sum(len(items) for _, items in blocks)
+    target = max(1, int(race_count * (1.0 - validation_ratio)))
+    split_at = _closest_date_boundary(blocks, target)
+    if not split_at:
+        return _dict_from_blocks(blocks), {}
+    return _dict_from_blocks(blocks[:split_at]), _dict_from_blocks(blocks[split_at:])
 
 
 def walk_forward_splits(entries, fold_count=3, initial_train_ratio=0.55):
-    races = defaultdict(list)
-    for entry in entries:
-        races[str(entry.get("race_id"))].append(entry)
-    race_items = sorted(races.items(), key=lambda item: race_sort_key(item[1]))
-    initial_train_size = max(1, int(len(race_items) * initial_train_ratio))
-    remaining = len(race_items) - initial_train_size
-    if remaining < fold_count:
+    blocks = _date_blocks(entries)
+    race_count = sum(len(items) for _, items in blocks)
+    initial_boundary = _closest_date_boundary(blocks, max(1, int(race_count * initial_train_ratio)))
+    remaining_blocks = blocks[initial_boundary:]
+    if not initial_boundary or len(remaining_blocks) < fold_count:
         return []
 
-    fold_size = max(1, math.ceil(remaining / fold_count))
+    fold_size = max(1, math.ceil(len(remaining_blocks) / fold_count))
     splits = []
     for fold_index in range(fold_count):
-        validation_start = initial_train_size + fold_index * fold_size
-        validation_end = min(len(race_items), validation_start + fold_size)
+        validation_start = initial_boundary + fold_index * fold_size
+        validation_end = min(len(blocks), validation_start + fold_size)
         if validation_start >= validation_end:
             break
         splits.append((
-            dict(race_items[:validation_start]),
-            dict(race_items[validation_start:validation_end]),
+            _dict_from_blocks(blocks[:validation_start]),
+            _dict_from_blocks(blocks[validation_start:validation_end]),
         ))
     return splits
+
+
+def select_feature_cols(
+    train_races,
+    base_cols,
+    min_source_races=DEFAULT_MIN_SOURCE_RACES,
+    min_source_ratio=DEFAULT_MIN_SOURCE_RATIO,
+):
+    race_count = len(train_races)
+    selected = []
+    coverage = {}
+    for col in base_cols:
+        source_flag = SOURCE_FLAG_BY_FEATURE.get(col)
+        if not source_flag:
+            selected.append(col)
+            continue
+        source_races = sum(
+            1
+            for rows in train_races.values()
+            if any((row.get("metric_source_flags") or {}).get(source_flag) for row in rows)
+        )
+        ratio = source_races / race_count if race_count else 0.0
+        accepted = source_races >= min_source_races and ratio >= min_source_ratio
+        coverage[col] = {
+            "source_flag": source_flag,
+            "source_races": source_races,
+            "train_races": race_count,
+            "ratio": ratio,
+            "accepted": accepted,
+        }
+        if accepted:
+            selected.append(col)
+    return selected, coverage
+
+
+def without_agf_features(feature_cols):
+    return [col for col in feature_cols if col not in AGF_INFLUENCED_FEATURE_COLS]
 
 
 def matrix_from_races(races, feature_cols):
@@ -549,14 +776,30 @@ def feature_stats(entries, feature_cols):
     }
 
 
-def write_report(path, metadata, validation_races, model_agf, model_no_agf, walk_forward_results):
+def write_report(
+    path,
+    metadata,
+    validation_races,
+    model_agf,
+    agf_feature_cols,
+    model_no_agf,
+    no_agf_feature_cols,
+    walk_forward_results,
+):
     sections = []
     sections.append(f"# Shadow ML Training Report - {metadata['model_version']}\n")
     sections.append(
         f"- Train races: {metadata['train_races']}\n"
         f"- Validation races: {metadata['validation_races']}\n"
         f"- Labeled entries: {metadata['labeled_entries']}\n"
-        f"- Split: chronological race-level 80/20\n"
+        f"- Split: chronological date-block {metadata['validation_ratio']:.0%} validation\n"
+        f"- Saved variant: {metadata['model_variant']} ({metadata['feature_count']} features)\n"
+        f"- Partial races excluded: {metadata['corpus_summary'].get('partial_races', 0)}\n"
+        f"- Integrity-invalid races excluded: "
+        f"{metadata['corpus_summary'].get('integrity_invalid_races', 0)} races / "
+        f"{metadata['corpus_summary'].get('integrity_invalid_rows', 0)} rows\n"
+        f"- Accepted finish patterns: {metadata['corpus_summary'].get('valid_tie_races', 0)} tied races / "
+        f"{metadata['corpus_summary'].get('terminal_status_races', 0)} terminal-99 races\n"
         f"- Visible ranking impact: none\n"
     )
     header = "| Model | Races | Top1 | Winner Top3 | Winner Top5 | Rho | MAE | NDCG@5 | Avg winner rank | Avg top finish |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
@@ -566,8 +809,8 @@ def write_report(path, metadata, validation_races, model_agf, model_no_agf, walk
             return
         sections.append(f"\n## {title}\n\n{header}")
         sections.append(metrics_row(detected_v4_label(races), evaluate_existing(races, "v4_rank")))
-        sections.append(metrics_row("ML + AGF", evaluate_model(model_agf, races, FEATURE_COLS)))
-        sections.append(metrics_row("ML - AGF", evaluate_model(model_no_agf, races, NO_AGF_FEATURE_COLS)))
+        sections.append(metrics_row("ML + AGF", evaluate_model(model_agf, races, agf_feature_cols)))
+        sections.append(metrics_row("ML - AGF", evaluate_model(model_no_agf, races, no_agf_feature_cols)))
         sections.append(metrics_row("AGF only", evaluate_agf(races)))
 
     add_table("Validation Overall", validation_races)
@@ -598,26 +841,57 @@ def write_report(path, metadata, validation_races, model_agf, model_no_agf, walk
 def main():
     parser = argparse.ArgumentParser(description="Train Atistik shadow ML ranker from predictions.jsonl export.")
     parser.add_argument("--export-url", default="https://atistik-backend.onrender.com/api/ml-export?labeled_only=true")
-    parser.add_argument("--input", help="Optional local JSON export file.")
+    parser.add_argument("--input", help="Optional local API export JSON or predictions JSONL file.")
     parser.add_argument("--output-dir", default=".")
     parser.add_argument("--validation-ratio", type=float, default=0.2)
+    parser.add_argument(
+        "--model-variant",
+        choices=["no-agf", "agf"],
+        default="no-agf",
+        help="Model artifact to save. Both variants are still evaluated.",
+    )
+    parser.add_argument(
+        "--include-partial-races",
+        action="store_true",
+        help="Legacy diagnostic only; default training excludes the whole partial race.",
+    )
+    parser.add_argument("--min-source-races", type=int, default=DEFAULT_MIN_SOURCE_RACES)
+    parser.add_argument("--min-source-ratio", type=float, default=DEFAULT_MIN_SOURCE_RATIO)
+    parser.add_argument("--walk-forward-folds", type=int, default=3)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    entries = load_entries(args)
+    entries, corpus_summary = load_entries(args, with_summary=True)
     if len(entries) < 100:
         raise SystemExit(f"Not enough labeled entries for training: {len(entries)}")
     train_races, validation_races = split_races(entries, args.validation_ratio)
     if len(validation_races) < 10:
         raise SystemExit(f"Not enough validation races: {len(validation_races)}")
 
-    model_agf = train_ranker(train_races, FEATURE_COLS)
-    model_no_agf = train_ranker(train_races, NO_AGF_FEATURE_COLS)
+    agf_feature_cols, feature_coverage = select_feature_cols(
+        train_races,
+        FEATURE_COLS,
+        min_source_races=args.min_source_races,
+        min_source_ratio=args.min_source_ratio,
+    )
+    no_agf_feature_cols = without_agf_features(agf_feature_cols)
+    model_agf = train_ranker(train_races, agf_feature_cols)
+    model_no_agf = train_ranker(train_races, no_agf_feature_cols)
     walk_forward_results = []
-    for fold_index, (fold_train, fold_validation) in enumerate(walk_forward_splits(entries), start=1):
-        fold_agf = train_ranker(fold_train, FEATURE_COLS)
-        fold_no_agf = train_ranker(fold_train, NO_AGF_FEATURE_COLS)
+    for fold_index, (fold_train, fold_validation) in enumerate(
+        walk_forward_splits(entries, fold_count=args.walk_forward_folds),
+        start=1,
+    ):
+        fold_agf_cols, _ = select_feature_cols(
+            fold_train,
+            FEATURE_COLS,
+            min_source_races=args.min_source_races,
+            min_source_ratio=args.min_source_ratio,
+        )
+        fold_no_agf_cols = without_agf_features(fold_agf_cols)
+        fold_agf = train_ranker(fold_train, fold_agf_cols)
+        fold_no_agf = train_ranker(fold_train, fold_no_agf_cols)
         segments = {}
         for segment_name, segment_races in [
             ("Overall", fold_validation),
@@ -627,8 +901,8 @@ def main():
                 continue
             segments[segment_name] = {
                 detected_v4_label(segment_races): evaluate_existing(segment_races, "v4_rank"),
-                "ML + AGF": evaluate_model(fold_agf, segment_races, FEATURE_COLS),
-                "ML - AGF": evaluate_model(fold_no_agf, segment_races, NO_AGF_FEATURE_COLS),
+                "ML + AGF": evaluate_model(fold_agf, segment_races, fold_agf_cols),
+                "ML - AGF": evaluate_model(fold_no_agf, segment_races, fold_no_agf_cols),
             }
         walk_forward_results.append({
             "fold": fold_index,
@@ -643,7 +917,19 @@ def main():
         "train_races": len(train_races),
         "validation_races": len(validation_races),
         "labeled_entries": len(entries),
-        "includes_agf": True,
+        "validation_ratio": args.validation_ratio,
+        "model_variant": args.model_variant,
+        "includes_agf": args.model_variant == "agf",
+        "feature_count": len(agf_feature_cols if args.model_variant == "agf" else no_agf_feature_cols),
+        "agf_feature_count": len(agf_feature_cols),
+        "no_agf_feature_count": len(no_agf_feature_cols),
+        "corpus_summary": corpus_summary,
+        "feature_source_gate": {
+            "min_source_races": args.min_source_races,
+            "min_source_ratio": args.min_source_ratio,
+            "coverage": feature_coverage,
+            "excluded_features": [col for col, item in feature_coverage.items() if not item["accepted"]],
+        },
         "objective": "rank:ndcg",
         "walk_forward_folds": len(walk_forward_results),
         "retrain_rule": "+50 labeled races or weekly, whichever comes first",
@@ -654,14 +940,26 @@ def main():
     stats_path = output_dir / "feature_stats_shadow.json"
     report_path = output_dir / f"ml_training_report_{datetime.now().strftime('%Y%m%d')}.md"
 
-    model_agf.save_model(str(model_path))
+    saved_model = model_agf if args.model_variant == "agf" else model_no_agf
+    saved_feature_cols = agf_feature_cols if args.model_variant == "agf" else no_agf_feature_cols
+    saved_model.save_model(str(model_path))
+    train_entries = [row for rows in train_races.values() for row in rows]
     stats_payload = {
-        "feature_cols": FEATURE_COLS,
-        "stats": feature_stats(entries, FEATURE_COLS),
+        "feature_cols": saved_feature_cols,
+        "stats": feature_stats(train_entries, saved_feature_cols),
         "metadata": metadata,
     }
     stats_path.write_text(json.dumps(stats_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_report(report_path, metadata, validation_races, model_agf, model_no_agf, walk_forward_results)
+    write_report(
+        report_path,
+        metadata,
+        validation_races,
+        model_agf,
+        agf_feature_cols,
+        model_no_agf,
+        no_agf_feature_cols,
+        walk_forward_results,
+    )
 
     print(json.dumps({
         "model": str(model_path),
