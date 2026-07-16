@@ -42,9 +42,14 @@ if mode == "analyze":
         and int(totals.get("failed", 0) or 0) == 0
     )
 else:
+    checked = int(totals.get("checked", 0) or 0)
+    submitted = int(totals.get("submitted", 0) or 0)
     ok = (
         data.get("mode") == "results"
-        and int(totals.get("checked", 0) or 0) > 0
+        and data.get("status") == "completed"
+        and checked > 0
+        and submitted == checked
+        and int(totals.get("pending", 0) or 0) == 0
         and int(totals.get("failed", 0) or 0) == 0
     )
 raise SystemExit(0 if ok else 1)

@@ -6,6 +6,7 @@ RUN_DATE="${2:-}"
 ROOT_DIR="${ATISTIK_ROOT:-/opt/atistik/backend}"
 DATA_DIR="${ATISTIK_ML_DATA_DIR:-${ROOT_DIR}/ml-data}"
 LOG_DIR="${ATISTIK_LOG_DIR:-${ROOT_DIR}/logs}"
+STATE_PREDICTIONS="${ATISTIK_PREDICTIONS_HOST_PATH:-${ROOT_DIR}/state/predictions.jsonl}"
 COMPOSE_FILE="${ATISTIK_COMPOSE_FILE:-docker-compose.raspberry.yml}"
 BACKEND_URL="${ATISTIK_BACKEND_URL:-http://atistik-api:5000}"
 IMAGE_NAME="${ATISTIK_IMAGE_NAME:-atistik-api:raspberry}"
@@ -45,48 +46,92 @@ image_revision() {
     --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true
 }
 
-backend_labeled_lines() {
+backend_prediction_stats() {
   local base_url="$1"
   local status_json
   status_json="$(curl -fsS "${base_url%/}/api/ml-status" 2>/dev/null)" || return 1
   python3 -c 'import json, sys
 try:
-    value = (json.load(sys.stdin).get("predictions") or {}).get("labeled_lines")
-    print(int(value))
+    predictions = json.load(sys.stdin).get("predictions") or {}
+    total = predictions.get("valid_json_lines", predictions.get("lines", 0))
+    labeled = predictions.get("labeled_lines", 0)
+    print(f"{int(total)}\t{int(labeled)}")
 except Exception:
     print("")' \
     <<<"$status_json" 2>/dev/null
 }
 
-restore_render_from_backup() {
-  if [[ "$MODE" != "results" ]]; then
-    return 0
+prediction_file_lines() {
+  local path="$1"
+  python3 -c 'import json, sys
+count = 0
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    for line in handle:
+        if not line.strip():
+            continue
+        json.loads(line)
+        count += 1
+print(count)' "$path"
+}
+
+persist_state_predictions() {
+  if [[ ! -s "$STATE_PREDICTIONS" ]]; then
+    echo "[ATISTIK] State predictions bulunamadi veya bos: $STATE_PREDICTIONS" >&2
+    return 1
   fi
 
+  local state_lines
+  local repo_lines=0
+  state_lines="$(prediction_file_lines "$STATE_PREDICTIONS")" || {
+    echo "[ATISTIK] State predictions JSONL dogrulamasi basarisiz." >&2
+    return 1
+  }
+  if [[ -f "$DATA_DIR/predictions.jsonl" ]]; then
+    repo_lines="$(prediction_file_lines "$DATA_DIR/predictions.jsonl")" || {
+      echo "[ATISTIK] Repo predictions JSONL dogrulamasi basarisiz." >&2
+      return 1
+    }
+  fi
+  if ((state_lines < repo_lines)); then
+    echo "[ATISTIK] State predictions gerilemis: ${state_lines}/${repo_lines}; backup yapilmadi." >&2
+    return 1
+  fi
+
+  cp "$STATE_PREDICTIONS" "$DATA_DIR/predictions.jsonl"
+  echo "[ATISTIK] State predictions ML-data repo'ya alindi: ${state_lines} satir."
+}
+
+restore_render_from_backup() {
   if [[ -z "$RENDER_BACKEND_URL" ]]; then
     echo "[ATISTIK] Render restore atlandi: ATISTIK_RENDER_BACKEND_URL bos."
     return 0
   fi
 
+  local expected_stats
+  local expected_total
   local expected_labeled
-  expected_labeled="$(backend_labeled_lines "$BACKEND_URL" || true)"
-  if [[ -z "$expected_labeled" ]]; then
-    echo "[ATISTIK] Pi local labeled_lines okunamadi; Render restore dogrulanamiyor." >&2
+  expected_stats="$(backend_prediction_stats "$BACKEND_URL" || true)"
+  read -r expected_total expected_labeled <<<"$expected_stats"
+  if [[ -z "$expected_total" || -z "$expected_labeled" ]]; then
+    echo "[ATISTIK] Pi local prediction sayaclari okunamadi; Render restore dogrulanamiyor." >&2
     return 1
   fi
 
-  echo "[ATISTIK] Render predictions restore basliyor; hedef labeled_lines=${expected_labeled}."
+  echo "[ATISTIK] Render predictions restore basliyor; hedef total=${expected_total}, labeled=${expected_labeled}."
 
   local attempt
+  local actual_stats
+  local actual_total
   local actual_labeled
   for ((attempt = 1; attempt <= RENDER_RESTORE_MAX_ATTEMPTS; attempt++)); do
     if curl -fsS -X POST "${RENDER_BACKEND_URL%/}/api/ml-restore?force=true" >/dev/null; then
-      actual_labeled="$(backend_labeled_lines "$RENDER_BACKEND_URL" || true)"
-      if [[ -n "$actual_labeled" && "$actual_labeled" -ge "$expected_labeled" ]]; then
-        echo "[ATISTIK] Render restore tamam: labeled_lines=${actual_labeled}."
+      actual_stats="$(backend_prediction_stats "$RENDER_BACKEND_URL" || true)"
+      read -r actual_total actual_labeled <<<"$actual_stats"
+      if [[ -n "$actual_total" && -n "$actual_labeled" && "$actual_total" -ge "$expected_total" && "$actual_labeled" -ge "$expected_labeled" ]]; then
+        echo "[ATISTIK] Render restore tamam: total=${actual_total}, labeled=${actual_labeled}."
         return 0
       fi
-      echo "[ATISTIK] Render restore bekleniyor: ${actual_labeled:-unknown}/${expected_labeled} (attempt ${attempt}/${RENDER_RESTORE_MAX_ATTEMPTS})."
+      echo "[ATISTIK] Render restore bekleniyor: total=${actual_total:-unknown}/${expected_total}, labeled=${actual_labeled:-unknown}/${expected_labeled} (attempt ${attempt}/${RENDER_RESTORE_MAX_ATTEMPTS})."
     else
       echo "[ATISTIK] Render restore istegi basarisiz (attempt ${attempt}/${RENDER_RESTORE_MAX_ATTEMPTS})." >&2
     fi
@@ -178,11 +223,13 @@ set -e
 
 fix_data_permissions
 
+persist_state_predictions
+
 git -C "$DATA_DIR" config user.name "atistik-raspberry"
 git -C "$DATA_DIR" config user.email "atistik-raspberry@users.noreply.github.com"
 
-if ! git -C "$DATA_DIR" diff --quiet -- automation || [[ -n "$(git -C "$DATA_DIR" ls-files --others --exclude-standard automation)" ]]; then
-  git -C "$DATA_DIR" add automation
+if ! git -C "$DATA_DIR" diff --quiet -- automation predictions.jsonl || [[ -n "$(git -C "$DATA_DIR" ls-files --others --exclude-standard automation)" ]]; then
+  git -C "$DATA_DIR" add automation predictions.jsonl
   git -C "$DATA_DIR" commit -m "Atistik raspberry ${MODE} $(TZ=Europe/Istanbul date +%Y-%m-%d)"
   pushed=0
   for attempt in 1 2 3 4 5; do
@@ -204,9 +251,9 @@ else
   echo "ML-data automation degisikligi yok."
 fi
 
+restore_render_from_backup
+
 if [[ "$automation_status" -ne 0 ]]; then
   echo "[ATISTIK] Automation ${MODE} hata kodu ile bitti: ${automation_status}" >&2
   exit "$automation_status"
 fi
-
-restore_render_from_backup

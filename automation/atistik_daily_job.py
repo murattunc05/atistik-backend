@@ -91,7 +91,7 @@ KNOWN_DOMESTIC_CITIES = {
 def clean_name(value: str) -> str:
     value = str(value or "").split("\n")[0].strip().upper()
     value = re.sub(r"\s*\(\s*\d+\s*\)\s*$", "", value)
-    return re.sub(r"\s+", " ", value).strip()
+    return re.sub(r"[\W_]+", "", value, flags=re.UNICODE)
 
 
 def parse_date(value: str | None) -> date:
@@ -638,6 +638,23 @@ def submit_safe(config: dict[str, Any], stats: dict[str, Any]) -> bool:
     return stats["matchedCount"] >= min_horses and stats["matchRatio"] >= min_ratio
 
 
+def set_results_status(report: dict[str, Any], dry_run: bool) -> None:
+    totals = report.get("totals", {}) or {}
+    checked = int(totals.get("checked", 0) or 0)
+    submitted = int(totals.get("submitted", 0) or 0)
+    unresolved = int(totals.get("pending", 0) or 0) + int(totals.get("failed", 0) or 0)
+    if checked == 0:
+        report["status"] = "skipped"
+    elif dry_run:
+        report["status"] = "ready" if unresolved == 0 else "partial_ready"
+    elif unresolved == 0 and submitted == checked:
+        report["status"] = "completed"
+    elif submitted > 0:
+        report["status"] = "partial_success"
+    else:
+        report["status"] = "failed"
+
+
 def iter_manifest_races(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     races = []
     for city in analysis.get("cities", []) or []:
@@ -660,7 +677,14 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             "reason": "analysis_manifest_missing",
             "error": f"analysis manifest not found: {analysis_path}",
             "races": [],
-            "totals": {"checked": 0, "found": 0, "submitted": 0, "pending": 0, "failed": 0},
+            "totals": {
+                "checked": 0,
+                "found": 0,
+                "submitted": 0,
+                "idempotent": 0,
+                "pending": 0,
+                "failed": 0,
+            },
         }
 
     report: dict[str, Any] = {
@@ -671,7 +695,14 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
         "startedAt": now_utc_iso(),
         "backendUrl": args.backend_url,
         "races": [],
-        "totals": {"checked": 0, "found": 0, "submitted": 0, "pending": 0, "failed": 0},
+        "totals": {
+            "checked": 0,
+            "found": 0,
+            "submitted": 0,
+            "idempotent": 0,
+            "pending": 0,
+            "failed": 0,
+        },
     }
     for race in iter_manifest_races(analysis):
         entry = {
@@ -732,15 +763,35 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             timeout=timeout,
         )
         entry["submitResponse"] = submit
-        if submit.get("success") and int(submit.get("updated", 0) or 0) > 0:
-            entry["status"] = "submitted"
+        updated = int(submit.get("updated", 0) or 0)
+        idempotent = int(submit.get("idempotent", 0) or 0)
+        conflict_count = int(submit.get("conflict_count", 0) or 0)
+        if "matched" in submit or "incoming" in submit or "idempotent" in submit:
+            matched = int(submit.get("matched", 0) or 0)
+            incoming_count = int(submit.get("incoming", len(fetched_results)) or 0)
+            submit_ok = (
+                bool(submit.get("success"))
+                and conflict_count == 0
+                and matched > 0
+                and matched == incoming_count
+                and updated + idempotent >= matched
+            )
+        else:
+            # Backward compatibility while a backend rolls from the old response shape.
+            submit_ok = bool(submit.get("success")) and updated > 0
+
+        if submit_ok:
+            entry["status"] = "submitted" if updated > 0 else "already_labeled"
             report["totals"]["submitted"] += 1
+            if updated == 0:
+                report["totals"]["idempotent"] += 1
         else:
             entry["status"] = "submit_failed"
             report["totals"]["failed"] += 1
         report["races"].append(entry)
 
     report["finishedAt"] = now_utc_iso()
+    set_results_status(report, dry_run)
     return report
 
 
@@ -753,8 +804,9 @@ def results_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
         report = results_once(args, config, dry_run)
         report["attempt"] = attempt
         last_report = report
-        pending = int(report.get("totals", {}).get("pending", 0) or 0)
-        if dry_run or pending == 0 or attempt >= max_attempts:
+        totals = report.get("totals", {}) or {}
+        unresolved = int(totals.get("pending", 0) or 0) + int(totals.get("failed", 0) or 0)
+        if dry_run or unresolved == 0 or attempt >= max_attempts:
             return report
         time.sleep(interval)
     return last_report or {}
@@ -1184,6 +1236,12 @@ def main() -> int:
     if report.get("status") == "failed":
         return 1
     totals = report.get("totals", {})
+    if args.mode == "results" and (
+        int(totals.get("checked", 0) or 0) == 0
+        or int(totals.get("pending", 0) or 0) > 0
+        or int(totals.get("failed", 0) or 0) > 0
+    ):
+        return 1
     if (
         args.mode == "analyze"
         and int(totals.get("failed", 0) or 0) > 0

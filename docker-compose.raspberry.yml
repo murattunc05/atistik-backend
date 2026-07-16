@@ -11,6 +11,7 @@ services:
     environment:
       PORT: "5000"
       ATISTIK_PREDICTIONS_PATH: /state/predictions.jsonl
+      ATISTIK_GITHUB_AUTO_BACKUP: "false"
     ports:
       - "127.0.0.1:5000:5000"
     volumes:

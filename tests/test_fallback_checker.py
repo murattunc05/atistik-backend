@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from automation.fallback_checker import results_ok
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "automation" / "fallback_checker.py"
@@ -36,7 +38,13 @@ def test_results_fallback_skips_successful_report(tmp_path):
     run_dir = tmp_path / "automation" / "runs" / "2026-06-30"
     run_dir.mkdir(parents=True)
     (run_dir / "results.json").write_text(
-        json.dumps({"mode": "results", "totals": {"checked": 3, "failed": 0}}),
+        json.dumps(
+            {
+                "mode": "results",
+                "status": "completed",
+                "totals": {"checked": 3, "submitted": 3, "pending": 0, "failed": 0},
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -44,6 +52,23 @@ def test_results_fallback_skips_successful_report(tmp_path):
 
     assert result.returncode == 0
     assert "already exist" in result.stdout
+
+
+def test_results_ok_rejects_pending_or_incomplete_reports():
+    assert not results_ok(
+        {
+            "mode": "results",
+            "status": "partial_success",
+            "totals": {"checked": 3, "submitted": 1, "pending": 2, "failed": 0},
+        }
+    )
+    assert not results_ok(
+        {
+            "mode": "results",
+            "status": "completed",
+            "totals": {"checked": 3, "submitted": 2, "pending": 0, "failed": 0},
+        }
+    )
 
 
 def test_analyze_fallback_records_failed_primary_report(tmp_path):

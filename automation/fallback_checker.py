@@ -70,9 +70,14 @@ def results_ok(data: dict[str, Any] | None) -> bool:
     if not data:
         return False
     totals = data.get("totals") or {}
+    checked = int(totals.get("checked", 0) or 0)
+    submitted = int(totals.get("submitted", 0) or 0)
     return (
         str(data.get("mode")) == "results"
-        and int(totals.get("checked", 0) or 0) > 0
+        and str(data.get("status")) == "completed"
+        and checked > 0
+        and submitted == checked
+        and int(totals.get("pending", 0) or 0) == 0
         and int(totals.get("failed", 0) or 0) == 0
     )
 
