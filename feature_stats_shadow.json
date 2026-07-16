@@ -23,10 +23,7 @@
     "pedigree",
     "hp_score",
     "trainer_score",
-    "agf_score",
     "age_score",
-    "v4_score",
-    "v4_rank",
     "field_size",
     "distance_num",
     "is_handikap",
@@ -40,7 +37,6 @@
     "track_cim",
     "track_sentetik",
     "has_training",
-    "has_agf",
     "has_hp",
     "has_pedigree",
     "has_trainer",
@@ -53,243 +49,295 @@
     "days_since_last_race",
     "last_race_distance",
     "long_layoff_bucket",
-    "recent_long_race_flag",
-    "top3_feature_avg",
-    "feature_variance"
+    "recent_long_race_flag"
   ],
   "stats": {
     "degree_avg": {
-      "mean": 48.87289901129943,
-      "std": 32.33508279638141
+      "mean": 48.73965623081645,
+      "std": 33.41501114839809
     },
     "degree_trend": {
-      "mean": 49.393502824858764,
-      "std": 21.644683495166294
+      "mean": 49.81160220994475,
+      "std": 21.766711095623492
     },
     "degree_stability": {
-      "mean": 45.44459745762712,
-      "std": 35.883598141582
+      "mean": 44.46187845303867,
+      "std": 36.244449905573155
     },
     "form_trend": {
-      "mean": 52.39180790960452,
-      "std": 16.370459757247694
+      "mean": 53.16970534069982,
+      "std": 16.493576143318194
     },
     "track_suit": {
-      "mean": 55.24066031073446,
-      "std": 14.989242293111978
+      "mean": 55.51246163290362,
+      "std": 15.101249994584123
     },
     "track_experience_score": {
-      "mean": 53.620921610169496,
-      "std": 13.853763401308983
+      "mean": 53.705923879680796,
+      "std": 13.65555713022614
     },
     "surface_transition_score": {
-      "mean": 51.034322033898306,
-      "std": 11.340759820110119
+      "mean": 50.996378146101904,
+      "std": 10.246530462251611
     },
     "distance_suit": {
-      "mean": 53.44694562146893,
-      "std": 21.928661249004616
+      "mean": 54.886341313689385,
+      "std": 22.136722891267844
     },
     "distance_transition_score": {
-      "mean": 50.66924435028248,
-      "std": 9.575735341925341
+      "mean": 50.82400245549417,
+      "std": 8.768953041768187
     },
     "training_fitness": {
-      "mean": 75.00690324858756,
-      "std": 17.91083396099948
+      "mean": 75.18327194597913,
+      "std": 17.56344317069253
     },
     "training_degree_score": {
-      "mean": 50.71603107344633,
-      "std": 24.65888633349191
+      "mean": 50.94794352363413,
+      "std": 25.0646167465698
     },
     "weight_impact": {
-      "mean": 48.410169491525416,
-      "std": 11.84764865463139
+      "mean": 48.141006752608966,
+      "std": 12.073617564681024
     },
     "handicap_efficiency_score": {
-      "mean": 50.70813912429379,
-      "std": 4.070670180441123
+      "mean": 50.640577041129525,
+      "std": 3.919741777615036
     },
     "handicap_class_transition_score": {
-      "mean": 49.809339689265535,
-      "std": 3.211576867586873
+      "mean": 49.718600368324125,
+      "std": 3.276625966114676
     },
     "handicap_class_delta": {
-      "mean": 0.024410310734463276,
-      "std": 0.40906497143380627
+      "mean": 0.035865561694290976,
+      "std": 0.41852946731876106
     },
     "running_style_proxy_score": {
-      "mean": 46.30181850282486,
-      "std": 12.489355717047447
+      "mean": 47.091375076734195,
+      "std": 11.25479813973819
     },
     "pace_pressure": {
-      "mean": 1.7882062146892654,
-      "std": 7.445582860123647
+      "mean": 1.5037139349294044,
+      "std": 7.528687208328107
     },
     "jockey_score": {
-      "mean": 42.246927966101694,
-      "std": 13.717256895933982
+      "mean": 42.04192756292204,
+      "std": 14.049356485166872
     },
     "bounce_score": {
-      "mean": 75.68767655367232,
-      "std": 23.636349020636118
+      "mean": 76.11878453038673,
+      "std": 23.978498594353074
     },
     "pace_score": {
-      "mean": 47.43732344632768,
-      "std": 7.205588572619752
+      "mean": 47.32504604051565,
+      "std": 7.193987843584707
     },
     "pedigree": {
-      "mean": 60.17554731638419,
-      "std": 7.278152569196476
+      "mean": 59.95107427869859,
+      "std": 7.357353538233957
     },
     "hp_score": {
-      "mean": 50.38801200564972,
-      "std": 33.463748451939125
+      "mean": 50.995825659914054,
+      "std": 33.8624037681788
     },
     "trainer_score": {
-      "mean": 48.86400070621469,
-      "std": 10.974263273858265
-    },
-    "agf_score": {
-      "mean": 45.85021186440678,
-      "std": 16.72498500874318
+      "mean": 48.991682013505226,
+      "std": 10.148064746734638
     },
     "age_score": {
-      "mean": 46.632909604519774,
-      "std": 17.581226171952363
-    },
-    "v4_score": {
-      "mean": 51.54058968926554,
-      "std": 11.39186709992366
-    },
-    "v4_rank": {
-      "mean": 6.219632768361582,
-      "std": 3.932264967514962
+      "mean": 47.077992633517496,
+      "std": 16.833835596611532
     },
     "field_size": {
-      "mean": 11.548552259887005,
-      "std": 3.6846147174315216
+      "mean": 10.775322283609576,
+      "std": 3.3112313251669376
     },
     "distance_num": {
-      "mean": 1578.8841807909605,
-      "std": 352.22620994197973
+      "mean": 1606.5991405770412,
+      "std": 352.79647462808384
     },
     "is_handikap": {
-      "mean": 0.3137358757062147,
-      "std": 0.4640104266081413
+      "mean": 0.307243707796194,
+      "std": 0.46135128895001576
     },
     "is_maiden": {
-      "mean": 0.20162429378531074,
-      "std": 0.4012130829632621
+      "mean": 0.17986494782074894,
+      "std": 0.38407492545880706
     },
     "is_sartli": {
-      "mean": 0.3116172316384181,
-      "std": 0.4631543291219748
+      "mean": 0.3250460405156538,
+      "std": 0.4683920495276897
     },
     "is_sart1": {
-      "mean": 0.04343220338983051,
-      "std": 0.20382798409083797
+      "mean": 0.021792510742786986,
+      "std": 0.14600546982326554
     },
     "is_kv": {
-      "mean": 0.08227401129943503,
-      "std": 0.27478172858495425
+      "mean": 0.10742786985880909,
+      "std": 0.30965645905811146
     },
     "is_grup": {
       "mean": 0.0,
       "std": 0.0
     },
     "is_satis": {
-      "mean": 0.03089689265536723,
-      "std": 0.17303836187276492
+      "mean": 0.03100061387354205,
+      "std": 0.17331928863518223
     },
     "track_kum": {
-      "mean": 0.4228460451977401,
-      "std": 0.49401140397603266
+      "mean": 0.4521178637200737,
+      "std": 0.49770202031463623
     },
     "track_cim": {
-      "mean": 0.4675141242937853,
-      "std": 0.4989435517967944
+      "mean": 0.46408839779005523,
+      "std": 0.49870868934350315
     },
     "track_sentetik": {
-      "mean": 0.10963983050847458,
-      "std": 0.31244029521581806
+      "mean": 0.08379373848987108,
+      "std": 0.2770782342223261
     },
     "has_training": {
-      "mean": 0.8027895480225988,
-      "std": 0.3978925603831646
-    },
-    "has_agf": {
-      "mean": 0.1931497175141243,
-      "std": 0.39476943161589684
+      "mean": 0.8081645181092695,
+      "std": 0.39374437110704413
     },
     "has_hp": {
-      "mean": 0.5884533898305084,
-      "std": 0.49211380576802777
+      "mean": 0.5494168201350522,
+      "std": 0.49755198511084237
     },
     "has_pedigree": {
-      "mean": 0.8647598870056498,
-      "std": 0.34197986027195465
+      "mean": 0.8400859422958871,
+      "std": 0.36652633173173055
     },
     "has_trainer": {
-      "mean": 0.6451271186440678,
-      "std": 0.47847478453317754
+      "mean": 0.5742786985880909,
+      "std": 0.4944518934497668
     },
     "has_age_actionable": {
-      "mean": 0.23022598870056496,
-      "std": 0.42097741367846836
+      "mean": 0.20042971147943522,
+      "std": 0.40032192325140725
     },
     "has_track_experience": {
-      "mean": 0.4832274011299435,
-      "std": 0.4997186007416015
+      "mean": 0.43063228974831186,
+      "std": 0.4951647410452785
     },
     "has_surface_transition": {
-      "mean": 0.2650070621468927,
-      "std": 0.4413369678138979
+      "mean": 0.21424186617556784,
+      "std": 0.41029536794019245
     },
     "has_distance_transition": {
-      "mean": 0.2650070621468927,
-      "std": 0.4413369678138979
+      "mean": 0.21424186617556784,
+      "std": 0.41029536794019245
     },
     "has_handicap_efficiency": {
-      "mean": 0.14212570621468926,
-      "std": 0.34917902263404244
+      "mean": 0.12829957028852057,
+      "std": 0.3344230712021848
     },
     "has_handicap_class_history": {
-      "mean": 0.09745762711864407,
-      "std": 0.2965799016033409
+      "mean": 0.08594229588704727,
+      "std": 0.28027882129178167
     },
     "days_since_last_race": {
-      "mean": 7.321151129943503,
-      "std": 32.345904858332204
+      "mean": 5.570902394106814,
+      "std": 33.78777753640038
     },
     "last_race_distance": {
-      "mean": 474.8587570621469,
-      "std": 755.0278607084064
+      "mean": 378.207489257213,
+      "std": 693.438672170636
     },
     "long_layoff_bucket": {
-      "mean": 0.06002824858757062,
-      "std": 0.3647590324370189
+      "mean": 0.044812768569674644,
+      "std": 0.3150887973435845
     },
     "recent_long_race_flag": {
-      "mean": 0.0007062146892655367,
-      "std": 0.02656531479350851
-    },
-    "top3_feature_avg": {
-      "mean": 85.69116054613936,
-      "std": 11.172367997546125
-    },
-    "feature_variance": {
-      "mean": 433.2934784718719,
-      "std": 180.3062298877115
+      "mean": 0.0003069367710251688,
+      "std": 0.01751692212815258
     }
   },
   "metadata": {
-    "model_version": "shadow-20260629-2327",
-    "created_at": "2026-06-29T23:27:08",
-    "train_races": 468,
-    "validation_races": 117,
-    "labeled_entries": 5664,
-    "includes_agf": true,
+    "model_version": "shadow-20260716-1729",
+    "created_at": "2026-07-16T17:29:40",
+    "train_races": 333,
+    "validation_races": 83,
+    "labeled_entries": 4091,
+    "validation_ratio": 0.2,
+    "model_variant": "no-agf",
+    "includes_agf": false,
+    "feature_count": 50,
+    "agf_feature_count": 56,
+    "no_agf_feature_count": 50,
+    "corpus_summary": {
+      "raw_entries": 7691,
+      "raw_races": 742,
+      "complete_races": 416,
+      "partial_races": 273,
+      "unlabeled_races": 53,
+      "selected_entries": 4091,
+      "selected_races": 416
+    },
+    "feature_source_gate": {
+      "min_source_races": 25,
+      "min_source_ratio": 0.05,
+      "coverage": {
+        "handicap_weight_relief_score": {
+          "source_flag": "hasHandicapWeightRelief",
+          "source_races": 0,
+          "train_races": 333,
+          "ratio": 0.0,
+          "accepted": false
+        },
+        "field_relative_value_score": {
+          "source_flag": "hasFieldRelativeValue",
+          "source_races": 0,
+          "train_races": 333,
+          "ratio": 0.0,
+          "accepted": false
+        },
+        "pace_map_edge_score": {
+          "source_flag": "hasPaceMapEdge",
+          "source_races": 0,
+          "train_races": 333,
+          "ratio": 0.0,
+          "accepted": false
+        },
+        "surface_switch_safety_score": {
+          "source_flag": "hasSurfaceSwitchSafety",
+          "source_races": 0,
+          "train_races": 333,
+          "ratio": 0.0,
+          "accepted": false
+        },
+        "favorite_risk_guard_score": {
+          "source_flag": "hasFavoriteRiskGuard",
+          "source_races": 0,
+          "train_races": 333,
+          "ratio": 0.0,
+          "accepted": false
+        },
+        "class_peak_score": {
+          "source_flag": "hasClassPeak",
+          "source_races": 0,
+          "train_races": 333,
+          "ratio": 0.0,
+          "accepted": false
+        },
+        "elite_consensus_score": {
+          "source_flag": "hasEliteConsensus",
+          "source_races": 0,
+          "train_races": 333,
+          "ratio": 0.0,
+          "accepted": false
+        }
+      },
+      "excluded_features": [
+        "handicap_weight_relief_score",
+        "field_relative_value_score",
+        "pace_map_edge_score",
+        "surface_switch_safety_score",
+        "favorite_risk_guard_score",
+        "class_peak_score",
+        "elite_consensus_score"
+      ]
+    },
     "objective": "rank:ndcg",
     "walk_forward_folds": 3,
     "retrain_rule": "+50 labeled races or weekly, whichever comes first",

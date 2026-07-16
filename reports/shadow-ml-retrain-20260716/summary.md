@@ -2,10 +2,13 @@
 
 ## Decision
 
-- Model artifact: `HOLD` — do not replace or deploy the current shadow model.
+- Shadow artifact: `DEPLOY SHADOW_ONLY` — replace the observation model without affecting visible ranking.
+- Visible ranking: `HOLD` — keep v4.23 as the only ranking source.
 - Trainer leakage fix: `APPLY` — keep the stricter no-AGF feature exclusion in code.
 
-The corrected candidate now beats the current shadow overall on most holdout metrics, but it still regresses the HANDIKAP guardrails and does not satisfy the three-consecutive-report activation rule. No live model, feature-stat, Render, Pi, or GitHub model artifact was overwritten.
+The corrected candidate beats the current shadow overall on most holdout metrics, so it is promoted for live shadow observation. HANDIKAP and SARTLI guardrails still regress and the three-consecutive-report activation rule is not satisfied; for that reason the model remains strictly shadow-only and cannot change `aiScore`, `rank`, or Telegram's visible v4 ordering.
+
+Rollback is the parent release `0c52610`, which retains `shadow-20260629-2327` and its exact artifacts in Git history.
 
 ## Leakage correction
 
@@ -67,9 +70,9 @@ Selection remained exactly `416` races / `4,091` rows with the same `333/83` spl
 - Feature stats SHA-256: `821c76bf6080f25ca3dd385a280ac1804237503f53e0ceaccf0e27317d6f152c`
 - Candidate report SHA-256: `98cd2c21105f3d6405e42ebb233b7e766fb1de2d549bacf9060e7ce983af50db`
 
-Offline files remain under `/tmp/atistik-shadow-candidate-20260716-strict-noagf-v4free/` and are intentionally not installed as active artifacts.
+The verified offline files under `/tmp/atistik-shadow-candidate-20260716-strict-noagf-v4free/` are installed as the live `shadow_only` artifacts. Their hashes must match the values above before release.
 
-Current shadow model remained unchanged:
+Rollback shadow model preserved in parent release `0c52610`:
 
 - Version: `shadow-20260629-2327`
 - Model SHA-256: `ef8c999af0e10203a1da2a6fc961c9e9bf7badcfa0ab701f8845b700f2a889b0`
