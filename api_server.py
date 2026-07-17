@@ -346,7 +346,10 @@ _GITHUB_TOKEN    = _os.environ.get('GITHUB_TOKEN', '')
 _GITHUB_ML_REPO  = _os.environ.get('GITHUB_ML_REPO', '')   # "kullanici/repo-adi"
 _GITHUB_FILE     = 'predictions.jsonl'
 _GITHUB_API_BASE = 'https://api.github.com'
-_PREDICTIONS_PATH = _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
+_PREDICTIONS_PATH = (
+    _os.environ.get('ATISTIK_PREDICTIONS_PATH', '').strip()
+    or _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
+)
 _GITHUB_AUTO_BACKUP = _os.environ.get('ATISTIK_GITHUB_AUTO_BACKUP', 'true').strip().lower() not in {
     '0', 'false', 'no', 'off'
 }

@@ -14,6 +14,10 @@ class RaspberryPredictionBackupTest(unittest.TestCase):
     def test_pi_disables_per_request_async_backup(self):
         self.assertIn('ATISTIK_GITHUB_AUTO_BACKUP: "false"', self.compose)
 
+    def test_api_writes_directly_to_configured_state_path(self):
+        api_server = (ROOT / "api_server.py").read_text(encoding="utf-8")
+        self.assertIn("_os.environ.get('ATISTIK_PREDICTIONS_PATH', '').strip()", api_server)
+
     def test_job_persists_state_file_in_same_ml_data_commit(self):
         self.assertIn('persist_state_predictions', self.run_script)
         self.assertIn('cp "$STATE_PREDICTIONS" "$DATA_DIR/predictions.jsonl"', self.run_script)
