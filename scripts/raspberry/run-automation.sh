@@ -9,6 +9,7 @@ LOG_DIR="${ATISTIK_LOG_DIR:-${ROOT_DIR}/logs}"
 STATE_PREDICTIONS="${ATISTIK_PREDICTIONS_HOST_PATH:-${ROOT_DIR}/state/predictions.jsonl}"
 COMPOSE_FILE="${ATISTIK_COMPOSE_FILE:-docker-compose.raspberry.yml}"
 BACKEND_URL="${ATISTIK_BACKEND_URL:-http://atistik-api:5000}"
+HOST_BACKEND_URL="${ATISTIK_HOST_BACKEND_URL:-http://127.0.0.1:5000}"
 IMAGE_NAME="${ATISTIK_IMAGE_NAME:-atistik-api:raspberry}"
 RENDER_BACKEND_URL="${ATISTIK_RENDER_BACKEND_URL:-https://atistik-backend.onrender.com}"
 RENDER_RESTORE_MAX_ATTEMPTS="${ATISTIK_RENDER_RESTORE_MAX_ATTEMPTS:-6}"
@@ -110,7 +111,7 @@ restore_render_from_backup() {
   local expected_stats
   local expected_total
   local expected_labeled
-  expected_stats="$(backend_prediction_stats "$BACKEND_URL" || true)"
+  expected_stats="$(backend_prediction_stats "$HOST_BACKEND_URL" || true)"
   read -r expected_total expected_labeled <<<"$expected_stats"
   if [[ -z "$expected_total" || -z "$expected_labeled" ]]; then
     echo "[ATISTIK] Pi local prediction sayaclari okunamadi; Render restore dogrulanamiyor." >&2

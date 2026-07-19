@@ -29,6 +29,8 @@ class RaspberryPredictionBackupTest(unittest.TestCase):
     def test_render_restore_checks_total_and_labeled_parity_for_every_mode(self):
         restore_body = self.run_script.split('restore_render_from_backup() {', 1)[1].split('\n}', 1)[0]
         self.assertNotIn('if [[ "$MODE" != "results" ]]', restore_body)
+        self.assertIn('backend_prediction_stats "$HOST_BACKEND_URL"', restore_body)
+        self.assertNotIn('backend_prediction_stats "$BACKEND_URL"', restore_body)
         self.assertIn('"$actual_total" -ge "$expected_total"', restore_body)
         self.assertIn('"$actual_labeled" -ge "$expected_labeled"', restore_body)
 
