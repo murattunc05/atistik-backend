@@ -20,7 +20,7 @@ from train_shadow_ml import feature_dict
 
 class V421RulesTest(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(_V4_VERSION, "4.23")
+        self.assertEqual(_V4_VERSION, "4.24")
 
     def test_agf_is_allowed_only_for_maiden_and_sartli_one(self):
         maiden = resolve_v4_profile_weights(
@@ -56,8 +56,8 @@ class V421RulesTest(unittest.TestCase):
             ("Grup 2", "Cim", False, 0.0),
             ("Satis 3", "Kum", False, 0.0),
             ("Sartli 4", "Kum", False, 0.0),
-            ("Maiden", "Kum", True, 14.72 / 93.0),
-            ("Sartli 1", "Kum", True, 0.18),
+            ("Maiden", "Kum", True, (14.72 / 93.0) * 0.92),
+            ("Sartli 1", "Kum", True, 0.18 * 0.92),
         ]
         for race_type, track, agf_allowed, expected_agf_weight in cases:
             with self.subTest(race_type=race_type):
@@ -72,22 +72,23 @@ class V421RulesTest(unittest.TestCase):
                     places=4,
                 )
 
-    def test_maiden_profile_uses_v423_degree_revision(self):
+    def test_maiden_profile_uses_v424_winner_top3_blend(self):
         resolved = resolve_v4_profile_weights(
             extract_v4_race_profile("Maiden", "1200", "Cim", 8)
         )
 
         self.assertEqual(resolved["selectedKey"], "MAIDEN")
         self.assertTrue(resolved["agfAllowedForRanking"])
-        self.assertAlmostEqual(resolved["weights"]["agf_score"], 14.72 / 93.0, places=4)
-        self.assertAlmostEqual(resolved["weights"]["degree_avg"], 8.36 / 93.0, places=4)
-        self.assertAlmostEqual(resolved["weights"]["training_fitness"], 7.36 / 93.0, places=4)
-        self.assertAlmostEqual(resolved["weights"]["training_degree_score"], 15.64 / 93.0, places=4)
+        self.assertAlmostEqual(resolved["weights"]["agf_score"], (14.72 / 93.0) * 0.92, places=4)
+        self.assertAlmostEqual(resolved["weights"]["degree_avg"], (8.36 / 93.0) * 0.92, places=4)
+        self.assertAlmostEqual(resolved["weights"]["distance_suit"], (0.92 / 93.0) * 0.92 + 0.08, places=4)
+        self.assertAlmostEqual(resolved["weights"]["training_fitness"], (7.36 / 93.0) * 0.92, places=4)
+        self.assertAlmostEqual(resolved["weights"]["training_degree_score"], (15.64 / 93.0) * 0.92, places=4)
         self.assertGreater(
             resolved["weights"]["training_degree_score"],
             resolved["weights"]["training_fitness"],
         )
-        self.assertAlmostEqual(resolved["weights"]["trainer_score"], 6.44 / 93.0, places=4)
+        self.assertAlmostEqual(resolved["weights"]["trainer_score"], (6.44 / 93.0) * 0.92, places=4)
 
     def test_special_handikap_profiles_are_normalized_without_changing_ratios(self):
         kum = resolve_v4_profile_weights(
@@ -163,23 +164,25 @@ class V421RulesTest(unittest.TestCase):
         self.assertEqual(resolved["selectedKey"], "SART4")
         self.assertFalse(resolved["agfAllowedForRanking"])
         self.assertEqual(resolved["weights"]["agf_score"], 0)
-        self.assertAlmostEqual(resolved["weights"]["hp_score"], 0.2838, places=4)
-        self.assertAlmostEqual(resolved["weights"]["trainer_score"], 0.1591, places=4)
+        self.assertAlmostEqual(resolved["weights"]["hp_score"], 0.2838 * 0.92, places=4)
+        self.assertAlmostEqual(resolved["weights"]["trainer_score"], 0.1591 * 0.92, places=4)
         self.assertGreater(resolved["weights"]["distance_suit"], resolved["weights"]["form_trend"])
+        self.assertGreater(resolved["weights"]["bounce_score"], 0.11)
+        self.assertGreaterEqual(resolved["weights"]["track_experience_score"], 0.04)
 
         sart3 = resolve_v4_profile_weights(
             extract_v4_race_profile("Sartli 3", "1400", "Kum", 10)
         )
         self.assertEqual(sart3["selectedKey"], "SART3")
-        self.assertAlmostEqual(sart3["weights"]["form_trend"], 0.2824, places=4)
-        self.assertGreater(sart3["weights"]["track_experience_score"], 0.15)
+        self.assertAlmostEqual(sart3["weights"]["form_trend"], 0.2824 * 0.92, places=4)
+        self.assertGreater(sart3["weights"]["track_experience_score"], 0.17)
 
         sart5 = resolve_v4_profile_weights(
             extract_v4_race_profile("Sartli 5", "1400", "Kum", 10)
         )
         self.assertEqual(sart5["selectedKey"], "SART5")
-        self.assertAlmostEqual(sart5["weights"]["form_trend"], 0.3047, places=4)
-        self.assertGreater(sart5["weights"]["track_suit"], 0.13)
+        self.assertAlmostEqual(sart5["weights"]["form_trend"], 0.3047 * 0.92, places=4)
+        self.assertGreater(sart5["weights"]["track_suit"], 0.12)
 
 
     def test_shadow_ml_does_not_treat_sartli_19_as_sartli_1(self):

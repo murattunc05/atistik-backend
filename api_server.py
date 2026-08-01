@@ -5724,8 +5724,22 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.23"
+_V4_VERSION = "4.24"
 _V422_CANDIDATE_VERSION = "4.22-handicap-candidate"
+
+# v4.24 Winner Top3 rollout. These are bounded category overlays selected on
+# the chronological 60/20/20 replay through 2026-07-31. The existing profile
+# ratios keep 92% of the score; the remaining 8% is reserved for the metrics
+# that improved Winner Top3 without regressing the validation guardrails.
+_V424_GROUP_WINNER_TOP3_BLENDS = {
+    'MAIDEN': {
+        'distance_suit': 0.08,
+    },
+    'SARTLI': {
+        'bounce_score': 0.04,
+        'track_experience_score': 0.04,
+    },
+}
 
 _V4_METRIC_KEYS = [
     'degree_avg', 'degree_trend', 'degree_stability',
@@ -6418,32 +6432,33 @@ if 'HANDIKAP15|Cim' in _V4_WEIGHT_PROFILES:
     _V4_WEIGHT_PROFILES['HANDIKAP15|Cim']['sample_races'] = 19
     _V4_WEIGHT_PROFILES['HANDIKAP15|Cim']['weights'] = dict(_V4_HANDIKAP15_CIM_WEIGHTS)
 
-# Full-race sample counters refreshed after the 2026-07-16 label repair.
+# Full-race sample counters refreshed from the integrity-clean,
+# feature-complete corpus through 2026-07-31.
 # Category keys use all integrity-clean races in that category; specific keys
 # use the races that resolve to that profile.  These counters affect confidence
 # metadata only, never the score formula.
-_V423_FULL_ONLY_SAMPLE_RACES = {
+_V424_FULL_ONLY_SAMPLE_RACES = {
     'GLOBAL': 1,
-    'GRUP': 26,
-    'HANDIKAP': 120,
-    'HANDIKAP14': 5,
-    'HANDIKAP14|Kum': 19,
-    'HANDIKAP15': 2,
-    'HANDIKAP15|Kum': 21,
-    'HANDIKAP15|Cim': 17,
+    'GRUP': 32,
+    'HANDIKAP': 154,
+    'HANDIKAP14': 7,
+    'HANDIKAP14|Kum': 24,
+    'HANDIKAP15': 3,
+    'HANDIKAP15|Kum': 25,
+    'HANDIKAP15|Cim': 23,
     'HANDIKAP16': 4,
-    'HANDIKAP16|Kum': 17,
-    'HANDIKAP16|Cim': 17,
-    'KV': 52,
-    'MAIDEN': 57,
-    'SARTLI': 146,
-    'SART1': 7,
-    'SART3': 33,
-    'SART4': 55,
-    'SART5': 38,
-    'SATIS': 14,
+    'HANDIKAP16|Kum': 21,
+    'HANDIKAP16|Cim': 22,
+    'KV': 76,
+    'MAIDEN': 78,
+    'SARTLI': 190,
+    'SART1': 12,
+    'SART3': 46,
+    'SART4': 68,
+    'SART5': 49,
+    'SATIS': 19,
 }
-for _profile_key, _sample_races in _V423_FULL_ONLY_SAMPLE_RACES.items():
+for _profile_key, _sample_races in _V424_FULL_ONLY_SAMPLE_RACES.items():
     if _profile_key in _V4_WEIGHT_PROFILES:
         _V4_WEIGHT_PROFILES[_profile_key]['sample_races'] = _sample_races
 
@@ -6608,6 +6623,30 @@ def _v417_apply_agf_policy(profile, raw_weights):
     return weights, False
 
 
+def _v424_apply_winner_top3_blend(profile, raw_weights):
+    """Apply the bounded v4.24 category overlay after the AGF policy."""
+    additions = _V424_GROUP_WINNER_TOP3_BLENDS.get(profile.get('category'))
+    if not additions:
+        return dict(raw_weights)
+
+    addition_total = sum(max(0.0, float(value)) for value in additions.values())
+    if addition_total <= 0.0 or addition_total >= 1.0:
+        return dict(raw_weights)
+
+    normalized = _v4_normalize_weights(raw_weights)
+    normalized_total = sum(normalized.values())
+    if normalized_total <= 0.0:
+        return dict(raw_weights)
+
+    blended = {
+        key: (max(0.0, float(value)) / normalized_total) * (1.0 - addition_total)
+        for key, value in normalized.items()
+    }
+    for metric, amount in additions.items():
+        blended[metric] = blended.get(metric, 0.0) + max(0.0, float(amount))
+    return blended
+
+
 def resolve_v4_profile_weights(profile):
     subtype = profile.get('subtype', 'GLOBAL')
     category = profile.get('category', 'GLOBAL')
@@ -6641,7 +6680,8 @@ def resolve_v4_profile_weights(profile):
         profile,
         selected.get('weights', {}),
     )
-    weights = _v4_normalize_weights(policy_weights)
+    rollout_weights = _v424_apply_winner_top3_blend(profile, policy_weights)
+    weights = _v4_normalize_weights(rollout_weights)
 
     if eligible:
         confidence_score = 0.75 if fallback_level != 'global' else 0.45
