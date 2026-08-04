@@ -5726,6 +5726,29 @@ def calculate_master_score(metrics):
 
 _V4_VERSION = "4.24"
 _V422_CANDIDATE_VERSION = "4.22-handicap-candidate"
+_SART1_SHADOW_VERSION = "sart1-bounded-top3-20260804-v1"
+_SART1_SHADOW_OBSERVATION_START = "05.08.2026"
+_SART1_SHADOW_AGF_CAP = 0.10
+_SART1_SHADOW_MIN_AGF_COVERAGE = 0.80
+_SART1_SHADOW_FROZEN_WEIGHTS = {
+    'agf_score': 10.0000,
+    'pedigree': 15.8574,
+    'training_fitness': 11.2900,
+    'training_degree_score': 5.9465,
+    'jockey_score': 7.9287,
+    'trainer_score': 4.6800,
+    'pace_score': 6.9376,
+    'running_style_proxy_score': 2.9733,
+    'form_trend': 6.9376,
+    'degree_avg': 4.9554,
+    'hp_score': 2.9733,
+    'weight_impact': 2.9733,
+    'distance_suit': 3.9644,
+    'surface_transition_score': 1.9822,
+    'age_score': 1.9822,
+    'bounce_score': 4.3091,
+    'track_experience_score': 4.3091,
+}
 
 # v4.24 Winner Top3 rollout. These are bounded category overlays selected on
 # the chronological 60/20/20 replay through 2026-07-31. The existing profile
@@ -6580,6 +6603,28 @@ def _v4_normalize_weights(raw_weights):
     return {k: round(max(v, 0.0) / total, 4) for k, v in weights.items()}
 
 
+def resolve_sart1_shadow_candidate_weights(agf_enabled):
+    """Return one immutable SART1 candidate definition for the whole run."""
+    candidate = dict(_SART1_SHADOW_FROZEN_WEIGHTS)
+    if not agf_enabled:
+        candidate['agf_score'] = 0.0
+    return _v4_normalize_weights(candidate)
+
+
+def _preserve_sart1_candidate_snapshot(entry, previous):
+    """Keep the first candidate observation across retries or transient failure."""
+    current_version = entry.get('sart1_candidate_version')
+    previous_version = previous.get('sart1_candidate_version')
+    if not previous_version:
+        return entry
+    if current_version and current_version != previous_version:
+        return entry
+    for key, value in previous.items():
+        if key.startswith('sart1_candidate_'):
+            entry[key] = value
+    return entry
+
+
 def _v417_is_handikap_profile(profile):
     return profile.get('category') == 'HANDIKAP' or str(profile.get('subtype', '')).startswith('HANDIKAP')
 
@@ -7159,6 +7204,133 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
     )
 
 
+def attach_sart1_shadow_candidate(analyzed_horses, race_type='', distance='', track=''):
+    """Attach the frozen SART1 candidate without touching visible v4 output."""
+    profile = extract_v4_race_profile(
+        race_type=race_type,
+        distance=distance,
+        track=track,
+        field_size=len(analyzed_horses),
+    )
+    if profile.get('subtype') != 'SART1':
+        return analyzed_horses
+
+    runner_count = len(analyzed_horses)
+    agf_source_count = sum(
+        1
+        for horse in analyzed_horses
+        if bool((horse.get('_mf', {}) or {}).get('_has_agf'))
+    )
+    agf_coverage = agf_source_count / runner_count if runner_count else 0.0
+    agf_applied = bool(
+        runner_count > 0
+        and agf_coverage >= _SART1_SHADOW_MIN_AGF_COVERAGE
+    )
+
+    candidate_weights = resolve_sart1_shadow_candidate_weights(agf_applied)
+    no_agf_weights = resolve_sart1_shadow_candidate_weights(False)
+    candidate_weights_pct = {
+        key: round(value * 100, 1)
+        for key, value in candidate_weights.items()
+        if value > 0
+    }
+
+    candidate_created_ts = int(time.time())
+    for horse in analyzed_horses:
+        source_metrics = dict(horse.get('_mf', {}) or {})
+        has_source_metrics = bool(source_metrics)
+        metrics = dict(source_metrics)
+        no_agf_metrics = dict(source_metrics)
+        if agf_applied:
+            # Keep one common denominator for the whole race. When coverage is
+            # sufficient but a runner is missing AGF, use a neutral value only
+            # inside the candidate copy; the live metric payload is untouched.
+            if not metrics.get('_has_agf'):
+                metrics['agf_score'] = 50.0
+            metrics['_has_agf'] = True
+        else:
+            metrics['_has_agf'] = False
+        no_agf_metrics['_has_agf'] = False
+
+        base_score = calculate_v4_shadow_score(metrics, candidate_weights) if has_source_metrics else 0.0
+        no_agf_base_score = (
+            calculate_v4_shadow_score(no_agf_metrics, no_agf_weights)
+            if has_source_metrics
+            else 0.0
+        )
+        try:
+            penalty_total = max(0.0, float(horse.get('v4PenaltyTotal', 0.0) or 0.0))
+        except (ValueError, TypeError):
+            penalty_total = 0.0
+        score = round(max(0.0, min(100.0, base_score - penalty_total)), 1)
+        no_agf_score = round(
+            max(0.0, min(100.0, no_agf_base_score - penalty_total)),
+            1,
+        )
+
+        horse['sart1CandidateVersion'] = _SART1_SHADOW_VERSION
+        horse['sart1CandidateMode'] = 'prospective_shadow_bounded'
+        horse['sart1CandidateObservationStart'] = _SART1_SHADOW_OBSERVATION_START
+        horse['sart1CandidateCreatedTs'] = candidate_created_ts
+        horse['sart1CandidateBaselineVersion'] = horse.get('v4Version', _V4_VERSION)
+        horse['sart1CandidateBaselineScore'] = horse.get('v4Score')
+        horse['sart1CandidateBaselineRank'] = horse.get('v4Rank')
+        horse['sart1CandidateBaseScore'] = base_score
+        horse['sart1CandidatePenaltyTotal'] = penalty_total
+        horse['sart1CandidateScore'] = score
+        horse['sart1CandidateRank'] = None
+        horse['sart1CandidateNoAgfBaseScore'] = no_agf_base_score
+        horse['sart1CandidateNoAgfScore'] = no_agf_score
+        horse['sart1CandidateNoAgfRank'] = None
+        horse['sart1CandidateUsedForRanking'] = False
+        horse['sart1CandidateRolloutEligible'] = False
+        horse['sart1CandidateWeights'] = candidate_weights_pct
+        horse['sart1CandidateProfile'] = {
+            **profile,
+            'selectedKey': 'SART1_TOP3_BOUNDED_PROSPECTIVE',
+            'fallbackLevel': 'frozen_bounded_candidate',
+        }
+        horse['sart1CandidateAgfCoverage'] = round(agf_coverage, 4)
+        horse['sart1CandidateAgfSourceCount'] = agf_source_count
+        horse['sart1CandidateRunnerCount'] = runner_count
+        horse['sart1CandidateAgfApplied'] = agf_applied
+        horse['sart1CandidateMetricSourceFlags'] = dict(
+            horse.get('metricSourceFlags', {}) or {}
+        )
+        horse['sart1CandidateFeatureSnapshot'] = {
+            key: source_metrics.get(key)
+            for key in _SART1_SHADOW_FROZEN_WEIGHTS
+        }
+        horse['sart1CandidateReason'] = (
+            'Prospective bounded SART1 Top3 shadow; visible v4 ranking and '
+            'Telegram output are unchanged. Evidence gate is not yet complete. '
+            f'AGF applied={agf_applied} '
+            f'coverage={agf_source_count}/{runner_count}.'
+        )
+
+    candidate_ranked = sorted(
+        analyzed_horses,
+        key=lambda horse: horse.get('sart1CandidateScore', 0),
+        reverse=True,
+    )
+    for index, horse in enumerate(candidate_ranked):
+        horse['sart1CandidateRank'] = index + 1
+
+    no_agf_ranked = sorted(
+        analyzed_horses,
+        key=lambda horse: horse.get('sart1CandidateNoAgfScore', 0),
+        reverse=True,
+    )
+    for index, horse in enumerate(no_agf_ranked):
+        horse['sart1CandidateNoAgfRank'] = index + 1
+
+    print(
+        f"[SART1 SHADOW] version={_SART1_SHADOW_VERSION} runners={runner_count} "
+        f"agf={agf_source_count}/{runner_count} applied={agf_applied}"
+    )
+    return analyzed_horses
+
+
 # AGF is intentionally excluded from the ML feature list.
 _ML_FEATURE_KEYS = [
     "degree_avg", "degree_trend", "degree_stability",
@@ -7607,6 +7779,9 @@ def analyze_race():
         race_type = data.get('raceType', '')   # FAZ 6.2: Koşu tipi (Handikap/Maiden/Şartlı...)
         race_date = data.get('raceDate', '')   # FAZ 7: ML log için koşu tarihi (dd.MM.yyyy)
         race_no   = data.get('raceNo', '')     # FAZ 7: ML log için koşu numarası
+        race_time = data.get('raceTime', '')
+        race_city = data.get('city', '')
+        race_city_id = data.get('cityId', '')
         
         if not horses:
             return jsonify({'success': False, 'error': 'At listesi boş'}), 400
@@ -8592,6 +8767,23 @@ def analyze_race():
             print(f"[V4 SHADOW] Hesaplama hatasi, mevcut algoritma ile devam: {_v4_err}")
 
         try:
+            attach_sart1_shadow_candidate(
+                analyzed_horses,
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+            )
+        except Exception as _sart1_shadow_err:
+            print(
+                '[SART1 SHADOW] Hesaplama hatasi; gorunur v4 siralamasi korundu: '
+                f'{_sart1_shadow_err}'
+            )
+            for _h in analyzed_horses:
+                _h['sart1CandidateMode'] = 'unavailable'
+                _h['sart1CandidateUsedForRanking'] = False
+                _h['sart1CandidateReason'] = str(_sart1_shadow_err)
+
+        try:
             attach_shadow_ml_predictions(
                 analyzed_horses,
                 race_type=race_type,
@@ -8714,6 +8906,31 @@ def analyze_race():
                     'v422_candidate_weights': _h.get('v422CandidateWeights', {}),
                     'v422_candidate_profile': _h.get('v422CandidateProfile', {}),
                     'v422_candidate_reason': _h.get('v422CandidateReason'),
+                    'sart1_candidate_version': _h.get('sart1CandidateVersion'),
+                    'sart1_candidate_mode': _h.get('sart1CandidateMode'),
+                    'sart1_candidate_observation_start': _h.get('sart1CandidateObservationStart'),
+                    'sart1_candidate_created_ts': _h.get('sart1CandidateCreatedTs'),
+                    'sart1_candidate_baseline_version': _h.get('sart1CandidateBaselineVersion'),
+                    'sart1_candidate_baseline_score': _h.get('sart1CandidateBaselineScore'),
+                    'sart1_candidate_baseline_rank': _h.get('sart1CandidateBaselineRank'),
+                    'sart1_candidate_base_score': _h.get('sart1CandidateBaseScore'),
+                    'sart1_candidate_penalty_total': _h.get('sart1CandidatePenaltyTotal'),
+                    'sart1_candidate_score': _h.get('sart1CandidateScore'),
+                    'sart1_candidate_rank': _h.get('sart1CandidateRank'),
+                    'sart1_candidate_no_agf_base_score': _h.get('sart1CandidateNoAgfBaseScore'),
+                    'sart1_candidate_no_agf_score': _h.get('sart1CandidateNoAgfScore'),
+                    'sart1_candidate_no_agf_rank': _h.get('sart1CandidateNoAgfRank'),
+                    'sart1_candidate_used_for_ranking': _h.get('sart1CandidateUsedForRanking', False),
+                    'sart1_candidate_rollout_eligible': _h.get('sart1CandidateRolloutEligible', False),
+                    'sart1_candidate_weights': _h.get('sart1CandidateWeights', {}),
+                    'sart1_candidate_profile': _h.get('sart1CandidateProfile', {}),
+                    'sart1_candidate_agf_coverage': _h.get('sart1CandidateAgfCoverage'),
+                    'sart1_candidate_agf_source_count': _h.get('sart1CandidateAgfSourceCount'),
+                    'sart1_candidate_runner_count': _h.get('sart1CandidateRunnerCount'),
+                    'sart1_candidate_agf_applied': _h.get('sart1CandidateAgfApplied', False),
+                    'sart1_candidate_metric_source_flags': _h.get('sart1CandidateMetricSourceFlags', {}),
+                    'sart1_candidate_feature_snapshot': _h.get('sart1CandidateFeatureSnapshot', {}),
+                    'sart1_candidate_reason': _h.get('sart1CandidateReason'),
                     'days_since_last_race': _h.get('daysSinceLastRace'),
                     'last_race_distance': _h.get('lastRaceDistance'),
                     'race_count': _h.get('raceCount'),
@@ -8731,6 +8948,9 @@ def analyze_race():
                     'ml_shadow_reason': _h.get('mlShadowReason'),
                     'sort_metrics': _h.get('sortMetrics', {}),
                     'race_type':  race_type or '',
+                    'race_time':  race_time or '',
+                    'city':       race_city or '',
+                    'city_id':    race_city_id or '',
                     'distance':   target_distance or '',
                     'track':      target_track or '',
                     'field_size': len(analyzed_horses),
@@ -8771,6 +8991,7 @@ def analyze_race():
                     if _prev.get('finish_pos') is not None:
                         _entry['finish_pos'] = _prev['finish_pos']
                         _entry['is_winner']  = _prev.get('is_winner')
+                    _preserve_sart1_candidate_snapshot(_entry, _prev)
 
                 _new_entries.append(_json.dumps(_entry, ensure_ascii=False))
 

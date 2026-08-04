@@ -226,6 +226,16 @@ fix_data_permissions
 
 persist_state_predictions
 
+if [[ "$MODE" == "results" ]]; then
+  MONITOR_DATE="${RUN_DATE:-$(TZ=Europe/Istanbul date +%Y-%m-%d)}"
+  if ! python3 automation/sart1_shadow_monitor.py \
+    --predictions "$DATA_DIR/predictions.jsonl" \
+    --data-dir "$DATA_DIR" \
+    --run-date "$MONITOR_DATE"; then
+    echo "[SART1 SHADOW] Monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
+  fi
+fi
+
 git -C "$DATA_DIR" config user.name "atistik-raspberry"
 git -C "$DATA_DIR" config user.email "atistik-raspberry@users.noreply.github.com"
 

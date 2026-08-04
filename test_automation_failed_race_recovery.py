@@ -76,6 +76,9 @@ class FailedRaceRecoveryTest(unittest.TestCase):
         self.assertEqual(report["recovery"]["initialFailed"], 1)
         self.assertEqual(report["recovery"]["recovered"], 1)
         self.assertTrue(report["cities"][0]["races"][0]["recoveredFromError"] == "")
+        recovered_race_arg = analyze.call_args_list[1].args[2]
+        self.assertEqual(recovered_race_arg["city"], "Kocaeli")
+        self.assertEqual(recovered_race_arg["cityId"], "6")
 
     def test_load_city_program_retries_transient_daily_program_failure(self):
         first_failure = {"success": False, "error": "HTTP 503", "http_status": 503}

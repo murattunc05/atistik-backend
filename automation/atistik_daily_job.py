@@ -314,6 +314,16 @@ def summarize_rankings(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "v4Rank": horse.get("v4Rank"),
                 "v4Score": horse.get("v4Score"),
                 "v4Version": horse.get("v4Version"),
+                "sart1CandidateRank": horse.get("sart1CandidateRank"),
+                "sart1CandidateScore": horse.get("sart1CandidateScore"),
+                "sart1CandidateNoAgfRank": horse.get("sart1CandidateNoAgfRank"),
+                "sart1CandidateNoAgfScore": horse.get("sart1CandidateNoAgfScore"),
+                "sart1CandidateVersion": horse.get("sart1CandidateVersion"),
+                "sart1CandidateBaselineRank": horse.get("sart1CandidateBaselineRank"),
+                "sart1CandidateObservationStart": horse.get("sart1CandidateObservationStart"),
+                "sart1CandidateAgfCoverage": horse.get("sart1CandidateAgfCoverage"),
+                "sart1CandidateAgfApplied": horse.get("sart1CandidateAgfApplied"),
+                "sart1CandidateUsedForRanking": horse.get("sart1CandidateUsedForRanking", False),
                 "winProbability": horse.get("winProbability"),
             }
         )
@@ -332,6 +342,7 @@ def analyze_race(
     valid, reasons = validate_race(race)
     summary = {
         "city": race.get("city", ""),
+        "cityId": str(race.get("cityId") or ""),
         "raceId": str(race.get("raceId", "")),
         "raceNo": str(race.get("raceNo") or race.get("raceNumber") or ""),
         "raceType": race.get("raceType") or race.get("raceName") or "",
@@ -365,6 +376,9 @@ def analyze_race(
         "raceType": str(race.get("raceType") or race.get("raceName") or ""),
         "raceDate": date_dot(day),
         "raceNo": summary["raceNo"],
+        "raceTime": str(summary["time"] or ""),
+        "city": str(race.get("city") or ""),
+        "cityId": str(race.get("cityId") or ""),
     }
     response: dict[str, Any] = {}
     retry_errors = []
@@ -481,6 +495,7 @@ def recover_failed_analysis_races(
         for city_entry, index, original, current in remaining:
             source_race = dict(original)
             source_race["city"] = city_entry.get("city", source_race.get("city", ""))
+            source_race["cityId"] = city_entry.get("cityId", source_race.get("cityId", ""))
             source_race["horses"] = source_race.get("horses", [])
             recovered = analyze_race(
                 args.backend_url,
@@ -564,6 +579,7 @@ def analyze_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
 
         for race in races:
             race["city"] = city_entry["city"]
+            race["cityId"] = city_entry["cityId"]
             race_result = analyze_race(
                 args.backend_url,
                 args.day,
