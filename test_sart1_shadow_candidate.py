@@ -7,6 +7,7 @@ from api_server import (
     _SART1_SHADOW_OBSERVATION_START,
     _SART1_SHADOW_VERSION,
     _preserve_sart1_candidate_snapshot,
+    app,
     attach_sart1_shadow_candidate,
     calculate_v4_shadow_score,
     extract_v4_race_profile,
@@ -47,6 +48,14 @@ def horse(name, training, trainer, pedigree, agf, has_agf=True, penalty=0.0):
 
 
 class Sart1ShadowCandidateTests(unittest.TestCase):
+    def test_ml_status_exposes_non_live_candidate_identity(self):
+        response = app.test_client().get("/api/ml-status")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["sart1_shadow"]["version"], _SART1_SHADOW_VERSION)
+        self.assertEqual(payload["sart1_shadow"]["mode"], "prospective_shadow_bounded")
+        self.assertFalse(payload["sart1_shadow"]["used_for_ranking"])
+
     def test_frozen_candidate_weights_keep_agf_at_ten_percent(self):
         weights = resolve_sart1_shadow_candidate_weights(
             agf_enabled=True,
