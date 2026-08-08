@@ -241,6 +241,13 @@ if [[ "$MODE" == "results" ]]; then
     --run-date "$MONITOR_DATE"; then
     echo "[METRIC SIGNAL] Registry raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
   fi
+
+  if ! python3 automation/confidence_calibration.py \
+    --predictions "$DATA_DIR/predictions.jsonl" \
+    --data-dir "$DATA_DIR" \
+    --run-date "$MONITOR_DATE"; then
+    echo "[CONFIDENCE CALIBRATION] Kalibrasyon raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
+  fi
 fi
 
 git -C "$DATA_DIR" config user.name "atistik-raspberry"
