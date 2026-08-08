@@ -5732,7 +5732,7 @@ def calculate_master_score(metrics):
 # ALGORITHM V4 SHADOW MODE
 # ============================================================================
 
-_V4_VERSION = "4.24"
+_V4_VERSION = "4.25"
 _V422_CANDIDATE_VERSION = "4.22-handicap-candidate"
 _SART1_SHADOW_VERSION = "sart1-bounded-top3-20260804-v1"
 _SART1_SHADOW_OBSERVATION_START = "05.08.2026"
@@ -6410,6 +6410,35 @@ _V4_HANDIKAP15_KUM_WEIGHTS = {
     'trainer_score': 1.0,
 }
 
+# v4.25: HANDIKAP 14/Kum has 28 integrity-clean fully labeled races.  The
+# optimizer's raw proposal moved 58.33% of the weight mass, so it is not used
+# directly.  This profile keeps 85% of the live v4.24 mix and takes only 15%
+# of the proposal (8.75% total variation; max single movement 1.80 points).
+# Chronological holdout and three expanding walk-forward slices showed no
+# Winner Top3 regression.
+_V4_HANDIKAP14_KUM_WEIGHTS = {
+    'bounce_score': 2.708,
+    'degree_avg': 4.5961,
+    'degree_stability': 1.17345,
+    'degree_trend': 2.55,
+    'distance_suit': 7.16445,
+    'distance_transition_score': 4.25,
+    'form_trend': 12.6959,
+    'handicap_class_transition_score': 10.2,
+    'handicap_efficiency_score': 10.2,
+    'hp_score': 4.59025,
+    'jockey_score': 2.55,
+    'pace_score': 10.2615,
+    'running_style_proxy_score': 5.1,
+    'surface_transition_score': 3.4,
+    'track_experience_score': 0.889,
+    'track_suit': 0.72615,
+    'trainer_score': 0.85,
+    'training_degree_score': 2.43575,
+    'training_fitness': 5.07085,
+    'weight_impact': 8.5886,
+}
+
 _V4_HANDIKAP15_CIM_WEIGHTS = {
     'form_trend': 22.0,
     'running_style_proxy_score': 12.0,
@@ -6455,6 +6484,9 @@ for _profile_key in ['HANDIKAP16', 'HANDIKAP16|Kum', 'HANDIKAP16|Cim']:
     if _profile_key in _V4_WEIGHT_PROFILES:
         _V4_WEIGHT_PROFILES[_profile_key]['weights'] = dict(_V4_HANDIKAP16_PROFILE_WEIGHTS)
 
+if 'HANDIKAP14|Kum' in _V4_WEIGHT_PROFILES:
+    _V4_WEIGHT_PROFILES['HANDIKAP14|Kum']['weights'] = dict(_V4_HANDIKAP14_KUM_WEIGHTS)
+
 if 'HANDIKAP15|Kum' in _V4_WEIGHT_PROFILES:
     _V4_WEIGHT_PROFILES['HANDIKAP15|Kum']['sample_races'] = 21
     _V4_WEIGHT_PROFILES['HANDIKAP15|Kum']['weights'] = dict(_V4_HANDIKAP15_KUM_WEIGHTS)
@@ -6463,31 +6495,31 @@ if 'HANDIKAP15|Cim' in _V4_WEIGHT_PROFILES:
     _V4_WEIGHT_PROFILES['HANDIKAP15|Cim']['sample_races'] = 19
     _V4_WEIGHT_PROFILES['HANDIKAP15|Cim']['weights'] = dict(_V4_HANDIKAP15_CIM_WEIGHTS)
 
-# Full-race sample counters refreshed from the integrity-clean,
-# feature-complete corpus through 2026-07-31.
+# Full-race sample counters refreshed from the integrity-clean, fully labeled
+# metric corpus through 2026-08-08. Per-metric source gates still apply.
 # Category keys use all integrity-clean races in that category; specific keys
 # use the races that resolve to that profile.  These counters affect confidence
 # metadata only, never the score formula.
 _V424_FULL_ONLY_SAMPLE_RACES = {
-    'GLOBAL': 1,
-    'GRUP': 32,
-    'HANDIKAP': 154,
-    'HANDIKAP14': 7,
-    'HANDIKAP14|Kum': 24,
-    'HANDIKAP15': 3,
-    'HANDIKAP15|Kum': 25,
-    'HANDIKAP15|Cim': 23,
-    'HANDIKAP16': 4,
-    'HANDIKAP16|Kum': 21,
-    'HANDIKAP16|Cim': 22,
-    'KV': 76,
-    'MAIDEN': 78,
-    'SARTLI': 190,
-    'SART1': 12,
-    'SART3': 46,
-    'SART4': 68,
-    'SART5': 49,
-    'SATIS': 19,
+    'GLOBAL': 2,
+    'GRUP': 37,
+    'HANDIKAP': 193,
+    'HANDIKAP14': 9,
+    'HANDIKAP14|Kum': 28,
+    'HANDIKAP15': 4,
+    'HANDIKAP15|Kum': 32,
+    'HANDIKAP15|Cim': 26,
+    'HANDIKAP16': 5,
+    'HANDIKAP16|Kum': 27,
+    'HANDIKAP16|Cim': 31,
+    'KV': 95,
+    'MAIDEN': 97,
+    'SARTLI': 224,
+    'SART1': 18,
+    'SART3': 48,
+    'SART4': 81,
+    'SART5': 62,
+    'SATIS': 22,
 }
 for _profile_key, _sample_races in _V424_FULL_ONLY_SAMPLE_RACES.items():
     if _profile_key in _V4_WEIGHT_PROFILES:

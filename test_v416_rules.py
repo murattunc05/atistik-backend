@@ -20,7 +20,7 @@ from train_shadow_ml import feature_dict
 
 class V421RulesTest(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(_V4_VERSION, "4.24")
+        self.assertEqual(_V4_VERSION, "4.25")
 
     def test_agf_is_allowed_only_for_maiden_and_sartli_one(self):
         maiden = resolve_v4_profile_weights(
