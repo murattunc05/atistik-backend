@@ -11,6 +11,10 @@ import time
 import re
 import urllib3
 import unicodedata
+import hashlib
+import math
+import random
+import statistics
 from datetime import datetime
 
 app = Flask(__name__)
@@ -5814,6 +5818,41 @@ _V4_METRIC_KEYS = [
     'age_score',
 ]
 
+# Source gates shared by visible scoring and decision-confidence diagnostics.
+# A missing gate keeps the historical scoring behavior (the metric can still
+# be used), but it is treated as unproven coverage by the confidence layer.
+_V4_SOURCE_GUARDS = {
+    'agf_score': '_has_agf',
+    'hp_score': '_has_hp',
+    'weight_impact': '_has_weight',
+    'jockey_score': '_has_jockey',
+    'trainer_score': '_has_trainer',
+    'training_fitness': '_has_training',
+    'training_degree_score': '_has_training_times',
+    'pedigree': '_has_pedigree',
+    'age_score': '_has_age',
+    'track_experience_score': '_has_track_experience',
+    'surface_transition_score': '_has_surface_transition',
+    'distance_transition_score': '_has_distance_transition',
+    'handicap_efficiency_score': '_has_handicap_efficiency',
+    'handicap_weight_relief_score': '_has_handicap_weight_relief',
+    'handicap_class_transition_score': '_has_handicap_class_history',
+    'handicap_load_value_score': '_has_handicap_load_value',
+    'weight_change_risk_score': '_has_weight_change_risk',
+    'handicap_class_load_transition_score': '_has_handicap_class_load_transition',
+    'field_relative_value_score': '_has_field_relative_value',
+    'pace_map_edge_score': '_has_pace_map_edge',
+    'surface_switch_safety_score': '_has_surface_switch_safety',
+    'favorite_risk_guard_score': '_has_favorite_risk_guard',
+    'class_peak_score': '_has_class_peak',
+    'elite_consensus_score': '_has_elite_consensus',
+    'recent_finish_position_score': '_has_recent_finish_position',
+    'start_draw_score': '_has_start_draw',
+    'late_start_risk_score': '_has_late_start_risk',
+    'track_condition_suit_score': '_has_track_condition_suit',
+    'handicap_age_curve_score': '_has_handicap_age_curve',
+}
+
 _V422_HANDIKAP_CANDIDATE_WEIGHTS = {
     'form_trend': 16.0,
     'recent_finish_position_score': 32.0,
@@ -6893,41 +6932,10 @@ def calculate_v4_ranking_penalties(races, race_date_str=None, kgs_value=None):
 def calculate_v4_shadow_score(metrics, weights):
     weighted_sum = 0.0
     total = 0.0
-    source_guards = {
-        'agf_score': '_has_agf',
-        'hp_score': '_has_hp',
-        'weight_impact': '_has_weight',
-        'jockey_score': '_has_jockey',
-        'trainer_score': '_has_trainer',
-        'training_fitness': '_has_training',
-        'training_degree_score': '_has_training_times',
-        'pedigree': '_has_pedigree',
-        'age_score': '_has_age',
-        'track_experience_score': '_has_track_experience',
-        'surface_transition_score': '_has_surface_transition',
-        'distance_transition_score': '_has_distance_transition',
-        'handicap_efficiency_score': '_has_handicap_efficiency',
-        'handicap_weight_relief_score': '_has_handicap_weight_relief',
-        'handicap_class_transition_score': '_has_handicap_class_history',
-        'handicap_load_value_score': '_has_handicap_load_value',
-        'weight_change_risk_score': '_has_weight_change_risk',
-        'handicap_class_load_transition_score': '_has_handicap_class_load_transition',
-        'field_relative_value_score': '_has_field_relative_value',
-        'pace_map_edge_score': '_has_pace_map_edge',
-        'surface_switch_safety_score': '_has_surface_switch_safety',
-        'favorite_risk_guard_score': '_has_favorite_risk_guard',
-        'class_peak_score': '_has_class_peak',
-        'elite_consensus_score': '_has_elite_consensus',
-        'recent_finish_position_score': '_has_recent_finish_position',
-        'start_draw_score': '_has_start_draw',
-        'late_start_risk_score': '_has_late_start_risk',
-        'track_condition_suit_score': '_has_track_condition_suit',
-        'handicap_age_curve_score': '_has_handicap_age_curve',
-    }
     for key, weight in weights.items():
         if weight <= 0:
             continue
-        guard_key = source_guards.get(key)
+        guard_key = _V4_SOURCE_GUARDS.get(key)
         if guard_key and guard_key in metrics and not metrics.get(guard_key, False):
             continue
         try:
@@ -7020,6 +7028,267 @@ def calculate_v4_data_quality(scored_horses):
         },
         'allZeroRace': all_zero,
         'lowDataRace': all_zero or valid_count < 3 or detail_fetch_failed_count > runner_count * 0.4,
+    }
+
+
+def _v4_metric_value(metrics, metric):
+    try:
+        value = float(metrics.get(metric))
+        return value if math.isfinite(value) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _v4_metric_source_proven(metrics, metric):
+    """Conservative coverage for confidence; missing explicit guards are false."""
+    if _v4_metric_value(metrics, metric) is None:
+        return False
+    guard_key = _V4_SOURCE_GUARDS.get(metric)
+    if not guard_key:
+        return True
+    return metrics.get(guard_key) is True
+
+
+def _v4_bootstrap_top3_stability(scored_horses, weights, iterations=40):
+    """Measure whether small weight perturbations preserve the visible Top3."""
+    if not scored_horses:
+        return None
+    top_count = min(3, len(scored_horses))
+    if len(scored_horses) <= 3:
+        return 1.0
+
+    baseline = {
+        id(horse)
+        for horse in sorted(
+            scored_horses,
+            key=lambda horse: float(horse.get('v4Score', 0.0) or 0.0),
+            reverse=True,
+        )[:top_count]
+    }
+    seed_text = '|'.join(
+        f"{horse.get('name', '')}:{horse.get('v4Score', 0)}"
+        for horse in scored_horses
+    )
+    seed = int.from_bytes(hashlib.sha256(seed_text.encode('utf-8')).digest()[:8], 'big')
+    generator = random.Random(seed)
+    retained = 0.0
+    for _ in range(max(1, int(iterations))):
+        perturbed = {
+            metric: weight * math.exp(generator.gauss(0.0, 0.10))
+            for metric, weight in weights.items()
+            if weight > 0
+        }
+        simulated = []
+        for horse in scored_horses:
+            metrics = horse.get('_mf', {}) or {}
+            score = calculate_v4_shadow_score(metrics, perturbed) if metrics else 0.0
+            try:
+                penalty = max(0.0, float(horse.get('v4PenaltyTotal', 0.0) or 0.0))
+            except (TypeError, ValueError):
+                penalty = 0.0
+            simulated.append((max(0.0, score - penalty), id(horse)))
+        simulated.sort(reverse=True)
+        candidate = {horse_id for _, horse_id in simulated[:top_count]}
+        retained += len(baseline & candidate) / top_count
+    return round(retained / max(1, int(iterations)), 4)
+
+
+def calculate_v4_confidence_breakdown(scored_horses, resolved, data_quality):
+    """Return evidence, data, separation and calibration confidence separately.
+
+    This object is diagnostic only. It never changes v4Score or visible rank.
+    """
+    runner_count = len(scored_horses)
+    weights = {
+        metric: max(0.0, float(weight or 0.0))
+        for metric, weight in (resolved.get('weights') or {}).items()
+        if float(weight or 0.0) > 0.0
+    }
+    total_weight = sum(weights.values())
+
+    weighted_source = 0.0
+    weighted_neutral = 0.0
+    informative_weight = 0.0
+    metric_coverage = {}
+    for metric, weight in weights.items():
+        covered_values = []
+        for horse in scored_horses:
+            metrics = horse.get('_mf', {}) or {}
+            if _v4_metric_source_proven(metrics, metric):
+                value = _v4_metric_value(metrics, metric)
+                if value is not None:
+                    covered_values.append(value)
+        coverage = len(covered_values) / runner_count if runner_count else 0.0
+        non_neutral = (
+            sum(abs(value - 50.0) >= 1.0 for value in covered_values) / runner_count
+            if runner_count else 0.0
+        )
+        weighted_source += weight * coverage
+        weighted_neutral += weight * max(0.0, coverage - non_neutral)
+        if (
+            coverage >= 0.5
+            and len(covered_values) >= 2
+            and statistics.pstdev(covered_values) >= 1.0
+        ):
+            informative_weight += weight
+        metric_coverage[metric] = round(coverage, 4)
+
+    weighted_real_coverage = weighted_source / total_weight if total_weight else 0.0
+    neutral_fallback_share = weighted_neutral / total_weight if total_weight else 1.0
+    informative_weight_share = informative_weight / total_weight if total_weight else 0.0
+    valid_ratio = (
+        float(data_quality.get('validRunnerCount', 0)) / runner_count
+        if runner_count else 0.0
+    )
+    detail_failure_ratio = (
+        float(data_quality.get('detailFetchFailedCount', 0)) / runner_count
+        if runner_count else 1.0
+    )
+    data_score = min(
+        weighted_real_coverage,
+        valid_ratio,
+        max(0.0, 1.0 - detail_failure_ratio),
+    )
+    if data_quality.get('lowDataRace'):
+        data_score = min(data_score, 0.49)
+    if data_score >= 0.85 and informative_weight_share >= 0.70:
+        data_label = 'HIGH'
+    elif data_score >= 0.70 and informative_weight_share >= 0.40:
+        data_label = 'MEDIUM'
+    else:
+        data_label = 'LOW'
+
+    scores = sorted(
+        [float(horse.get('v4Score', 0.0) or 0.0) for horse in scored_horses],
+        reverse=True,
+    )
+    score_std = statistics.pstdev(scores) if len(scores) >= 2 else 0.0
+    score_range = max(scores) - min(scores) if scores else 0.0
+    top1_top2_gap = scores[0] - scores[1] if len(scores) >= 2 else None
+    top3_top4_gap = scores[2] - scores[3] if len(scores) >= 4 else None
+    cutoff = scores[min(2, len(scores) - 1)] if scores else 0.0
+    cutoff_crowd = sum(abs(score - cutoff) <= 2.0 for score in scores)
+    normalized_entropy = None
+    effective_field_ratio = None
+    if len(scores) >= 2:
+        peak = max(scores)
+        exponentials = [math.exp((score - peak) / 18.0) for score in scores]
+        exp_total = sum(exponentials) or 1.0
+        probabilities = [value / exp_total for value in exponentials]
+        raw_entropy = -sum(
+            probability * math.log(probability)
+            for probability in probabilities
+            if probability > 0
+        )
+        normalized_entropy = raw_entropy / math.log(len(scores))
+        effective_field_ratio = math.exp(raw_entropy) / len(scores)
+
+    top3_stability = _v4_bootstrap_top3_stability(scored_horses, weights)
+    separation_reasons = []
+    if len(scores) <= 3:
+        separation_status = 'GREEN'
+    else:
+        if top3_top4_gap is not None and top3_top4_gap < 0.5:
+            separation_reasons.append('TOP3_BOUNDARY_TIGHT')
+        if cutoff_crowd >= 7:
+            separation_reasons.append('CUTOFF_CROWD_HIGH')
+        if normalized_entropy is not None and normalized_entropy >= 0.985:
+            separation_reasons.append('SCORE_ENTROPY_HIGH')
+        if separation_reasons:
+            separation_status = 'RED'
+        elif (
+            (top3_top4_gap is not None and top3_top4_gap < 1.5)
+            or cutoff_crowd >= 5
+            or (normalized_entropy is not None and normalized_entropy >= 0.970)
+        ):
+            separation_status = 'YELLOW'
+        else:
+            separation_status = 'GREEN'
+
+    if top3_stability is not None and top3_stability < 0.60:
+        if 'TOP3_UNSTABLE' not in separation_reasons:
+            separation_reasons.append('TOP3_UNSTABLE')
+        separation_status = 'RED'
+    elif top3_stability is not None and top3_stability < 0.80 and separation_status == 'GREEN':
+        separation_reasons.append('TOP3_STABILITY_MEDIUM')
+        separation_status = 'YELLOW'
+
+    separation_score = {'RED': 0.25, 'YELLOW': 0.55, 'GREEN': 0.85}[separation_status]
+    evidence_score = max(0.0, min(1.0, float(resolved.get('confidenceScore', 0.0) or 0.0)))
+    if evidence_score >= 0.70:
+        evidence_label = 'HIGH'
+    elif evidence_score >= 0.45:
+        evidence_label = 'MEDIUM'
+    else:
+        evidence_label = 'LOW'
+
+    low_confidence = (
+        evidence_label == 'LOW'
+        or data_label == 'LOW'
+        or separation_status == 'RED'
+    )
+    open_race = separation_status == 'RED'
+    overall_score = round(min(evidence_score, data_score, separation_score, 0.69), 4)
+    overall_label = 'LOW' if low_confidence else 'MEDIUM_UNCALIBRATED'
+    overall_reasons = []
+    if evidence_label == 'LOW':
+        overall_reasons.append('PROFILE_EVIDENCE_LOW')
+    if data_label == 'LOW':
+        overall_reasons.append('SOURCE_DATA_LOW')
+    overall_reasons.extend(separation_reasons)
+    if not overall_reasons and overall_label == 'MEDIUM_UNCALIBRATED':
+        overall_reasons.append('CALIBRATION_PENDING')
+
+    return {
+        'schemaVersion': 'v4-confidence-breakdown-v1',
+        'diagnosticOnly': True,
+        'evidence': {
+            'score': round(evidence_score, 4),
+            'label': evidence_label,
+            'sampleRaces': int(resolved.get('sampleRaces', 0) or 0),
+            'minRequired': int(resolved.get('minRequired', 0) or 0),
+            'fallbackLevel': resolved.get('fallbackLevel'),
+            'eligible': bool(resolved.get('eligible')),
+            'status': resolved.get('status'),
+        },
+        'data': {
+            'score': round(data_score, 4),
+            'label': data_label,
+            'weightedRealCoverage': round(weighted_real_coverage, 4),
+            'neutralFallbackWeightShare': round(neutral_fallback_share, 4),
+            'informativeWeightShare': round(informative_weight_share, 4),
+            'validRunnerRatio': round(valid_ratio, 4),
+            'detailFailureRatio': round(detail_failure_ratio, 4),
+            'metricCoverage': metric_coverage,
+        },
+        'separation': {
+            'score': separation_score,
+            'label': separation_status,
+            'scoreStd': round(score_std, 3),
+            'scoreRange': round(score_range, 3),
+            'top1Top2Gap': round(top1_top2_gap, 3) if top1_top2_gap is not None else None,
+            'top3Top4Gap': round(top3_top4_gap, 3) if top3_top4_gap is not None else None,
+            'cutoffCrowd2pt': cutoff_crowd,
+            'normalizedEntropy': round(normalized_entropy, 4) if normalized_entropy is not None else None,
+            'effectiveFieldRatio': round(effective_field_ratio, 4) if effective_field_ratio is not None else None,
+            'top3BootstrapStability': top3_stability,
+            'reasonCodes': separation_reasons,
+        },
+        'calibration': {
+            'score': None,
+            'label': 'UNAVAILABLE',
+            'status': 'NOT_CALIBRATED',
+            'reason': 'Profile-specific chronological holdout calibration is not deployed.',
+        },
+        'overall': {
+            'score': overall_score,
+            'label': overall_label,
+            'lowConfidence': low_confidence,
+            'openRace': open_race,
+            'userLabel': 'DÜŞÜK GÜVEN / AÇIK YARIŞ' if low_confidence else 'ORTA GÜVEN',
+            'reasonCodes': overall_reasons,
+            'rankingUsed': True,
+        },
     }
 
 
@@ -7204,6 +7473,8 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
             'minRequired': resolved['minRequired'],
             'eligible': resolved['eligible'],
             'status': resolved['status'],
+            'scope': 'profile_evidence_only',
+            'deprecatedForDecision': True,
         }
         if is_handikap_profile:
             v422_score = calculate_v422_handicap_candidate_score(metrics)
@@ -7231,6 +7502,16 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
     scored.sort(key=lambda h: h.get('v4Score', 0), reverse=True)
     for index, horse in enumerate(scored):
         horse['v4Rank'] = index + 1
+
+    confidence_breakdown = calculate_v4_confidence_breakdown(
+        scored,
+        resolved,
+        data_quality,
+    )
+    decision_confidence = confidence_breakdown['overall']
+    for horse in scored:
+        horse['v4ConfidenceBreakdown'] = confidence_breakdown
+        horse['v4DecisionConfidence'] = decision_confidence
 
     if is_handikap_profile:
         candidate_ranked = [
@@ -7262,7 +7543,8 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
         f"selected={resolved['selectedKey']} level={resolved['fallbackLevel']} "
         f"sample={resolved['sampleRaces']}/{resolved['minRequired']} "
         f"decision={decision['mode']} visible={use_visible_v4} legacy=disabled version={_V4_VERSION} "
-        f"valid={data_quality['validRunnerCount']} zero={data_quality['zeroScoreCount']}"
+        f"valid={data_quality['validRunnerCount']} zero={data_quality['zeroScoreCount']} "
+        f"confidence={decision_confidence['label']} open={decision_confidence['openRace']}"
     )
 
 
@@ -8959,6 +9241,8 @@ def analyze_race():
                     'v4_profile': _h.get('v4Profile', {}),
                     'v4_weights': _h.get('v4Weights', {}),
                     'v4_confidence': _h.get('v4Confidence', {}),
+                    'v4_confidence_breakdown': _h.get('v4ConfidenceBreakdown', {}),
+                    'v4_decision_confidence': _h.get('v4DecisionConfidence', {}),
                     'v4_data_quality': _h.get('v4DataQuality', {}),
                     'v422_candidate_version': _h.get('v422CandidateVersion'),
                     'v422_candidate_mode': _h.get('v422CandidateMode'),

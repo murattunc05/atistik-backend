@@ -314,6 +314,9 @@ def summarize_rankings(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "v4Rank": horse.get("v4Rank"),
                 "v4Score": horse.get("v4Score"),
                 "v4Version": horse.get("v4Version"),
+                "v4Confidence": horse.get("v4Confidence"),
+                "v4ConfidenceBreakdown": horse.get("v4ConfidenceBreakdown"),
+                "v4DecisionConfidence": horse.get("v4DecisionConfidence"),
                 "sart1CandidateRank": horse.get("sart1CandidateRank"),
                 "sart1CandidateScore": horse.get("sart1CandidateScore"),
                 "sart1CandidateNoAgfRank": horse.get("sart1CandidateNoAgfRank"),
@@ -410,12 +413,22 @@ def analyze_race(
         return summary
 
     rankings = summarize_rankings(response.get("results", []) or [])
+    confidence_breakdown = (
+        rankings[0].get("v4ConfidenceBreakdown") or {}
+        if rankings else {}
+    )
+    decision_confidence = (
+        rankings[0].get("v4DecisionConfidence") or confidence_breakdown.get("overall") or {}
+        if rankings else {}
+    )
     summary.update(
         {
             "status": "analyzed",
             "processTime": response.get("processTime"),
             "blendMode": response.get("blendMode"),
             "paceScenario": response.get("paceScenario"),
+            "confidenceBreakdown": confidence_breakdown,
+            "decisionConfidence": decision_confidence,
             "rankings": rankings,
         }
     )
