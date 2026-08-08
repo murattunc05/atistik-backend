@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -150,6 +151,15 @@ class MetricSignalRegistryTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertTrue(Path(paths["latestJson"]).exists())
             self.assertTrue(Path(paths["dailyMarkdown"]).exists())
+            daily_payload = json.loads(first)
+            self.assertEqual(
+                daily_payload["fullRegistryPath"],
+                "automation/metric-signals/latest.json",
+            )
+            self.assertLess(
+                Path(paths["dailyJson"]).stat().st_size,
+                Path(paths["latestJson"]).stat().st_size,
+            )
 
     def test_pi_results_wires_registry_nonblocking_before_commit(self):
         script = (ROOT / "scripts" / "raspberry" / "run-automation.sh").read_text(encoding="utf-8")

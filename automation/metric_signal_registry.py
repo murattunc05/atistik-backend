@@ -1003,11 +1003,70 @@ def atomic_write(path: Path, content: str) -> None:
     temp_path.replace(path)
 
 
+def build_daily_snapshot(report: dict[str, Any]) -> dict[str, Any]:
+    """Keep immutable daily evidence compact; the full registry lives in latest."""
+    scopes = []
+    for scope in report["scopes"]:
+        metrics = []
+        for metric in scope["metrics"]:
+            # Surface profiles stay available in the full latest registry.  The
+            # immutable daily file keeps only actionable surface signals.
+            if (
+                scope["scopeType"] == "PROFILE_SURFACE"
+                and metric["status"] not in {"CANDIDATE_FOR_REPLAY", "HOLD"}
+            ):
+                continue
+            metrics.append({
+                "metric": metric["metric"],
+                "status": metric["status"],
+                "coverage": metric["coverage"],
+                "sourceFlagPresenceRate": metric["sourceFlagPresenceRate"],
+                "nonNeutralRate": metric["nonNeutralRate"],
+                "currentWeightPctMedian": metric["currentWeightPctMedian"],
+                "signalEvidenceRaces": metric["controlReplay"]["signalEvidenceRaces"],
+                "plus2FullDeltaHits": metric["boundedPlus2"]["full"]["deltaHits"],
+                "plus2InnerDeltaHits": metric["boundedPlus2"]["inner"]["deltaHits"],
+                "plus2OuterDeltaHits": metric["boundedPlus2"]["outer"]["deltaHits"],
+                "blockers": metric["blockers"],
+            })
+        scopes.append({
+            "scopeType": scope["scopeType"],
+            "scopeKey": scope["scopeKey"],
+            "coverage": scope["coverage"],
+            "thresholds": scope["thresholds"],
+            "metricStatusCounts": scope["metricStatusCounts"],
+            "metrics": metrics,
+        })
+    return {
+        "schemaVersion": report["schemaVersion"],
+        "runDate": report["runDate"],
+        "sourceSnapshotAt": report["sourceSnapshotAt"],
+        "rankingVersions": report["rankingVersions"],
+        "inventory": report["inventory"],
+        "coverage": report["coverage"],
+        "dailyScoreDiagnostics": report["dailyScoreDiagnostics"],
+        "scopes": scopes,
+        "policy": report["policy"],
+        "fullRegistryPath": "automation/metric-signals/latest.json",
+    }
+
+
 def persist(report: dict[str, Any], data_dir: Path) -> dict[str, str]:
     run_date = report["runDate"]
     daily_dir = data_dir / "automation" / "runs" / run_date
     latest_dir = data_dir / "automation" / "metric-signals"
-    json_text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    latest_json_text = json.dumps(
+        report,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ) + "\n"
+    daily_json_text = json.dumps(
+        build_daily_snapshot(report),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
     markdown = render_markdown(report)
     paths = {
         "dailyJson": daily_dir / "metric-signal-registry.json",
@@ -1016,7 +1075,13 @@ def persist(report: dict[str, Any], data_dir: Path) -> dict[str, str]:
         "latestMarkdown": latest_dir / "latest.md",
     }
     for key, path in paths.items():
-        atomic_write(path, json_text if key.endswith("Json") else markdown)
+        if key == "latestJson":
+            content = latest_json_text
+        elif key == "dailyJson":
+            content = daily_json_text
+        else:
+            content = markdown
+        atomic_write(path, content)
     return {key: str(path) for key, path in paths.items()}
 
 
