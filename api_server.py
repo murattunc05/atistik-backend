@@ -835,6 +835,7 @@ def fetch_race_results():
     """
     try:
         data        = request.json
+        requested_race_id = str(data.get('race_id', '') or '').strip()
         race_date   = data.get('race_date', '').strip()   # "24.04.2026"
         race_no     = data.get('race_no', '').strip()     # "3"
         horses_in   = data.get('horses', [])
@@ -935,8 +936,9 @@ def fetch_race_results():
         # fetch-race-results "28.04.2026-3" formatında ID üretiyor ama
         # predictions.jsonl'da numeric ("224666") ID var. Doğru ID'yi bul.
         import json as _fj, os as _fo
-        _log_path = _fo.path.join(_fo.path.dirname(__file__), 'predictions.jsonl')
+        _log_path = _PREDICTIONS_PATH
         numeric_race_id = None
+        requested_race_id_found = False
         if _fo.path.exists(_log_path):
             try:
                 with open(_log_path, 'r', encoding='utf-8') as _lf:
@@ -946,14 +948,34 @@ def fetch_race_results():
                             continue
                         try:
                             _entry = _fj.loads(_line)
-                            if (str(_entry.get('race_date', '')) == race_date and
-                                    str(_entry.get('race_no', '')) == str(race_no)):
-                                numeric_race_id = str(_entry.get('race_id', ''))
+                            entry_race_id = str(_entry.get('race_id', '') or '')
+                            same_slot = (
+                                str(_entry.get('race_date', '')) == race_date
+                                and str(_entry.get('race_no', '')) == str(race_no)
+                            )
+                            if requested_race_id:
+                                if same_slot and entry_race_id == requested_race_id:
+                                    numeric_race_id = requested_race_id
+                                    requested_race_id_found = True
+                                    break
+                            elif same_slot:
+                                numeric_race_id = entry_race_id
                                 break
                         except Exception:
                             continue
             except Exception:
                 pass
+
+        if requested_race_id and not requested_race_id_found:
+            return jsonify({
+                'success': False,
+                'error': 'İstenen race_id prediction logunda aynı tarih/koşu numarasıyla doğrulanamadı.',
+                'requested_race_id': requested_race_id,
+                'race_date': race_date,
+                'race_no': race_no,
+                'results': results_sorted,
+                'errors': errors,
+            }), 409
 
         final_race_id = numeric_race_id if numeric_race_id else race_id
         print(f'[FETCH-RESULTS] {race_id}: {len(results)} at sonucu bulundu, {len(errors)} hata → final race_id={final_race_id}')

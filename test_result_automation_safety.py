@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from automation.atistik_daily_job import result_match_stats, results_mode, results_once
+from automation.atistik_daily_job import fetch_results, result_match_stats, results_mode, results_once
 from automation.fallback_checker import results_ok
 
 
@@ -49,6 +49,20 @@ class ResultAutomationSafetyTests(unittest.TestCase):
 
         self.assertEqual(stats["matchedCount"], 2)
         self.assertEqual(stats["matchRatio"], 1.0)
+
+    def test_fetch_results_sends_manifest_race_identity(self):
+        race = {
+            "raceId": "226100",
+            "raceNo": "1",
+            "horses": [{"name": "SUPER CHIRON", "detailLink": "/a"}],
+        }
+        with patch("automation.atistik_daily_job.http_json", return_value={"success": True}) as post:
+            fetch_results("https://example.test", date(2026, 7, 15), race, 30)
+
+        payload = post.call_args.kwargs["payload"]
+        self.assertEqual(payload["race_id"], "226100")
+        self.assertEqual(payload["race_date"], "15.07.2026")
+        self.assertEqual(payload["race_no"], "1")
 
     def test_idempotent_api_response_counts_as_completed_submission(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,6 +124,30 @@ class ResultAutomationSafetyTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["totals"]["failed"], 1)
         self.assertEqual(report["races"][0]["status"], "submit_failed")
+
+    def test_fetched_race_id_mismatch_fails_closed_before_submission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self._write_analysis(data_dir)
+            fetched = {
+                "success": True,
+                "race_id": "WRONG-RACE",
+                "results": [
+                    {"horse_name": "SUPERCHIRON", "finish_pos": 1},
+                    {"horse_name": "AĞA SAÇAN", "finish_pos": 2},
+                    {"horse_name": "ÜÇÜNCÜ", "finish_pos": 3},
+                ],
+            }
+            with patch("automation.atistik_daily_job.fetch_results", return_value=fetched), patch(
+                "automation.atistik_daily_job.http_json"
+            ) as submit:
+                report = results_once(self._args(data_dir), {}, False)
+
+        submit.assert_not_called()
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["totals"]["failed"], 1)
+        self.assertEqual(report["races"][0]["status"], "race_identity_mismatch")
+        self.assertFalse(report["races"][0]["safeToSubmit"])
 
     def test_results_mode_retries_failed_as_well_as_pending(self):
         first = {

@@ -628,7 +628,12 @@ def fetch_results(base_url: str, day: date, race: dict[str, Any], timeout: int) 
     return http_json(
         "POST",
         endpoint(base_url, "/api/fetch-race-results"),
-        payload={"race_date": date_dot(day), "race_no": str(race.get("raceNo", "")), "horses": horses},
+        payload={
+            "race_id": str(race.get("raceId", "")),
+            "race_date": date_dot(day),
+            "race_no": str(race.get("raceNo", "")),
+            "horses": horses,
+        },
         timeout=timeout,
     )
 
@@ -741,14 +746,16 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
 
         fetched_results = fetched.get("results", []) or []
         stats = result_match_stats(race, fetched_results)
-        safe = submit_safe(config, stats)
+        fetched_race_id_mismatch = bool(
+            fetched.get("race_id")
+            and str(fetched.get("race_id")) != str(race.get("raceId"))
+        )
+        safe = submit_safe(config, stats) and not fetched_race_id_mismatch
         entry.update(
             {
                 "status": "results_found",
                 "fetchedRaceId": fetched.get("race_id"),
-                "fetchedRaceIdMismatch": bool(
-                    fetched.get("race_id") and str(fetched.get("race_id")) != str(race.get("raceId"))
-                ),
+                "fetchedRaceIdMismatch": fetched_race_id_mismatch,
                 "match": stats,
                 "results": fetched_results,
                 "safeToSubmit": safe,
@@ -756,7 +763,7 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
         )
         report["totals"]["found"] += 1
         if not safe:
-            entry["status"] = "unsafe_match"
+            entry["status"] = "race_identity_mismatch" if fetched_race_id_mismatch else "unsafe_match"
             report["totals"]["failed"] += 1
             report["races"].append(entry)
             continue
