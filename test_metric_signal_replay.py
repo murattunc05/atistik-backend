@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -14,6 +16,9 @@ from automation.metric_signal_replay import (
     plackett_luce_top3_probabilities,
 )
 from automation.metric_signal_registry import group_races
+
+
+ROOT = Path(__file__).parent
 
 
 def replay_race(index: int, *, winner_pred_rank: int = 4, adverse: bool = False) -> list[dict]:
@@ -144,6 +149,37 @@ class MetricSignalReplayTests(unittest.TestCase):
             payload = json.loads(Path(paths["latestJson"]).read_text(encoding="utf-8"))
             self.assertEqual(payload["schemaVersion"], "metric-signal-replay-v1")
             self.assertTrue(Path(paths["dailyMarkdown"]).exists())
+
+    def test_direct_cli_execution_resolves_sibling_registry_module(self):
+        entries = []
+        for index in range(12):
+            entries.extend(replay_race(index))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            predictions = root / "predictions.jsonl"
+            predictions.write_text(
+                "".join(json.dumps(row) + "\n" for row in entries),
+                encoding="utf-8",
+            )
+            registry = root / "registry.json"
+            registry.write_text(json.dumps(registry_payload()), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "automation" / "metric_signal_replay.py"),
+                    "--predictions", str(predictions),
+                    "--registry", str(registry),
+                    "--data-dir", str(root / "data"),
+                    "--run-date", "2026-03-01",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue((root / "data" / "automation" / "metric-replay" / "latest.json").exists())
 
 
 if __name__ == "__main__":

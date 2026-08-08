@@ -18,24 +18,40 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from automation.metric_signal_registry import (
-    METRIC_KEYS,
-    PLUS_WEIGHT_POINTS,
-    active_weights,
-    classify_race,
-    feature_value,
-    group_races,
-    load_jsonl,
-    parse_race_date,
-    profile_of,
-    race_key,
-    race_metric_outcome,
-    rounded,
-    safe_float,
-    safe_int,
-    score_with_weights,
-    winner,
-)
+try:
+    from automation.metric_signal_registry import (
+        METRIC_KEYS,
+        PLUS_WEIGHT_POINTS,
+        active_weights,
+        classify_race,
+        group_races,
+        load_jsonl,
+        profile_of,
+        race_key,
+        race_metric_outcome,
+        rounded,
+        safe_float,
+        safe_int,
+        score_with_weights,
+        winner,
+    )
+except ModuleNotFoundError:  # direct: python automation/metric_signal_replay.py
+    from metric_signal_registry import (
+        METRIC_KEYS,
+        PLUS_WEIGHT_POINTS,
+        active_weights,
+        classify_race,
+        group_races,
+        load_jsonl,
+        profile_of,
+        race_key,
+        race_metric_outcome,
+        rounded,
+        safe_float,
+        safe_int,
+        score_with_weights,
+        winner,
+    )
 
 
 MIN_COMPATIBLE_VERSION = (4, 21)
