@@ -1,6 +1,10 @@
 import unittest
 
-from api_server import calculate_v4_confidence_breakdown, calculate_v4_data_quality
+from api_server import (
+    _V4_CONFIDENCE_SCHEMA,
+    calculate_v4_confidence_breakdown,
+    calculate_v4_data_quality,
+)
 from automation.atistik_daily_job import summarize_rankings
 
 
@@ -35,6 +39,9 @@ def horses(scores, metric="degree_avg", *, guarded=True):
 
 
 class V4ConfidenceBreakdownTests(unittest.TestCase):
+    def test_confidence_schema_is_versioned(self):
+        self.assertEqual(_V4_CONFIDENCE_SCHEMA, "v4-confidence-breakdown-v1")
+
     def test_compressed_top3_boundary_is_low_confidence_open_race(self):
         rows = horses([51.0, 50.8, 50.6, 50.4, 50.2, 50.0, 49.8, 49.6])
         breakdown = calculate_v4_confidence_breakdown(

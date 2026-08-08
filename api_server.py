@@ -88,6 +88,11 @@ def ml_status():
         'mode': _ML_SHADOW_MODE if _ml_shadow_model else 'unavailable',
         'model_version': _ml_shadow_metadata.get('model_version'),
         'ranking_version': f'v{globals().get("_V4_VERSION", "unknown")}',
+        'confidence_diagnostics': {
+            'schema_version': globals().get('_V4_CONFIDENCE_SCHEMA'),
+            'ranking_impact': False,
+            'components': ['evidence', 'data', 'separation', 'calibration'],
+        },
         'sart1_shadow': {
             'version': globals().get('_SART1_SHADOW_VERSION'),
             'mode': 'prospective_shadow_bounded',
@@ -5759,6 +5764,7 @@ def calculate_master_score(metrics):
 # ============================================================================
 
 _V4_VERSION = "4.25"
+_V4_CONFIDENCE_SCHEMA = "v4-confidence-breakdown-v1"
 _V422_CANDIDATE_VERSION = "4.22-handicap-candidate"
 _SART1_SHADOW_VERSION = "sart1-bounded-top3-20260804-v1"
 _SART1_SHADOW_OBSERVATION_START = "05.08.2026"
@@ -7240,7 +7246,7 @@ def calculate_v4_confidence_breakdown(scored_horses, resolved, data_quality):
         overall_reasons.append('CALIBRATION_PENDING')
 
     return {
-        'schemaVersion': 'v4-confidence-breakdown-v1',
+        'schemaVersion': _V4_CONFIDENCE_SCHEMA,
         'diagnosticOnly': True,
         'evidence': {
             'score': round(evidence_score, 4),
