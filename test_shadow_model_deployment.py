@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 import api_server as api
+import train_shadow_ml as training
 
 
 ROOT = Path(__file__).parent
@@ -10,6 +11,27 @@ STATS_PATH = ROOT / "feature_stats_shadow.json"
 
 
 class ShadowModelDeploymentTest(unittest.TestCase):
+    def test_h16_training_degree_feature_matches_training_and_inference(self):
+        flags = {"hasTrainingTimes": True}
+        entry = {
+            "race_type": "HANDİKAP 16",
+            "v4_profile": {"category": "HANDIKAP", "subtype": "HANDIKAP16", "track": "Kum"},
+            "features": {"training_degree_score": 74.0},
+            "metric_source_flags": flags,
+        }
+        horse = {
+            "v4Profile": entry["v4_profile"],
+            "metricSourceFlags": flags,
+        }
+
+        trained = training.feature_dict(entry)
+        inferred = api._shadow_feature_dict(
+            entry["features"], horse=horse, race_type="HANDİKAP 16", track="Kum"
+        )
+
+        for key in ("is_handikap16", "has_training_times", "h16_training_degree_edge"):
+            self.assertEqual(trained[key], inferred[key])
+
     def test_deployed_artifact_is_strict_no_agf_candidate(self):
         payload = json.loads(STATS_PATH.read_text(encoding="utf-8"))
         metadata = payload.get("metadata") or {}

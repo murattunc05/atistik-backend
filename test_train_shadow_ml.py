@@ -151,6 +151,150 @@ class TrainShadowMLFeatureGateTests(unittest.TestCase):
         self.assertIn("pace_map_edge_score", selected)
         self.assertEqual(coverage["pace_map_edge_score"]["source_races"], 25)
 
+    def test_h16_training_degree_feature_is_source_gated_and_centered(self):
+        entry = row("R1", "01.07.2026", 1, source_flags={"hasTrainingTimes": True})
+        entry.update({
+            "race_type": "HANDİKAP 16",
+            "v4_profile": {"category": "HANDIKAP", "subtype": "HANDIKAP16"},
+            "features": {"form_trend": 50.0, "training_degree_score": 74.0},
+        })
+
+        features = training.feature_dict(entry)
+
+        self.assertEqual(features["is_handikap16"], 1.0)
+        self.assertEqual(features["has_training_times"], 1.0)
+        self.assertEqual(features["h16_training_degree_edge"], 24.0)
+
+        entry["metric_source_flags"]["hasTrainingTimes"] = False
+        self.assertEqual(training.feature_dict(entry)["h16_training_degree_edge"], 0.0)
+        entry["metric_source_flags"]["hasTrainingTimes"] = True
+        entry["v4_profile"]["subtype"] = "HANDIKAP15"
+        entry["race_type"] = "HANDİKAP 15"
+        self.assertEqual(training.feature_dict(entry)["h16_training_degree_edge"], 0.0)
+
+    def test_h16_interaction_source_count_ignores_other_profiles(self):
+        races = {}
+        for index in range(40):
+            race_id = f"R{100 + index}"
+            item = row(race_id, "01.07.2026", 1, source_flags={"hasTrainingTimes": True})
+            item["race_type"] = "HANDİKAP 15"
+            item["v4_profile"] = {"category": "HANDIKAP", "subtype": "HANDIKAP15"}
+            races[race_id] = [item]
+        for index in range(24):
+            race_id = f"R{200 + index}"
+            item = row(race_id, "01.07.2026", 1, source_flags={"hasTrainingTimes": True})
+            item["race_type"] = "HANDİKAP 16"
+            item["v4_profile"] = {"category": "HANDIKAP", "subtype": "HANDIKAP16"}
+            races[race_id] = [item]
+
+        selected, coverage = training.select_feature_cols(
+            races,
+            ["form_trend", "h16_training_degree_edge"],
+        )
+
+        self.assertNotIn("h16_training_degree_edge", selected)
+        self.assertEqual(coverage["h16_training_degree_edge"]["source_races"], 24)
+        self.assertEqual(coverage["h16_training_degree_edge"]["eligible_races"], 24)
+
+        item = row("R224", "01.07.2026", 1, source_flags={"hasTrainingTimes": True})
+        item["race_type"] = "HANDİKAP 16"
+        item["v4_profile"] = {"category": "HANDIKAP", "subtype": "HANDIKAP16"}
+        races["R224"] = [item]
+        selected, coverage = training.select_feature_cols(
+            races,
+            ["form_trend", "h16_training_degree_edge"],
+        )
+        self.assertIn("h16_training_degree_edge", selected)
+        self.assertEqual(coverage["h16_training_degree_edge"]["source_races"], 25)
+
+
+class TrainShadowMLGateTests(unittest.TestCase):
+    class FakeModel:
+        def predict(self, matrix):
+            return matrix[:, 0]
+
+    def test_comparison_counts_rescue_and_damage_separately(self):
+        races = {}
+        first = [
+            row("R1", "01.07.2026", 1, 1),
+            row("R1", "01.07.2026", 2, 2),
+            row("R1", "01.07.2026", 3, 3),
+            row("R1", "01.07.2026", 4, 4),
+        ]
+        second = [
+            row("R2", "02.07.2026", 1, 1),
+            row("R2", "02.07.2026", 2, 2),
+            row("R2", "02.07.2026", 3, 3),
+            row("R2", "02.07.2026", 4, 4),
+        ]
+        for index, item in enumerate(first):
+            item["field_size"] = 4
+            item["v4_rank"] = [4, 1, 2, 3][index]
+            item["v4_score"] = [40, 70, 60, 50][index]
+            item["features"] = {"form_trend": [100, 30, 20, 10][index]}
+        for index, item in enumerate(second):
+            item["field_size"] = 4
+            item["v4_rank"] = index + 1
+            item["v4_score"] = [70, 60, 50, 40][index]
+            item["features"] = {"form_trend": [10, 100, 90, 80][index]}
+        races["R1"] = first
+        races["R2"] = second
+
+        comparison = training.compare_model_to_existing(
+            self.FakeModel(), races, ["form_trend"]
+        )
+
+        self.assertEqual(comparison["rescues"], 1)
+        self.assertEqual(comparison["damages"], 1)
+        self.assertEqual(comparison["winnerTop3Net"], 0)
+
+    def test_visible_v4_rank_falls_back_to_rank_pred(self):
+        rows = [
+            {"rank_pred": 2, "horse_name": "A"},
+            {"rank_pred": 1, "horse_name": "B"},
+        ]
+
+        ranks = training.rank_from_visible_v4(rows)
+
+        self.assertEqual(ranks[id(rows[0])], 2)
+        self.assertEqual(ranks[id(rows[1])], 1)
+
+    def test_retrain_gate_rejects_h16_without_confirmed_gain(self):
+        races = {}
+        for race_index in range(20):
+            race_id = f"R{300 + race_index}"
+            rows = []
+            for horse_index, score in enumerate([80.0, 70.0, 60.0, 50.0], start=1):
+                item = row(race_id, f"{race_index + 1:02d}.07.2026", horse_index, horse_index)
+                item.update({
+                    "field_size": 4,
+                    "rank_pred": horse_index,
+                    "v4_rank": horse_index,
+                    "v4_score": score,
+                    "race_type": "HANDİKAP 16" if race_index < 6 else "HANDİKAP 15",
+                    "v4_profile": {
+                        "category": "HANDIKAP",
+                        "subtype": "HANDIKAP16" if race_index < 6 else "HANDIKAP15",
+                    },
+                    "features": {"form_trend": score},
+                })
+                rows.append(item)
+            races[race_id] = rows
+
+        gate = training.build_retrain_gate(
+            races,
+            self.FakeModel(),
+            ["form_trend"],
+            [
+                {"comparisons": {"Overall": {"winnerTop3Net": 0}}},
+                {"comparisons": {"Overall": {"winnerTop3Net": 0}}},
+            ],
+        )
+
+        self.assertEqual(gate["decision"], "REJECTED")
+        self.assertIn("h16_winner_top3_plus_1", gate["failedChecks"])
+        self.assertFalse(gate["policy"]["automaticDeployment"])
+
 
 if __name__ == "__main__":
     unittest.main()

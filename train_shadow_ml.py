@@ -23,6 +23,7 @@ FEATURE_COLS = [
     "distance_transition_score",
     "training_fitness",
     "training_degree_score",
+    "h16_training_degree_edge",
     "weight_impact",
     "handicap_efficiency_score",
     "handicap_weight_relief_score",
@@ -49,6 +50,7 @@ FEATURE_COLS = [
     "field_size",
     "distance_num",
     "is_handikap",
+    "is_handikap16",
     "is_maiden",
     "is_sartli",
     "is_sart1",
@@ -59,6 +61,7 @@ FEATURE_COLS = [
     "track_cim",
     "track_sentetik",
     "has_training",
+    "has_training_times",
     "has_agf",
     "has_hp",
     "has_pedigree",
@@ -95,6 +98,8 @@ NO_AGF_FEATURE_COLS = [col for col in FEATURE_COLS if col not in AGF_INFLUENCED_
 # must not enter a candidate merely because their neutral fallback is present;
 # require enough races with a real upstream source in the *training* slice.
 SOURCE_FLAG_BY_FEATURE = {
+    "training_degree_score": "hasTrainingTimes",
+    "h16_training_degree_edge": "hasTrainingTimes",
     "handicap_weight_relief_score": "hasHandicapWeightRelief",
     "field_relative_value_score": "hasFieldRelativeValue",
     "pace_map_edge_score": "hasPaceMapEdge",
@@ -102,6 +107,9 @@ SOURCE_FLAG_BY_FEATURE = {
     "favorite_risk_guard_score": "hasFavoriteRiskGuard",
     "class_peak_score": "hasClassPeak",
     "elite_consensus_score": "hasEliteConsensus",
+}
+SOURCE_PROFILE_BY_FEATURE = {
+    "h16_training_degree_edge": "HANDIKAP16",
 }
 DEFAULT_MIN_SOURCE_RACES = 25
 DEFAULT_MIN_SOURCE_RATIO = 0.05
@@ -200,6 +208,19 @@ def handikap_profile(entry):
     return f"{subtype}|{bucket}" if subtype != "HANDIKAP" else "HANDIKAP"
 
 
+def profile_subtype(entry):
+    profile = entry.get("v4_profile") or {}
+    subtype = str(profile.get("subtype") or "").upper()
+    if subtype:
+        return re.sub(r"^SARTLI(?=\d)", "SART", subtype)
+    folded = fold_text(entry.get("race_type"))
+    match = re.search(r"(HANDIKAP|SART(?:LI)?)\s*[-/]?\s*(\d+)", folded)
+    if not match:
+        return category(entry)
+    prefix = "SART" if match.group(1).startswith("SART") else "HANDIKAP"
+    return f"{prefix}{match.group(2)}"
+
+
 def feature_dict(entry):
     metrics = entry.get("features") or {}
     flags = entry.get("metric_source_flags") or {}
@@ -243,13 +264,20 @@ def feature_dict(entry):
     ]
     is_maiden = "MAIDEN" in folded_type or "MDN" in folded_type
     is_handikap = "HANDIKAP" in folded_type
+    is_handikap16 = profile_subtype(entry) == "HANDIKAP16"
     is_sartli = "SART" in folded_type
     is_sart1 = bool(is_sartli and re.search(r"\bSART(?:LI)?\s*[-/]?\s*1\b", folded_type))
     agf_allowed = bool(entry.get("agf_allowed_for_ranking", is_maiden or is_sart1))
+    has_training_times = bool(flags.get("hasTrainingTimes"))
 
     features = {key: safe_float(metrics.get(key), 50.0) for key in score_keys}
     if not agf_allowed:
         features["agf_score"] = 50.0
+    features["h16_training_degree_edge"] = (
+        (features["training_degree_score"] - 50.0)
+        if is_handikap16 and has_training_times
+        else 0.0
+    )
     features.update(
         {
             "handicap_class_transition_score": safe_float(metrics.get("handicap_class_transition_score"), 50.0),
@@ -272,6 +300,7 @@ def feature_dict(entry):
             "field_size": safe_float(entry.get("field_size"), 0.0),
             "distance_num": safe_float(distance_num, 0.0),
             "is_handikap": 1.0 if is_handikap else 0.0,
+            "is_handikap16": 1.0 if is_handikap16 else 0.0,
             "is_maiden": 1.0 if is_maiden else 0.0,
             "is_sartli": 1.0 if is_sartli else 0.0,
             "is_sart1": 1.0 if is_sart1 else 0.0,
@@ -282,6 +311,7 @@ def feature_dict(entry):
             "track_cim": 1.0 if track == "Cim" else 0.0,
             "track_sentetik": 1.0 if track == "Sentetik" else 0.0,
             "has_training": 1.0 if flags.get("hasTraining") else 0.0,
+            "has_training_times": 1.0 if has_training_times else 0.0,
             "has_agf": 1.0 if agf_allowed and flags.get("hasAgf") else 0.0,
             "has_hp": 1.0 if flags.get("hasHp") else 0.0,
             "has_pedigree": 1.0 if flags.get("hasPedigree") else 0.0,
@@ -561,17 +591,25 @@ def select_feature_cols(
         if not source_flag:
             selected.append(col)
             continue
+        source_profile = SOURCE_PROFILE_BY_FEATURE.get(col)
+        eligible_races = [
+            rows for rows in train_races.values()
+            if not source_profile or (rows and profile_subtype(rows[0]) == source_profile)
+        ]
         source_races = sum(
             1
-            for rows in train_races.values()
+            for rows in eligible_races
             if any((row.get("metric_source_flags") or {}).get(source_flag) for row in rows)
         )
-        ratio = source_races / race_count if race_count else 0.0
+        eligible_race_count = len(eligible_races)
+        ratio = source_races / eligible_race_count if eligible_race_count else 0.0
         accepted = source_races >= min_source_races and ratio >= min_source_ratio
         coverage[col] = {
             "source_flag": source_flag,
+            "source_profile": source_profile,
             "source_races": source_races,
             "train_races": race_count,
+            "eligible_races": eligible_race_count,
             "ratio": ratio,
             "accepted": accepted,
         }
@@ -635,6 +673,13 @@ def rank_from_existing(rows, key, descending=False):
     else:
         ordered = sorted(rows, key=lambda row: safe_float(row.get(key), 999.0))
     return {id(row): rank for rank, row in enumerate(ordered, start=1)}
+
+
+def rank_from_visible_v4(rows):
+    v4_values = [safe_float(row.get("v4_rank"), 0.0) for row in rows]
+    if sorted(int(value) for value in v4_values) == list(range(1, len(rows) + 1)):
+        return rank_from_existing(rows, "v4_rank")
+    return rank_from_existing(rows, "rank_pred")
 
 
 def spearman(pairs):
@@ -711,6 +756,8 @@ def evaluate_model(model, races, feature_cols):
 
 
 def evaluate_existing(races, key):
+    if key == "v4_rank":
+        return evaluate_ranks(races, rank_from_visible_v4)
     return evaluate_ranks(races, lambda rows: rank_from_existing(rows, key))
 
 
@@ -761,6 +808,184 @@ def subset_by_handikap_profile(races, profile_name):
     }
 
 
+def subset_by_profile_subtype(races, subtype):
+    return {
+        race_id: rows
+        for race_id, rows in races.items()
+        if rows and profile_subtype(rows[0]) == subtype
+    }
+
+
+def normalized_boundary(scores):
+    values = sorted((float(value) for value in scores), reverse=True)
+    if len(values) < 4:
+        return {"gap": None, "cutoff_crowd": len(values)}
+    score_range = values[0] - values[-1]
+    if score_range <= 1e-12:
+        return {"gap": 0.0, "cutoff_crowd": len(values)}
+    normalized = [(value - values[-1]) / score_range for value in values]
+    cutoff = normalized[2]
+    return {
+        "gap": max(0.0, cutoff - normalized[3]),
+        "cutoff_crowd": sum(abs(value - cutoff) <= 0.10 for value in normalized),
+    }
+
+
+def _median_or_none(values):
+    return float(np.median(values)) if values else None
+
+
+def compare_model_to_existing(model, races, feature_cols):
+    rescues = damages = baseline_top3 = candidate_top3 = 0
+    baseline_top1 = candidate_top1 = 0
+    baseline_gaps, candidate_gaps = [], []
+    baseline_crowds, candidate_crowds = [], []
+    race_count = 0
+    for _, raw_rows in races.items():
+        rows = [row for row in raw_rows if row.get("finish_pos") is not None]
+        if len(rows) < 2:
+            continue
+        X = np.array(
+            [[safe_float(feature_dict(row).get(col), 0.0) for col in feature_cols] for row in rows],
+            dtype=np.float32,
+        )
+        candidate_scores = [float(value) for value in model.predict(X)]
+        candidate_ranks = rank_from_scores(rows, candidate_scores)
+        baseline_ranks = rank_from_visible_v4(rows)
+        winner = min(rows, key=lambda row: safe_float(row.get("finish_pos"), 999.0))
+        baseline_rank = baseline_ranks.get(id(winner), 999)
+        candidate_rank = candidate_ranks.get(id(winner), 999)
+        baseline_hit = baseline_rank <= 3
+        candidate_hit = candidate_rank <= 3
+        baseline_top3 += int(baseline_hit)
+        candidate_top3 += int(candidate_hit)
+        baseline_top1 += int(baseline_rank == 1)
+        candidate_top1 += int(candidate_rank == 1)
+        rescues += int(not baseline_hit and candidate_hit)
+        damages += int(baseline_hit and not candidate_hit)
+        baseline_scores = [
+            safe_float(row.get("v4_score"), safe_float(row.get("ai_score"), 0.0))
+            for row in rows
+        ]
+        baseline_separation = normalized_boundary(baseline_scores)
+        candidate_separation = normalized_boundary(candidate_scores)
+        if baseline_separation["gap"] is not None:
+            baseline_gaps.append(baseline_separation["gap"])
+        if candidate_separation["gap"] is not None:
+            candidate_gaps.append(candidate_separation["gap"])
+        baseline_crowds.append(baseline_separation["cutoff_crowd"])
+        candidate_crowds.append(candidate_separation["cutoff_crowd"])
+        race_count += 1
+    baseline_gap = _median_or_none(baseline_gaps)
+    candidate_gap = _median_or_none(candidate_gaps)
+    baseline_crowd = _median_or_none(baseline_crowds)
+    candidate_crowd = _median_or_none(candidate_crowds)
+    return {
+        "races": race_count,
+        "baselineWinnerTop3": baseline_top3,
+        "candidateWinnerTop3": candidate_top3,
+        "rescues": rescues,
+        "damages": damages,
+        "winnerTop3Net": rescues - damages,
+        "baselineTop1": baseline_top1,
+        "candidateTop1": candidate_top1,
+        "top1Net": candidate_top1 - baseline_top1,
+        "baselineBoundaryGapMedian": baseline_gap,
+        "candidateBoundaryGapMedian": candidate_gap,
+        "boundaryGapRatio": (
+            candidate_gap / baseline_gap
+            if baseline_gap is not None and baseline_gap > 1e-12 and candidate_gap is not None
+            else None
+        ),
+        "baselineCutoffCrowdMedian": baseline_crowd,
+        "candidateCutoffCrowdMedian": candidate_crowd,
+    }
+
+
+def build_retrain_gate(validation_races, model, feature_cols, walk_forward_results):
+    overall_metrics = {
+        "baseline": evaluate_existing(validation_races, "v4_rank"),
+        "candidate": evaluate_model(model, validation_races, feature_cols),
+        "comparison": compare_model_to_existing(model, validation_races, feature_cols),
+    }
+    h16_races = subset_by_profile_subtype(validation_races, "HANDIKAP16")
+    h16_metrics = {
+        "baseline": evaluate_existing(h16_races, "v4_rank"),
+        "candidate": evaluate_model(model, h16_races, feature_cols),
+        "comparison": compare_model_to_existing(model, h16_races, feature_cols),
+    }
+    overall = overall_metrics["comparison"]
+    h16 = h16_metrics["comparison"]
+    baseline_overall = overall_metrics["baseline"]
+    candidate_overall = overall_metrics["candidate"]
+    walk_forward_comparisons = [
+        result.get("comparisons", {}).get("Overall", {})
+        for result in walk_forward_results
+        if result.get("comparisons", {}).get("Overall")
+    ]
+
+    def check(name, passed, detail):
+        return {"name": name, "passed": bool(passed), "detail": detail}
+
+    boundary_ok = (
+        overall["boundaryGapRatio"] is not None and overall["boundaryGapRatio"] >= 0.90
+    )
+    crowd_ok = (
+        overall["candidateCutoffCrowdMedian"] is not None
+        and overall["baselineCutoffCrowdMedian"] is not None
+        and overall["candidateCutoffCrowdMedian"] <= overall["baselineCutoffCrowdMedian"] + 1.0
+    )
+    h16_boundary_ok = (
+        h16["boundaryGapRatio"] is not None and h16["boundaryGapRatio"] >= 0.90
+    )
+    checks = [
+        check("overall_validation_minimum", overall["races"] >= 20, f'races={overall["races"]}/20'),
+        check("overall_winner_top3_no_regression", overall["winnerTop3Net"] >= 0,
+              f'net={overall["winnerTop3Net"]}'),
+        check("overall_top1_loss_max_1", overall["top1Net"] >= -1, f'net={overall["top1Net"]}'),
+        check("overall_ndcg_no_regression",
+              candidate_overall["ndcg5"] is not None and baseline_overall["ndcg5"] is not None
+              and candidate_overall["ndcg5"] >= baseline_overall["ndcg5"] - 0.005,
+              f'baseline={fmt(baseline_overall["ndcg5"])},candidate={fmt(candidate_overall["ndcg5"])}'),
+        check("overall_mae_no_regression",
+              candidate_overall["mae"] is not None and baseline_overall["mae"] is not None
+              and candidate_overall["mae"] <= baseline_overall["mae"] + 0.05,
+              f'baseline={fmt(baseline_overall["mae"])},candidate={fmt(candidate_overall["mae"])}'),
+        check("overall_boundary_not_compressed", boundary_ok,
+              f'ratio={fmt(overall["boundaryGapRatio"])}'),
+        check("overall_cutoff_crowd_not_worse", crowd_ok,
+              f'baseline={fmt(overall["baselineCutoffCrowdMedian"])},candidate={fmt(overall["candidateCutoffCrowdMedian"])}'),
+        check("h16_outer_minimum", h16["races"] >= 6, f'races={h16["races"]}/6'),
+        check("h16_winner_top3_plus_1", h16["winnerTop3Net"] >= 1,
+              f'net={h16["winnerTop3Net"]}'),
+        check("h16_no_damage", h16["damages"] == 0, f'damages={h16["damages"]}'),
+        check("h16_boundary_not_compressed", h16_boundary_ok,
+              f'ratio={fmt(h16["boundaryGapRatio"])}'),
+        check("walk_forward_no_winner_top3_regression",
+              len(walk_forward_comparisons) >= 2
+              and all(item.get("winnerTop3Net", -999) >= 0 for item in walk_forward_comparisons),
+              f'nets={[item.get("winnerTop3Net") for item in walk_forward_comparisons]}'),
+    ]
+    return {
+        "schemaVersion": "shadow-ml-retrain-gate-v1",
+        "decision": "SHADOW_CANDIDATE" if all(item["passed"] for item in checks) else "REJECTED",
+        "rankingImpact": False,
+        "overallValidation": overall_metrics,
+        "handikap16Validation": h16_metrics,
+        "walkForwardOverall": walk_forward_comparisons,
+        "checks": checks,
+        "failedChecks": [item["name"] for item in checks if not item["passed"]],
+        "policy": {
+            "winnerTop3Primary": True,
+            "h16OuterGainRequired": 1,
+            "h16DamageAllowed": 0,
+            "boundaryGapMinimumRatio": 0.90,
+            "automaticDeployment": False,
+            "mode": "shadow_only",
+        },
+    }
+
+
 def feature_stats(entries, feature_cols):
     values = defaultdict(list)
     for entry in entries:
@@ -785,6 +1010,7 @@ def write_report(
     model_no_agf,
     no_agf_feature_cols,
     walk_forward_results,
+    retrain_gate,
 ):
     sections = []
     sections.append(f"# Shadow ML Training Report - {metadata['model_version']}\n")
@@ -818,6 +1044,7 @@ def write_report(
         add_table(f"Validation {group}", subset_by_group(validation_races, group))
     for profile in ["HANDIKAP14|Kum", "HANDIKAP15|Kum", "HANDIKAP15|Cim", "HANDIKAP16|Kum", "HANDIKAP16|Cim"]:
         add_table(f"Validation {profile}", subset_by_handikap_profile(validation_races, profile))
+    add_table("Validation HANDIKAP16 all tracks", subset_by_profile_subtype(validation_races, "HANDIKAP16"))
 
     if walk_forward_results:
         sections.append("\n## Walk-Forward Validation\n")
@@ -834,6 +1061,20 @@ def write_report(
                         f"{metrics['winner_top3']}/{metrics['races']} | {fmt(metrics['rho'])} | "
                         f"{fmt(metrics['mae'])} | {fmt(metrics['ndcg5'])} |"
                     )
+
+    sections.extend([
+        "\n## Retrain Gate\n",
+        f"- Decision: **{retrain_gate['decision']}**",
+        "- Ranking impact: none (`shadow_only`)",
+        f"- Failed checks: `{', '.join(retrain_gate['failedChecks']) or 'none'}`",
+        "",
+        "| Check | Passed | Detail |",
+        "|---|---|---|",
+    ])
+    for item in retrain_gate["checks"]:
+        sections.append(
+            f"| {item['name']} | {'yes' if item['passed'] else 'no'} | {item['detail']} |"
+        )
 
     path.write_text("\n".join(sections) + "\n", encoding="utf-8")
 
@@ -909,7 +1150,23 @@ def main():
             "train_races": len(fold_train),
             "validation_races": len(fold_validation),
             "segments": segments,
+            "comparisons": {
+                "Overall": compare_model_to_existing(
+                    fold_no_agf, fold_validation, fold_no_agf_cols
+                ),
+                "HANDIKAP16": compare_model_to_existing(
+                    fold_no_agf,
+                    subset_by_profile_subtype(fold_validation, "HANDIKAP16"),
+                    fold_no_agf_cols,
+                ),
+            },
         })
+    retrain_gate = build_retrain_gate(
+        validation_races,
+        model_no_agf,
+        no_agf_feature_cols,
+        walk_forward_results,
+    )
     model_version = "shadow-" + datetime.now().strftime("%Y%m%d-%H%M")
     metadata = {
         "model_version": model_version,
@@ -934,11 +1191,21 @@ def main():
         "walk_forward_folds": len(walk_forward_results),
         "retrain_rule": "+50 labeled races or weekly, whichever comes first",
         "activation_rule": "shadow only until 1000 overall races, 120 profile races, and 3 consecutive reports beat v4",
+        "residual_signal": {
+            "profile": "HANDIKAP16",
+            "feature": "h16_training_degree_edge",
+            "source_flag": "hasTrainingTimes",
+            "evidence": "winner edge in 6/9 unrescued races; median +9.4",
+        },
+        "retrain_gate_decision": retrain_gate["decision"],
     }
+    retrain_gate["modelVersion"] = model_version
+    retrain_gate["createdAt"] = datetime.now().isoformat(timespec="seconds")
 
     model_path = output_dir / "model_shadow_ranker.json"
     stats_path = output_dir / "feature_stats_shadow.json"
     report_path = output_dir / f"ml_training_report_{datetime.now().strftime('%Y%m%d')}.md"
+    gate_path = output_dir / f"ml_retrain_gate_{datetime.now().strftime('%Y%m%d')}.json"
 
     saved_model = model_agf if args.model_variant == "agf" else model_no_agf
     saved_feature_cols = agf_feature_cols if args.model_variant == "agf" else no_agf_feature_cols
@@ -950,6 +1217,7 @@ def main():
         "metadata": metadata,
     }
     stats_path.write_text(json.dumps(stats_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    gate_path.write_text(json.dumps(retrain_gate, ensure_ascii=False, indent=2), encoding="utf-8")
     write_report(
         report_path,
         metadata,
@@ -959,12 +1227,15 @@ def main():
         model_no_agf,
         no_agf_feature_cols,
         walk_forward_results,
+        retrain_gate,
     )
 
     print(json.dumps({
         "model": str(model_path),
         "stats": str(stats_path),
         "report": str(report_path),
+        "gate": str(gate_path),
+        "gate_decision": retrain_gate["decision"],
         "metadata": metadata,
     }, ensure_ascii=False, indent=2))
 

@@ -7800,6 +7800,11 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
     race_type_text = str(race_type or metrics.get('_race_type') or profile.get('category') or '')
     folded_type = _v4_fold_text(race_type_text)
     track_bucket = _v4_track_bucket(track or profile.get('track') or '')
+    profile_subtype = str(profile.get('subtype') or '').upper()
+    is_handikap16 = profile_subtype == 'HANDIKAP16' or bool(
+        re.search(r'\bHANDIKAP\s*[-/]?\s*16\b', folded_type)
+    )
+    has_training_times = bool(flags.get('hasTrainingTimes'))
 
     try:
         distance_num = int(re.sub(r'[^0-9]', '', str(distance or 0)) or 0)
@@ -7834,6 +7839,11 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
     if not agf_allowed:
         agf_stat = _ml_shadow_feature_stats.get('agf_score', {}) if isinstance(_ml_shadow_feature_stats, dict) else {}
         features['agf_score'] = _shadow_safe_float(agf_stat.get('mean'), 50.0)
+    features['h16_training_degree_edge'] = (
+        (features['training_degree_score'] - 50.0)
+        if is_handikap16 and has_training_times
+        else 0.0
+    )
     features.update({
         'handicap_class_transition_score': _shadow_safe_float(metrics.get('handicap_class_transition_score'), 50.0),
         'handicap_class_delta': _shadow_safe_float(metrics.get('handicap_class_delta'), 0.0),
@@ -7862,6 +7872,7 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'field_size': _shadow_safe_float(field_size, 0.0),
         'distance_num': _shadow_safe_float(distance_num, 0.0),
         'is_handikap': 1.0 if 'HANDIKAP' in folded_type else 0.0,
+        'is_handikap16': 1.0 if is_handikap16 else 0.0,
         'is_maiden': 1.0 if 'MAIDEN' in folded_type or 'MDN' in folded_type else 0.0,
         'is_sartli': 1.0 if 'SART' in folded_type else 0.0,
         'is_sart1': 1.0 if profile.get('subtype') == 'SART1' else 0.0,
@@ -7872,6 +7883,7 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'track_cim': 1.0 if track_bucket == 'Cim' else 0.0,
         'track_sentetik': 1.0 if track_bucket == 'Sentetik' else 0.0,
         'has_training': 1.0 if flags.get('hasTraining') else 0.0,
+        'has_training_times': 1.0 if has_training_times else 0.0,
         'has_agf': 1.0 if agf_allowed and flags.get('hasAgf') else 0.0,
         'has_hp': 1.0 if flags.get('hasHp') else 0.0,
         'has_pedigree': 1.0 if flags.get('hasPedigree') else 0.0,
