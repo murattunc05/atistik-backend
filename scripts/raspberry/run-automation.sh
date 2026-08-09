@@ -255,6 +255,13 @@ if [[ "$MODE" == "results" ]]; then
     --run-date "$MONITOR_DATE"; then
     echo "[WINNER TOP3 DIAGNOSTICS] Failure raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
   fi
+
+  if ! python3 automation/winner_top3_interaction_diagnostics.py \
+    --predictions "$DATA_DIR/predictions.jsonl" \
+    --data-dir "$DATA_DIR" \
+    --run-date "$MONITOR_DATE"; then
+    echo "[WINNER TOP3 INTERACTION] Interaction raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
+  fi
 fi
 
 git -C "$DATA_DIR" config user.name "atistik-raspberry"
