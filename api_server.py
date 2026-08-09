@@ -40,7 +40,7 @@ _maiden_shadow_metadata = {}
 _maiden_shadow_manifest = {}
 _maiden_shadow_load_error = None
 _MAIDEN_SHADOW_VERSION = "maiden-ml15-20260810-v1"
-_MAIDEN_SHADOW_OBSERVATION_START = "11.08.2026"
+_MAIDEN_SHADOW_OBSERVATION_START = "10.08.2026"
 _MAIDEN_SHADOW_ALPHA = 0.15
 
 def load_ml_model():

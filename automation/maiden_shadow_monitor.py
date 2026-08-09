@@ -181,7 +181,7 @@ def candidate_identity_valid(rows: list[dict[str, Any]]) -> bool:
     if any(
         str(row.get("maiden_candidate_mode") or "") != "prospective_shadow_bounded"
         or str(row.get("maiden_candidate_version") or "") != EXPECTED_CANDIDATE_VERSION
-        or str(row.get("maiden_candidate_observation_start") or "") != "11.08.2026"
+        or str(row.get("maiden_candidate_observation_start") or "") != "10.08.2026"
         or str(row.get("maiden_candidate_model_version") or "") != EXPECTED_MODEL_VERSION
         or str(row.get("maiden_candidate_model_sha256") or "") != EXPECTED_MODEL_SHA256
         or str(row.get("maiden_candidate_feature_schema_hash") or "")

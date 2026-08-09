@@ -147,7 +147,7 @@ class MaidenShadowCandidateTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()["maiden_shadow"]
         self.assertEqual(payload["version"], api._MAIDEN_SHADOW_VERSION)
-        self.assertEqual(payload["observation_start"], "11.08.2026")
+        self.assertEqual(payload["observation_start"], "10.08.2026")
         self.assertEqual(payload["alpha"], 0.15)
         self.assertFalse(payload["used_for_ranking"])
 

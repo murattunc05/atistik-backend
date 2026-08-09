@@ -25,7 +25,7 @@ ISTANBUL = ZoneInfo("Europe/Istanbul")
 
 
 def race_rows(index, visible_winner_rank=4, candidate_winner_rank=3, partial=False):
-    day = date(2026, 8, 11) + timedelta(days=index)
+    day = date(2026, 8, 10) + timedelta(days=index)
     race_start = datetime.combine(day, time(14, 0), tzinfo=ISTANBUL)
     created_ts = int(race_start.timestamp()) - 3600
     visible_other = [rank for rank in range(1, 5) if rank != visible_winner_rank]
@@ -58,7 +58,7 @@ def race_rows(index, visible_winner_rank=4, candidate_winner_rank=3, partial=Fal
             "finish_pos": None if partial and horse_index == 3 else horse_index + 1,
             "maiden_candidate_version": VERSION,
             "maiden_candidate_mode": "prospective_shadow_bounded",
-            "maiden_candidate_observation_start": "11.08.2026",
+            "maiden_candidate_observation_start": "10.08.2026",
             "maiden_candidate_created_ts": created_ts,
             "maiden_candidate_model_version": "maiden-shadow-20260810-v1",
             "maiden_candidate_model_sha256": EXPECTED_MODEL_SHA256,
