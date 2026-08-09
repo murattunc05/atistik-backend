@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import math
 from collections import defaultdict
@@ -21,6 +22,8 @@ GROUP_OUTER_MINIMUM = 12
 PROFILE_TOTAL_MINIMUM = 30
 PROFILE_INNER_MINIMUM = 6
 PROFILE_OUTER_MINIMUM = 6
+MAIDEN_CANDIDATE_VERSION = "maiden-ml15-20260810-v1"
+MAIDEN_MODEL_VERSION = "maiden-shadow-20260810-v1"
 
 
 def _finite_float(value, default=None):
@@ -300,7 +303,112 @@ def build_segment_gate(key, total_races, inner, outer, alpha):
     }
 
 
-def simulate(entries, corpus_summary, validation_ratio=0.2, inner_validation_ratio=0.25):
+def _date_range(races):
+    parsed = []
+    for rows in races.values():
+        if not rows:
+            continue
+        raw = str(rows[0].get("race_date") or "").strip()
+        try:
+            parsed.append((datetime.strptime(raw, "%d.%m.%Y"), raw))
+        except ValueError:
+            continue
+    if not parsed:
+        return {"start": None, "end": None}
+    parsed.sort(key=lambda item: item[0])
+    return {
+        "start": parsed[0][1],
+        "end": parsed[-1][1],
+    }
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def save_maiden_candidate_artifacts(output_dir, model, feature_cols, train_races, holdout_races):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_path = output_dir / "model_maiden_shadow_ranker.json"
+    stats_path = output_dir / "feature_stats_maiden_shadow.json"
+    manifest_path = output_dir / "maiden_shadow_manifest.json"
+    existing = [path for path in (model_path, stats_path, manifest_path) if path.exists()]
+    if existing:
+        raise FileExistsError(
+            "Frozen MAIDEN artifact already exists: "
+            + ", ".join(str(path) for path in existing)
+        )
+    schema_hash = hashlib.sha256("\n".join(feature_cols).encode("utf-8")).hexdigest()
+    train_entries = [row for rows in train_races.values() for row in rows]
+    metadata = {
+        "candidate_version": MAIDEN_CANDIDATE_VERSION,
+        "model_version": MAIDEN_MODEL_VERSION,
+        "model_variant": "no-agf",
+        "includes_agf": False,
+        "strict_no_agf_ml": True,
+        "segment": "GROUP:MAIDEN",
+        "alpha": 0.15,
+        "baseline_version": "v4.25",
+        "gate_decision": "SHADOW_CANDIDATE",
+        "training_races": len(train_races),
+        "training_date_range": _date_range(train_races),
+        "training_cutoff": _date_range(train_races)["end"],
+        "holdout_races": len(holdout_races),
+        "holdout_date_range": _date_range(holdout_races),
+        "feature_count": len(feature_cols),
+        "feature_schema_sha256": schema_hash,
+    }
+    model.save_model(str(model_path))
+    stats_path.write_text(json.dumps({
+        "feature_cols": feature_cols,
+        "stats": training.feature_stats(train_entries, feature_cols),
+        "metadata": metadata,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest = {
+        "schemaVersion": "maiden-shadow-artifact-v1",
+        "candidateVersion": MAIDEN_CANDIDATE_VERSION,
+        "modelVersion": MAIDEN_MODEL_VERSION,
+        "profile": "MAIDEN",
+        "segment": "GROUP:MAIDEN",
+        "alpha": 0.15,
+        "baselineVersion": "v4.25",
+        "strictNoAgfMl": True,
+        "trainingCutoff": metadata["training_cutoff"],
+        "trainingDateRange": metadata["training_date_range"],
+        "holdoutDateRange": metadata["holdout_date_range"],
+        "gateDecision": "SHADOW_CANDIDATE",
+        "featureCount": len(feature_cols),
+        "featureSchemaSha256": schema_hash,
+        "modelSha256": _sha256(model_path),
+        "statsSha256": _sha256(stats_path),
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "model": str(model_path),
+        "stats": str(stats_path),
+        "manifest": str(manifest_path),
+        "metadata": metadata,
+        "hashes": {
+            "model": manifest["modelSha256"],
+            "stats": manifest["statsSha256"],
+            "featureSchema": schema_hash,
+        },
+    }
+
+
+def simulate(
+    entries,
+    corpus_summary,
+    validation_ratio=0.2,
+    inner_validation_ratio=0.25,
+    artifact_output_dir=None,
+):
     outer_train, outer_validation = training.split_races(entries, validation_ratio)
     inner_entries = [row for rows in outer_train.values() for row in rows]
     inner_train, inner_validation = training.split_races(inner_entries, inner_validation_ratio)
@@ -361,7 +469,7 @@ def simulate(entries, corpus_summary, validation_ratio=0.2, inner_validation_rat
         ),
         reverse=True,
     )
-    return {
+    result = {
         "schemaVersion": "profile-blend-simulation-v1",
         "createdAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "visibleRankingImpact": False,
@@ -402,6 +510,18 @@ def simulate(entries, corpus_summary, validation_ratio=0.2, inner_validation_rat
             if item["gate"]["decision"] == "SHADOW_CANDIDATE"
         ],
     }
+    if (
+        artifact_output_dir is not None
+        and "GROUP:MAIDEN" in result["shadowCandidates"]
+    ):
+        result["candidateArtifact"] = save_maiden_candidate_artifacts(
+            Path(artifact_output_dir),
+            outer_model,
+            outer_cols,
+            outer_train,
+            outer_validation,
+        )
+    return result
 
 
 def write_report(path, result):
@@ -446,9 +566,14 @@ def main():
     parser = argparse.ArgumentParser(description="Simulate profile-bounded v4 + no-AGF ML blends.")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output-dir", default=".")
+    parser.add_argument(
+        "--maiden-artifact-dir",
+        help="Explicit empty directory for freezing the gated MAIDEN artifact.",
+    )
     parser.add_argument("--validation-ratio", type=float, default=0.2)
     parser.add_argument("--inner-validation-ratio", type=float, default=0.25)
     args = parser.parse_args()
+    output_dir = Path(args.output_dir)
 
     entries, corpus_summary = training.load_entries(
         SimpleNamespace(
@@ -463,8 +588,10 @@ def main():
         corpus_summary,
         validation_ratio=args.validation_ratio,
         inner_validation_ratio=args.inner_validation_ratio,
+        artifact_output_dir=(
+            Path(args.maiden_artifact_dir) if args.maiden_artifact_dir else None
+        ),
     )
-    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     date_stamp = datetime.now().strftime("%Y%m%d")
     json_path = output_dir / f"profile_blend_simulation_{date_stamp}.json"
@@ -477,6 +604,7 @@ def main():
         "shadow_candidates": result["shadowCandidates"],
         "segments": len(result["segments"]),
         "visible_ranking_impact": False,
+        "candidate_artifact": result.get("candidateArtifact"),
     }, ensure_ascii=False, indent=2))
 
 

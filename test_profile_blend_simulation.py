@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 import profile_blend_simulation as simulation
 import train_shadow_ml as training
@@ -99,6 +101,16 @@ class ProfileBlendSimulationTests(unittest.TestCase):
         self.assertEqual(accepted["decision"], "SHADOW_CANDIDATE")
         self.assertEqual(rejected["decision"], "REJECTED")
         self.assertIn("outer_no_damage", rejected["failedChecks"])
+
+    def test_frozen_artifact_refuses_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "maiden_shadow_manifest.json").write_text("existing")
+
+            with self.assertRaises(FileExistsError):
+                simulation.save_maiden_candidate_artifacts(
+                    output_dir, object(), [], {}, {}
+                )
 
 
 if __name__ == "__main__":

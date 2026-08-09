@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "maiden-shadow-artifact-v1",
+  "candidateVersion": "maiden-ml15-20260810-v1",
+  "modelVersion": "maiden-shadow-20260810-v1",
+  "profile": "MAIDEN",
+  "segment": "GROUP:MAIDEN",
+  "alpha": 0.15,
+  "baselineVersion": "v4.25",
+  "strictNoAgfMl": true,
+  "trainingCutoff": "25.07.2026",
+  "trainingDateRange": {
+    "start": "09.05.2026",
+    "end": "25.07.2026"
+  },
+  "holdoutDateRange": {
+    "start": "26.07.2026",
+    "end": "09.08.2026"
+  },
+  "gateDecision": "SHADOW_CANDIDATE",
+  "featureCount": 58,
+  "featureSchemaSha256": "5267a4de81de7e97ce46556be96af9041816baec0770de180631bc87c52fbae0",
+  "modelSha256": "85f1d7533c382b0f4a02d66c123a68a171e82196bdc8d0ad7fb3bbafc0f2684b",
+  "statsSha256": "a5e510de813f5f0a45598ff2878d9c8fe19709a7c4960b7836a33281b2b83214"
+}

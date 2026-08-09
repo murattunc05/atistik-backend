@@ -33,6 +33,15 @@ _ml_shadow_feature_stats = {}
 _ml_shadow_metadata = {}
 _ml_shadow_load_error = None
 _ML_SHADOW_MODE = "shadow_only"
+_maiden_shadow_model = None
+_maiden_shadow_feature_cols = []
+_maiden_shadow_feature_stats = {}
+_maiden_shadow_metadata = {}
+_maiden_shadow_manifest = {}
+_maiden_shadow_load_error = None
+_MAIDEN_SHADOW_VERSION = "maiden-ml15-20260810-v1"
+_MAIDEN_SHADOW_OBSERVATION_START = "11.08.2026"
+_MAIDEN_SHADOW_ALPHA = 0.15
 
 def load_ml_model():
     """Load the optional shadow ranker without affecting visible v4 ranking."""
@@ -74,8 +83,119 @@ def load_ml_model():
         print(f"[SHADOW-ML] Model yukleme hatasi: {e}")
         _ml_shadow_model = None
 
+
+def load_maiden_shadow_model():
+    """Load the bounded MAIDEN candidate as a separate non-ranking model."""
+    global _maiden_shadow_model, _maiden_shadow_feature_cols
+    global _maiden_shadow_feature_stats, _maiden_shadow_metadata
+    global _maiden_shadow_manifest, _maiden_shadow_load_error
+    import os as _o, json as _j
+
+    base_dir = _o.path.dirname(__file__)
+    model_path = _o.path.join(base_dir, 'model_maiden_shadow_ranker.json')
+    stats_path = _o.path.join(base_dir, 'feature_stats_maiden_shadow.json')
+    manifest_path = _o.path.join(base_dir, 'maiden_shadow_manifest.json')
+    _maiden_shadow_model = None
+    _maiden_shadow_feature_cols = []
+    _maiden_shadow_feature_stats = {}
+    _maiden_shadow_metadata = {}
+    _maiden_shadow_manifest = {}
+    if not all(_o.path.exists(path) for path in (model_path, stats_path, manifest_path)):
+        _maiden_shadow_load_error = 'MAIDEN shadow model, feature tanimi veya manifest bulunamadi'
+        print(f"[MAIDEN SHADOW] {_maiden_shadow_load_error}")
+        return
+
+    try:
+        import xgboost as xgb
+        with open(stats_path, 'r', encoding='utf-8') as f:
+            saved = _j.load(f)
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            manifest = _j.load(f)
+        feature_cols = list(saved.get('feature_cols') or [])
+        metadata = dict(saved.get('metadata') or {})
+        forbidden = {
+            'agf_score', 'has_agf', 'v4_score', 'v4_rank',
+            'top3_feature_avg', 'feature_variance',
+        }
+        if metadata.get('includes_agf') or forbidden.intersection(feature_cols):
+            raise ValueError('MAIDEN shadow artifact strict no-AGF degil')
+        if not feature_cols:
+            raise ValueError('MAIDEN shadow feature listesi bos')
+        schema_hash = hashlib.sha256('\n'.join(feature_cols).encode('utf-8')).hexdigest()
+
+        def file_sha256(path):
+            digest = hashlib.sha256()
+            with open(path, 'rb') as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        expected = {
+            'schemaVersion': 'maiden-shadow-artifact-v1',
+            'candidateVersion': _MAIDEN_SHADOW_VERSION,
+            'profile': 'MAIDEN',
+            'segment': 'GROUP:MAIDEN',
+            'alpha': _MAIDEN_SHADOW_ALPHA,
+            'baselineVersion': 'v4.25',
+            'strictNoAgfMl': True,
+            'gateDecision': 'SHADOW_CANDIDATE',
+        }
+        for key, expected_value in expected.items():
+            if manifest.get(key) != expected_value:
+                raise ValueError(f'MAIDEN manifest {key} uyusmuyor')
+        if not manifest.get('modelVersion') or not manifest.get('trainingCutoff'):
+            raise ValueError('MAIDEN manifest modelVersion/trainingCutoff eksik')
+        if metadata.get('model_variant') != 'no-agf':
+            raise ValueError('MAIDEN metadata model_variant no-agf degil')
+        if metadata.get('segment') != 'GROUP:MAIDEN':
+            raise ValueError('MAIDEN metadata segment uyusmuyor')
+        if metadata.get('alpha') != _MAIDEN_SHADOW_ALPHA:
+            raise ValueError('MAIDEN metadata alpha uyusmuyor')
+        if metadata.get('baseline_version') != 'v4.25':
+            raise ValueError('MAIDEN metadata baseline version uyusmuyor')
+        if metadata.get('gate_decision') != 'SHADOW_CANDIDATE':
+            raise ValueError('MAIDEN metadata gate karari uyusmuyor')
+        if not metadata.get('strict_no_agf_ml'):
+            raise ValueError('MAIDEN metadata strict no-AGF bayragi eksik')
+        if manifest.get('featureCount') != len(feature_cols):
+            raise ValueError('MAIDEN feature count uyusmuyor')
+        if metadata.get('model_version') != manifest.get('modelVersion'):
+            raise ValueError('MAIDEN model version uyusmuyor')
+        if metadata.get('candidate_version') != _MAIDEN_SHADOW_VERSION:
+            raise ValueError('MAIDEN candidate version uyusmuyor')
+        if metadata.get('training_cutoff') != manifest.get('trainingCutoff'):
+            raise ValueError('MAIDEN training cutoff uyusmuyor')
+        if schema_hash != manifest.get('featureSchemaSha256'):
+            raise ValueError('MAIDEN feature schema hash uyusmuyor')
+        if file_sha256(model_path) != manifest.get('modelSha256'):
+            raise ValueError('MAIDEN model hash uyusmuyor')
+        if file_sha256(stats_path) != manifest.get('statsSha256'):
+            raise ValueError('MAIDEN stats hash uyusmuyor')
+
+        model = xgb.XGBRanker()
+        model.load_model(model_path)
+        _maiden_shadow_model = model
+        _maiden_shadow_feature_cols = feature_cols
+        _maiden_shadow_feature_stats = dict(saved.get('stats') or {})
+        _maiden_shadow_metadata = metadata
+        _maiden_shadow_manifest = manifest
+        _maiden_shadow_load_error = None
+        print(
+            f"[MAIDEN SHADOW] model={metadata.get('model_version')} "
+            f"features={len(feature_cols)} alpha={_MAIDEN_SHADOW_ALPHA:.2f}"
+        )
+    except Exception as exc:
+        _maiden_shadow_model = None
+        _maiden_shadow_feature_cols = []
+        _maiden_shadow_feature_stats = {}
+        _maiden_shadow_metadata = {}
+        _maiden_shadow_manifest = {}
+        _maiden_shadow_load_error = f'{type(exc).__name__}: {exc}'
+        print(f"[MAIDEN SHADOW] Yukleme hatasi: {_maiden_shadow_load_error}")
+
 # Sunucu başlangıcında yükle
 load_ml_model()
+load_maiden_shadow_model()
 
 @app.route('/api/ml-status', methods=['GET'])
 def ml_status():
@@ -100,6 +220,21 @@ def ml_status():
             'used_for_ranking': False,
             'agf_cap': globals().get('_SART1_SHADOW_AGF_CAP'),
             'min_agf_coverage': globals().get('_SART1_SHADOW_MIN_AGF_COVERAGE'),
+        },
+        'maiden_shadow': {
+            'version': _MAIDEN_SHADOW_VERSION,
+            'mode': 'prospective_shadow_bounded',
+            'observation_start': _MAIDEN_SHADOW_OBSERVATION_START,
+            'used_for_ranking': False,
+            'alpha': _MAIDEN_SHADOW_ALPHA,
+            'strict_no_agf_ml': True,
+            'model_loaded': _maiden_shadow_model is not None,
+            'model_version': _maiden_shadow_metadata.get('model_version'),
+            'feature_count': len(_maiden_shadow_feature_cols),
+            'load_error': _maiden_shadow_load_error,
+            'artifact_sha256': _maiden_shadow_manifest.get('modelSha256'),
+            'feature_schema_sha256': _maiden_shadow_manifest.get('featureSchemaSha256'),
+            'training_cutoff': _maiden_shadow_manifest.get('trainingCutoff'),
         },
         'metadata': _ml_shadow_metadata,
         'predictions': prediction_stats,
@@ -6732,6 +6867,17 @@ def _preserve_sart1_candidate_snapshot(entry, previous):
     return entry
 
 
+def _preserve_maiden_candidate_snapshot(entry, previous):
+    """Keep the first MAIDEN observation immutable across analysis retries."""
+    previous_version = previous.get('maiden_candidate_version')
+    if not previous_version:
+        return entry
+    for key, value in previous.items():
+        if key.startswith('maiden_candidate_'):
+            entry[key] = value
+    return entry
+
+
 def _v417_is_handikap_profile(profile):
     return profile.get('category') == 'HANDIKAP' or str(profile.get('subtype', '')).startswith('HANDIKAP')
 
@@ -7805,6 +7951,17 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         re.search(r'\bHANDIKAP\s*[-/]?\s*16\b', folded_type)
     )
     has_training_times = bool(flags.get('hasTrainingTimes'))
+    days_since_last_race = _shadow_safe_float(horse.get('daysSinceLastRace'), -1.0)
+    long_layoff_bucket = (
+        3.0 if days_since_last_race >= 91
+        else 2.0 if days_since_last_race >= 61
+        else 1.0 if days_since_last_race >= 40
+        else 0.0
+    )
+    recent_long_race_flag = 1.0 if any(
+        isinstance(item, dict) and item.get('code') == 'recent_long_race'
+        for item in (horse.get('rankingPenalties') or [])
+    ) else 0.0
 
     try:
         distance_num = int(re.sub(r'[^0-9]', '', str(distance or 0)) or 0)
@@ -7909,10 +8066,10 @@ def _shadow_feature_dict(metrics, horse=None, field_size=0, race_type='', distan
         'has_favorite_risk_guard': 1.0 if flags.get('hasFavoriteRiskGuard') else 0.0,
         'has_class_peak': 1.0 if flags.get('hasClassPeak') else 0.0,
         'has_elite_consensus': 1.0 if flags.get('hasEliteConsensus') else 0.0,
-        'days_since_last_race': _shadow_safe_float(horse.get('daysSinceLastRace'), -1.0),
+        'days_since_last_race': days_since_last_race,
         'last_race_distance': _shadow_safe_float(horse.get('lastRaceDistance'), 0.0),
-        'long_layoff_bucket': _shadow_safe_float(metrics.get('_long_layoff_bucket'), 0.0),
-        'recent_long_race_flag': 1.0 if metrics.get('_recent_long_race_flag') else 0.0,
+        'long_layoff_bucket': long_layoff_bucket,
+        'recent_long_race_flag': recent_long_race_flag,
     })
 
     active_score_keys = [key for key in score_keys if agf_allowed or key != 'agf_score']
@@ -7931,6 +8088,177 @@ def _shadow_feature_vector(feature_values):
         stat = _ml_shadow_feature_stats.get(col, {}) if isinstance(_ml_shadow_feature_stats, dict) else {}
         vector.append(_shadow_safe_float(stat.get('mean'), 0.0))
     return vector
+
+
+def _candidate_feature_vector(feature_values, feature_cols, feature_stats):
+    vector = []
+    for col in feature_cols:
+        if col in feature_values:
+            vector.append(_shadow_safe_float(feature_values.get(col), 0.0))
+            continue
+        stat = feature_stats.get(col, {}) if isinstance(feature_stats, dict) else {}
+        vector.append(_shadow_safe_float(stat.get('mean'), 0.0))
+    return vector
+
+
+def _minmax_components(values):
+    if not values:
+        return []
+    low = min(values)
+    high = max(values)
+    score_range = high - low
+    if score_range <= 1e-9:
+        return [0.5 for _ in values]
+    return [(value - low) / score_range for value in values]
+
+
+def attach_maiden_shadow_candidate(analyzed_horses, race_type='', distance='', track=''):
+    """Attach a 15% no-AGF ML overlay to MAIDEN diagnostics only."""
+    profile = extract_v4_race_profile(
+        race_type=race_type,
+        distance=distance,
+        track=track,
+        field_size=len(analyzed_horses),
+    )
+    if profile.get('category') != 'MAIDEN':
+        return analyzed_horses
+
+    model_version = _maiden_shadow_metadata.get('model_version')
+    unavailable_reason = None
+    if _maiden_shadow_model is None or not _maiden_shadow_feature_cols:
+        unavailable_reason = _maiden_shadow_load_error or 'MAIDEN shadow model unavailable'
+    if not analyzed_horses:
+        return analyzed_horses
+
+    raw_ml_scores = []
+    feature_vector_hashes = []
+    if unavailable_reason is None:
+        field_size = len(analyzed_horses)
+        for horse in analyzed_horses:
+            feature_values = _shadow_feature_dict(
+                horse.get('_mf', {}) or {},
+                horse=horse,
+                field_size=field_size,
+                race_type=race_type,
+                distance=distance,
+                track=track,
+            )
+            try:
+                vector = _candidate_feature_vector(
+                    feature_values,
+                    _maiden_shadow_feature_cols,
+                    _maiden_shadow_feature_stats,
+                )
+                model_input = np.array([vector], dtype=np.float32)
+                if not np.isfinite(model_input).all():
+                    raise ValueError('MAIDEN shadow feature vector non-finite')
+                feature_vector_hashes.append(
+                    hashlib.sha256(model_input[0].tobytes()).hexdigest()
+                )
+                raw_ml_scores.append(float(_maiden_shadow_model.predict(model_input)[0]))
+            except Exception as exc:
+                unavailable_reason = str(exc)
+                break
+
+    if unavailable_reason is not None:
+        for horse in analyzed_horses:
+            horse['maidenCandidateVersion'] = _MAIDEN_SHADOW_VERSION
+            horse['maidenCandidateMode'] = 'unavailable'
+            horse['maidenCandidateObservationStart'] = _MAIDEN_SHADOW_OBSERVATION_START
+            horse['maidenCandidateModelVersion'] = model_version
+            horse['maidenCandidateUsedForRanking'] = False
+            horse['maidenCandidateRolloutEligible'] = False
+            horse['maidenCandidateReason'] = unavailable_reason
+        return analyzed_horses
+
+    baseline_scores = [
+        _shadow_safe_float(horse.get('v4Score'), horse.get('aiScore', 0.0))
+        for horse in analyzed_horses
+    ]
+    baseline_ranks = [
+        int(_shadow_safe_float(horse.get('v4Rank'), horse.get('rank', 999)))
+        for horse in analyzed_horses
+    ]
+    baseline_components = _minmax_components(baseline_scores)
+    score_order = sorted(
+        range(len(analyzed_horses)),
+        key=lambda idx: baseline_components[idx],
+        reverse=True,
+    )
+    score_rank_by_index = {idx: rank + 1 for rank, idx in enumerate(score_order)}
+    v4_score_faithful = all(
+        score_rank_by_index.get(idx) == baseline_ranks[idx]
+        for idx in range(len(analyzed_horses))
+    )
+    if not v4_score_faithful:
+        for horse in analyzed_horses:
+            horse['maidenCandidateVersion'] = _MAIDEN_SHADOW_VERSION
+            horse['maidenCandidateMode'] = 'integrity_invalid'
+            horse['maidenCandidateObservationStart'] = _MAIDEN_SHADOW_OBSERVATION_START
+            horse['maidenCandidateModelVersion'] = model_version
+            horse['maidenCandidateModelSha256'] = _maiden_shadow_manifest.get('modelSha256')
+            horse['maidenCandidateFeatureSchemaHash'] = _maiden_shadow_manifest.get('featureSchemaSha256')
+            horse['maidenCandidateTrainingCutoff'] = _maiden_shadow_manifest.get('trainingCutoff')
+            horse['maidenCandidateAlpha'] = _MAIDEN_SHADOW_ALPHA
+            horse['maidenCandidateStrictNoAgfMl'] = True
+            horse['maidenCandidateScore'] = None
+            horse['maidenCandidateRank'] = None
+            horse['maidenCandidateV4ScoreFaithful'] = False
+            horse['maidenCandidateUsedForRanking'] = False
+            horse['maidenCandidateRolloutEligible'] = False
+            horse['maidenCandidateReason'] = (
+                'v4Score sirasi gorunur v4Rank ile uyusmuyor; prospective kanit disi.'
+            )
+        return analyzed_horses
+
+    ml_components = _minmax_components(raw_ml_scores)
+    candidate_components = [
+        (1.0 - _MAIDEN_SHADOW_ALPHA) * baseline
+        + _MAIDEN_SHADOW_ALPHA * ml_score
+        for baseline, ml_score in zip(baseline_components, ml_components)
+    ]
+    candidate_order = sorted(
+        range(len(analyzed_horses)),
+        key=lambda idx: (candidate_components[idx], -baseline_ranks[idx]),
+        reverse=True,
+    )
+    candidate_rank_by_index = {
+        idx: rank + 1 for rank, idx in enumerate(candidate_order)
+    }
+    created_ts = int(time.time())
+    for idx, horse in enumerate(analyzed_horses):
+        horse['maidenCandidateVersion'] = _MAIDEN_SHADOW_VERSION
+        horse['maidenCandidateMode'] = 'prospective_shadow_bounded'
+        horse['maidenCandidateObservationStart'] = _MAIDEN_SHADOW_OBSERVATION_START
+        horse['maidenCandidateCreatedTs'] = created_ts
+        horse['maidenCandidateModelVersion'] = model_version
+        horse['maidenCandidateModelSha256'] = _maiden_shadow_manifest.get('modelSha256')
+        horse['maidenCandidateFeatureSchemaHash'] = _maiden_shadow_manifest.get('featureSchemaSha256')
+        horse['maidenCandidateFeatureVectorSha256'] = feature_vector_hashes[idx]
+        horse['maidenCandidateTrainingCutoff'] = _maiden_shadow_manifest.get('trainingCutoff')
+        horse['maidenCandidateAlpha'] = _MAIDEN_SHADOW_ALPHA
+        horse['maidenCandidateStrictNoAgfMl'] = True
+        horse['maidenCandidateBaselineVersion'] = horse.get('v4Version', _V4_VERSION)
+        horse['maidenCandidateBaselineScore'] = horse.get('v4Score')
+        horse['maidenCandidateBaselineRank'] = horse.get('v4Rank')
+        horse['maidenCandidateBaselineComponent'] = round(baseline_components[idx] * 100.0, 4)
+        horse['maidenCandidateMlRawScore'] = raw_ml_scores[idx]
+        horse['maidenCandidateMlComponent'] = round(ml_components[idx] * 100.0, 4)
+        horse['maidenCandidateScore'] = round(candidate_components[idx] * 100.0, 4)
+        horse['maidenCandidateRank'] = candidate_rank_by_index[idx]
+        horse['maidenCandidateV4ScoreFaithful'] = v4_score_faithful
+        horse['maidenCandidateUsedForRanking'] = False
+        horse['maidenCandidateRolloutEligible'] = False
+        horse['maidenCandidateReason'] = (
+            'Prospective MAIDEN v4 + 15% strict no-AGF ML shadow; visible v4 '
+            'ranking and Telegram output are unchanged.'
+        )
+    print(
+        f"[MAIDEN SHADOW] version={_MAIDEN_SHADOW_VERSION} "
+        f"model={model_version} runners={len(analyzed_horses)} "
+        f"faithful={v4_score_faithful} alpha={_MAIDEN_SHADOW_ALPHA:.2f}"
+    )
+    return analyzed_horses
 
 
 def attach_shadow_ml_predictions(analyzed_horses, race_type='', distance='', track=''):
@@ -9146,6 +9474,23 @@ def analyze_race():
                 _h['sart1CandidateReason'] = str(_sart1_shadow_err)
 
         try:
+            attach_maiden_shadow_candidate(
+                analyzed_horses,
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+            )
+        except Exception as _maiden_shadow_err:
+            print(
+                '[MAIDEN SHADOW] Hesaplama hatasi; gorunur v4 siralamasi korundu: '
+                f'{_maiden_shadow_err}'
+            )
+            for _h in analyzed_horses:
+                _h['maidenCandidateMode'] = 'unavailable'
+                _h['maidenCandidateUsedForRanking'] = False
+                _h['maidenCandidateReason'] = str(_maiden_shadow_err)
+
+        try:
             attach_shadow_ml_predictions(
                 analyzed_horses,
                 race_type=race_type,
@@ -9295,6 +9640,29 @@ def analyze_race():
                     'sart1_candidate_metric_source_flags': _h.get('sart1CandidateMetricSourceFlags', {}),
                     'sart1_candidate_feature_snapshot': _h.get('sart1CandidateFeatureSnapshot', {}),
                     'sart1_candidate_reason': _h.get('sart1CandidateReason'),
+                    'maiden_candidate_version': _h.get('maidenCandidateVersion'),
+                    'maiden_candidate_mode': _h.get('maidenCandidateMode'),
+                    'maiden_candidate_observation_start': _h.get('maidenCandidateObservationStart'),
+                    'maiden_candidate_created_ts': _h.get('maidenCandidateCreatedTs'),
+                    'maiden_candidate_model_version': _h.get('maidenCandidateModelVersion'),
+                    'maiden_candidate_model_sha256': _h.get('maidenCandidateModelSha256'),
+                    'maiden_candidate_feature_schema_hash': _h.get('maidenCandidateFeatureSchemaHash'),
+                    'maiden_candidate_feature_vector_sha256': _h.get('maidenCandidateFeatureVectorSha256'),
+                    'maiden_candidate_training_cutoff': _h.get('maidenCandidateTrainingCutoff'),
+                    'maiden_candidate_alpha': _h.get('maidenCandidateAlpha'),
+                    'maiden_candidate_strict_no_agf_ml': _h.get('maidenCandidateStrictNoAgfMl', False),
+                    'maiden_candidate_baseline_version': _h.get('maidenCandidateBaselineVersion'),
+                    'maiden_candidate_baseline_score': _h.get('maidenCandidateBaselineScore'),
+                    'maiden_candidate_baseline_rank': _h.get('maidenCandidateBaselineRank'),
+                    'maiden_candidate_baseline_component': _h.get('maidenCandidateBaselineComponent'),
+                    'maiden_candidate_ml_raw_score': _h.get('maidenCandidateMlRawScore'),
+                    'maiden_candidate_ml_component': _h.get('maidenCandidateMlComponent'),
+                    'maiden_candidate_score': _h.get('maidenCandidateScore'),
+                    'maiden_candidate_rank': _h.get('maidenCandidateRank'),
+                    'maiden_candidate_v4_score_faithful': _h.get('maidenCandidateV4ScoreFaithful', False),
+                    'maiden_candidate_used_for_ranking': _h.get('maidenCandidateUsedForRanking', False),
+                    'maiden_candidate_rollout_eligible': _h.get('maidenCandidateRolloutEligible', False),
+                    'maiden_candidate_reason': _h.get('maidenCandidateReason'),
                     'days_since_last_race': _h.get('daysSinceLastRace'),
                     'last_race_distance': _h.get('lastRaceDistance'),
                     'race_count': _h.get('raceCount'),
@@ -9356,6 +9724,7 @@ def analyze_race():
                         _entry['finish_pos'] = _prev['finish_pos']
                         _entry['is_winner']  = _prev.get('is_winner')
                     _preserve_sart1_candidate_snapshot(_entry, _prev)
+                    _preserve_maiden_candidate_snapshot(_entry, _prev)
 
                 _new_entries.append(_json.dumps(_entry, ensure_ascii=False))
 

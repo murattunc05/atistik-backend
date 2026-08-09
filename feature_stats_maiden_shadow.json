@@ -1,0 +1,320 @@
+{
+  "feature_cols": [
+    "degree_avg",
+    "degree_trend",
+    "degree_stability",
+    "form_trend",
+    "track_suit",
+    "track_experience_score",
+    "surface_transition_score",
+    "distance_suit",
+    "distance_transition_score",
+    "training_fitness",
+    "training_degree_score",
+    "h16_training_degree_edge",
+    "weight_impact",
+    "handicap_efficiency_score",
+    "handicap_weight_relief_score",
+    "handicap_class_transition_score",
+    "handicap_class_delta",
+    "field_relative_value_score",
+    "pace_map_edge_score",
+    "surface_switch_safety_score",
+    "favorite_risk_guard_score",
+    "running_style_proxy_score",
+    "pace_pressure",
+    "jockey_score",
+    "bounce_score",
+    "pace_score",
+    "pedigree",
+    "hp_score",
+    "trainer_score",
+    "age_score",
+    "field_size",
+    "distance_num",
+    "is_handikap",
+    "is_handikap16",
+    "is_maiden",
+    "is_sartli",
+    "is_sart1",
+    "is_kv",
+    "is_grup",
+    "is_satis",
+    "track_kum",
+    "track_cim",
+    "track_sentetik",
+    "has_training",
+    "has_training_times",
+    "has_hp",
+    "has_pedigree",
+    "has_trainer",
+    "has_age_actionable",
+    "has_track_experience",
+    "has_surface_transition",
+    "has_distance_transition",
+    "has_handicap_efficiency",
+    "has_handicap_class_history",
+    "days_since_last_race",
+    "last_race_distance",
+    "long_layoff_bucket",
+    "recent_long_race_flag"
+  ],
+  "stats": {
+    "degree_avg": {
+      "mean": 48.70159387290416,
+      "std": 32.89862249366031
+    },
+    "degree_trend": {
+      "mean": 49.43957772717864,
+      "std": 21.803417703274924
+    },
+    "degree_stability": {
+      "mean": 43.81925067273857,
+      "std": 35.934624134568324
+    },
+    "form_trend": {
+      "mean": 53.426681846408606,
+      "std": 16.673425550376162
+    },
+    "track_suit": {
+      "mean": 56.57342165183192,
+      "std": 16.071920401954703
+    },
+    "track_experience_score": {
+      "mean": 55.1069136824674,
+      "std": 15.481941250424612
+    },
+    "surface_transition_score": {
+      "mean": 52.50881805009314,
+      "std": 14.874212696583768
+    },
+    "distance_suit": {
+      "mean": 54.96087766507969,
+      "std": 22.23905760751285
+    },
+    "distance_transition_score": {
+      "mean": 51.77851376526599,
+      "std": 12.784081368536
+    },
+    "training_fitness": {
+      "mean": 76.59207203477541,
+      "std": 17.2541806354738
+    },
+    "training_degree_score": {
+      "mean": 50.09805423307804,
+      "std": 25.333555079789058
+    },
+    "h16_training_degree_edge": {
+      "mean": 0.20277375284620158,
+      "std": 7.202315728929325
+    },
+    "weight_impact": {
+      "mean": 48.323949492858624,
+      "std": 12.106767653963196
+    },
+    "handicap_efficiency_score": {
+      "mean": 50.95375698613124,
+      "std": 4.687172480755915
+    },
+    "handicap_weight_relief_score": {
+      "mean": 50.461540053819085,
+      "std": 3.303191350671533
+    },
+    "handicap_class_transition_score": {
+      "mean": 49.64899606706686,
+      "std": 3.730569133941691
+    },
+    "handicap_class_delta": {
+      "mean": 0.0446491409646036,
+      "std": 0.4750478911882073
+    },
+    "field_relative_value_score": {
+      "mean": 50.00045539225833,
+      "std": 2.588829202166786
+    },
+    "pace_map_edge_score": {
+      "mean": 49.266238873939145,
+      "std": 4.890359129100774
+    },
+    "surface_switch_safety_score": {
+      "mean": 51.26499689505279,
+      "std": 7.878375180346019
+    },
+    "favorite_risk_guard_score": {
+      "mean": 51.72815152142414,
+      "std": 5.530163638835748
+    },
+    "running_style_proxy_score": {
+      "mean": 45.27298695922169,
+      "std": 14.395659354058184
+    },
+    "pace_pressure": {
+      "mean": 2.732394949285862,
+      "std": 9.185741745550349
+    },
+    "jockey_score": {
+      "mean": 42.91148830469882,
+      "std": 13.504353449093967
+    },
+    "bounce_score": {
+      "mean": 76.54419374870628,
+      "std": 23.76957762038334
+    },
+    "pace_score": {
+      "mean": 47.49948250879735,
+      "std": 7.1806357264658605
+    },
+    "pedigree": {
+      "mean": 60.59554957565722,
+      "std": 7.193334421140509
+    },
+    "hp_score": {
+      "mean": 50.803581039122335,
+      "std": 34.0199745533205
+    },
+    "trainer_score": {
+      "mean": 49.23918443386462,
+      "std": 10.94756827641512
+    },
+    "age_score": {
+      "mean": 46.293665907679575,
+      "std": 19.473718130386132
+    },
+    "field_size": {
+      "mean": 10.771889877872075,
+      "std": 3.408763610639774
+    },
+    "distance_num": {
+      "mean": 1588.5116953011798,
+      "std": 345.70804860826536
+    },
+    "is_handikap": {
+      "mean": 0.30945973918443387,
+      "std": 0.4622709259820869
+    },
+    "is_handikap16": {
+      "mean": 0.09294141999586007,
+      "std": 0.29035032709644604
+    },
+    "is_maiden": {
+      "mean": 0.16042227282136204,
+      "std": 0.3669972305129707
+    },
+    "is_sartli": {
+      "mean": 0.31608362657834815,
+      "std": 0.4649459835157494
+    },
+    "is_sart1": {
+      "mean": 0.026702546056717034,
+      "std": 0.16121265487177466
+    },
+    "is_kv": {
+      "mean": 0.10888014903746636,
+      "std": 0.3114887833984484
+    },
+    "is_grup": {
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "is_satis": {
+      "mean": 0.03622438418546885,
+      "std": 0.1868480082201906
+    },
+    "track_kum": {
+      "mean": 0.4353135996688056,
+      "std": 0.49579801291674463
+    },
+    "track_cim": {
+      "mean": 0.47961084661560754,
+      "std": 0.49958410945932596
+    },
+    "track_sentetik": {
+      "mean": 0.08507555371558684,
+      "std": 0.27899409290444327
+    },
+    "has_training": {
+      "mean": 0.8702132063754916,
+      "std": 0.33606871592752824
+    },
+    "has_training_times": {
+      "mean": 0.8424756779134754,
+      "std": 0.3642944002283118
+    },
+    "has_hp": {
+      "mean": 0.6470709997930035,
+      "std": 0.4778808648814957
+    },
+    "has_pedigree": {
+      "mean": 0.8778720761747051,
+      "std": 0.32743349561005197
+    },
+    "has_trainer": {
+      "mean": 0.6652866901262678,
+      "std": 0.4718901461856383
+    },
+    "has_age_actionable": {
+      "mean": 0.2703374042641275,
+      "std": 0.4441340924989447
+    },
+    "has_track_experience": {
+      "mean": 0.5924239287932105,
+      "std": 0.4913835745997495
+    },
+    "has_surface_transition": {
+      "mean": 0.446491409646036,
+      "std": 0.4971285857384704
+    },
+    "has_distance_transition": {
+      "mean": 0.446491409646036,
+      "std": 0.4971285857384704
+    },
+    "has_handicap_efficiency": {
+      "mean": 0.1844338646243014,
+      "std": 0.38783761318887866
+    },
+    "has_handicap_class_history": {
+      "mean": 0.1401366176774995,
+      "std": 0.34712871685213514
+    },
+    "days_since_last_race": {
+      "mean": 12.324984475263921,
+      "std": 48.167821778978656
+    },
+    "last_race_distance": {
+      "mean": 728.0894224798178,
+      "std": 818.2909859757364
+    },
+    "long_layoff_bucket": {
+      "mean": 0.09832332850341544,
+      "std": 0.4586608577572325
+    },
+    "recent_long_race_flag": {
+      "mean": 0.001448975367418754,
+      "std": 0.03803782114952653
+    }
+  },
+  "metadata": {
+    "candidate_version": "maiden-ml15-20260810-v1",
+    "model_version": "maiden-shadow-20260810-v1",
+    "model_variant": "no-agf",
+    "includes_agf": false,
+    "strict_no_agf_ml": true,
+    "segment": "GROUP:MAIDEN",
+    "alpha": 0.15,
+    "baseline_version": "v4.25",
+    "gate_decision": "SHADOW_CANDIDATE",
+    "training_races": 497,
+    "training_date_range": {
+      "start": "09.05.2026",
+      "end": "25.07.2026"
+    },
+    "training_cutoff": "25.07.2026",
+    "holdout_races": 131,
+    "holdout_date_range": {
+      "start": "26.07.2026",
+      "end": "09.08.2026"
+    },
+    "feature_count": 58,
+    "feature_schema_sha256": "5267a4de81de7e97ce46556be96af9041816baec0770de180631bc87c52fbae0"
+  }
+}

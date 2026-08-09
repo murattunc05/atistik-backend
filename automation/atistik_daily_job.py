@@ -327,6 +327,18 @@ def summarize_rankings(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "sart1CandidateAgfCoverage": horse.get("sart1CandidateAgfCoverage"),
                 "sart1CandidateAgfApplied": horse.get("sart1CandidateAgfApplied"),
                 "sart1CandidateUsedForRanking": horse.get("sart1CandidateUsedForRanking", False),
+                "maidenCandidateRank": horse.get("maidenCandidateRank"),
+                "maidenCandidateScore": horse.get("maidenCandidateScore"),
+                "maidenCandidateVersion": horse.get("maidenCandidateVersion"),
+                "maidenCandidateModelVersion": horse.get("maidenCandidateModelVersion"),
+                "maidenCandidateModelSha256": horse.get("maidenCandidateModelSha256"),
+                "maidenCandidateFeatureSchemaHash": horse.get("maidenCandidateFeatureSchemaHash"),
+                "maidenCandidateFeatureVectorSha256": horse.get("maidenCandidateFeatureVectorSha256"),
+                "maidenCandidateBaselineRank": horse.get("maidenCandidateBaselineRank"),
+                "maidenCandidateObservationStart": horse.get("maidenCandidateObservationStart"),
+                "maidenCandidateAlpha": horse.get("maidenCandidateAlpha"),
+                "maidenCandidateV4ScoreFaithful": horse.get("maidenCandidateV4ScoreFaithful"),
+                "maidenCandidateUsedForRanking": horse.get("maidenCandidateUsedForRanking", False),
                 "winProbability": horse.get("winProbability"),
             }
         )
