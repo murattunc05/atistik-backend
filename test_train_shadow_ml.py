@@ -54,6 +54,11 @@ class TrainShadowMLInputTests(unittest.TestCase):
             row("R1", "01.07.2026", 4, 4),
             row("R1", "01.07.2026", 99, 5),
         ]
+        entries[-1].update({
+            "result_status": "unranked_terminal",
+            "terminal_reason": "Derecesiz",
+            "result_source": "tjk_official_results",
+        })
 
         selected, summary = training.filter_training_entries(entries)
 
@@ -63,6 +68,50 @@ class TrainShadowMLInputTests(unittest.TestCase):
         self.assertEqual(summary["valid_tie_races"], 1)
         self.assertEqual(summary["terminal_status_races"], 1)
         self.assertEqual(summary["terminal_status_rows"], 1)
+        self.assertEqual(summary["excluded_terminal_rows"], 0)
+
+    def test_non_runner_and_legacy_unknown_99_are_excluded_from_training(self):
+        entries = [
+            row("R1", "01.07.2026", 1),
+            row("R1", "01.07.2026", 2, 2),
+            row("R1", "01.07.2026", 99, 3),
+            row("R2", "02.07.2026", 1),
+            row("R2", "02.07.2026", 2, 2),
+            row("R2", "02.07.2026", 99, 3),
+        ]
+        entries[-1].update({
+            "result_status": "non_runner",
+            "terminal_reason": "Koşmaz",
+            "result_source": "tjk_official_results",
+        })
+
+        selected, summary = training.filter_training_entries(entries)
+
+        self.assertEqual(len(selected), 4)
+        self.assertNotIn(99, [item["finish_pos"] for item in selected])
+        self.assertEqual(summary["excluded_terminal_races"], 2)
+        self.assertEqual(summary["excluded_terminal_rows"], 2)
+
+    def test_verified_derecesiz_uses_last_rank_not_raw_99_in_metrics(self):
+        rows = [
+            row("R1", "01.07.2026", 1),
+            row("R1", "01.07.2026", 2, 2),
+            row("R1", "01.07.2026", 99, 3),
+        ]
+        for rank, item in enumerate(rows, start=1):
+            item["field_size"] = 3
+            item["rank_pred"] = rank
+        rows[-1].update({
+            "result_status": "unranked_terminal",
+            "terminal_reason": "Derecesiz",
+            "result_source": "tjk_official_results",
+        })
+
+        metrics = training.evaluate_existing({"R1": rows}, "rank_pred")
+
+        self.assertEqual(metrics["mae"], 0.0)
+        self.assertAlmostEqual(metrics["rho"], 1.0)
+        self.assertAlmostEqual(metrics["ndcg5"], 1.0)
 
     def test_integrity_guard_excludes_broken_or_out_of_range_full_races(self):
         broken = [

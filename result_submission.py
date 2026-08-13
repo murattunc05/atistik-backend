@@ -12,6 +12,9 @@ import re
 from typing import Any
 
 
+RESULT_METADATA_FIELDS = ("result_status", "terminal_reason", "result_source")
+
+
 def clean_result_name(value: Any) -> str:
     """Return the compact name key shared by result reconciliation."""
     text = str(value or "").split("\n")[0].strip().upper()
@@ -92,13 +95,20 @@ def reconcile_result_submission(
     race_id = str(race_id or "").strip()
     race_date = str(race_date or "").strip()
     race_no = str(race_no or "").strip()
-    incoming: dict[str, Any] = {}
+    incoming: dict[str, dict[str, Any]] = {}
     for item in results:
         if not isinstance(item, dict):
             continue
         name_key = clean_result_name(item.get("horse_name", ""))
         if name_key and item.get("finish_pos") is not None:
-            incoming[name_key] = item.get("finish_pos")
+            incoming[name_key] = {
+                "finish_pos": item.get("finish_pos"),
+                "metadata": {
+                    field: item.get(field)
+                    for field in RESULT_METADATA_FIELDS
+                    if item.get(field) not in (None, "")
+                },
+            }
     incoming_names = set(incoming)
 
     race_id_indices = [
@@ -146,7 +156,7 @@ def reconcile_result_submission(
 
     matched_names: set[str] = set()
     idempotent_names: set[str] = set()
-    staged: list[tuple[int, Any]] = []
+    staged: list[tuple[int, Any, dict[str, Any]]] = []
     conflicts: list[dict[str, Any]] = []
     for index in target_indices:
         entry = entries[index]
@@ -156,12 +166,39 @@ def reconcile_result_submission(
         if name_key not in incoming:
             continue
         matched_names.add(name_key)
-        incoming_position = incoming[name_key]
+        incoming_position = incoming[name_key]["finish_pos"]
+        incoming_metadata = incoming[name_key]["metadata"]
         existing_position = entry.get("finish_pos")
         if existing_position is None:
-            staged.append((index, incoming_position))
+            staged.append((index, incoming_position, incoming_metadata))
         elif _same_finish_position(existing_position, incoming_position):
-            idempotent_names.add(name_key)
+            metadata_conflicts = []
+            metadata_backfill = {}
+            for field, incoming_value in incoming_metadata.items():
+                existing_value = entry.get(field)
+                if existing_value in (None, ""):
+                    metadata_backfill[field] = incoming_value
+                elif existing_value != incoming_value:
+                    metadata_conflicts.append({
+                        "field": field,
+                        "existing": existing_value,
+                        "incoming": incoming_value,
+                    })
+            if metadata_conflicts:
+                conflicts.append(
+                    {
+                        "race_id": str(entry.get("race_id", "")),
+                        "horse_name": entry.get("horse_name", ""),
+                        "existing_finish_pos": existing_position,
+                        "incoming_finish_pos": incoming_position,
+                        "conflict_type": "result_metadata",
+                        "metadata_conflicts": metadata_conflicts,
+                    }
+                )
+            elif metadata_backfill:
+                staged.append((index, incoming_position, metadata_backfill))
+            else:
+                idempotent_names.add(name_key)
         else:
             conflicts.append(
                 {
@@ -176,10 +213,11 @@ def reconcile_result_submission(
     updated = 0
     if not conflicts and staged:
         output_entries = list(entries)
-        for index, position in staged:
+        for index, position, metadata in staged:
             updated_entry = dict(output_entries[index])
             updated_entry["finish_pos"] = position
             updated_entry["is_winner"] = _winner_flag(position)
+            updated_entry.update(metadata)
             output_entries[index] = updated_entry
             updated += 1
 

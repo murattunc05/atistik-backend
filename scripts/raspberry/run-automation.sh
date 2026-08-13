@@ -228,6 +228,26 @@ persist_state_predictions
 
 if [[ "$MODE" == "results" ]]; then
   MONITOR_DATE="${RUN_DATE:-$(TZ=Europe/Istanbul date +%Y-%m-%d)}"
+  LATE_MARKET_STATE="${ROOT_DIR}/state/late-market-agf/probe-output/automation/late-market-agf/snapshots.jsonl"
+  LATE_MARKET_LEDGER="${DATA_DIR}/automation/late-market-agf/snapshots.jsonl"
+  if [[ -s "$LATE_MARKET_STATE" ]]; then
+    if ! python3 automation/late_market_agf_state_sync.py \
+      --state "$LATE_MARKET_STATE" \
+      --destination "$LATE_MARKET_LEDGER"; then
+      echo "[LATE MARKET AGF] State ledger birlestirilemedi; shadow kaniti karantinada, sonuc akisi devam ediyor." >&2
+    fi
+  else
+    echo "[LATE MARKET AGF] Daytime snapshot yok; shadow monitor bos kohortla devam ediyor."
+  fi
+
+  if ! python3 automation/late_market_agf_shadow_monitor.py \
+    --snapshots "$LATE_MARKET_LEDGER" \
+    --predictions "$DATA_DIR/predictions.jsonl" \
+    --data-dir "$DATA_DIR" \
+    --run-date "$MONITOR_DATE"; then
+    echo "[LATE MARKET AGF] Monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
+  fi
+
   if ! python3 automation/sart1_shadow_monitor.py \
     --predictions "$DATA_DIR/predictions.jsonl" \
     --data-dir "$DATA_DIR" \

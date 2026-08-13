@@ -7,6 +7,7 @@ from pathlib import Path
 from automation.metric_signal_registry import (
     build_report,
     classify_race,
+    competitive_race_rows,
     persist,
     score_diagnostics,
 )
@@ -72,6 +73,27 @@ class MetricSignalRegistryTests(unittest.TestCase):
     def test_finish_integrity_accepts_terminal_and_excludes_partial(self):
         self.assertEqual(classify_race(race_rows(0, terminal=True)), "fully_labeled")
         self.assertEqual(classify_race(race_rows(1, partial=True)), "partial")
+
+    def test_competitive_rows_exclude_unknown_99_but_keep_verified_derecesiz(self):
+        unknown = race_rows(0, terminal=True)
+        unknown[-1]["rank_pred"] = 1
+        for index, item in enumerate(unknown[:-1], start=2):
+            item["rank_pred"] = index
+
+        filtered = competitive_race_rows(unknown)
+
+        self.assertEqual(len(filtered), 3)
+        self.assertEqual(sorted(row["rank_pred"] for row in filtered), [1, 2, 3])
+        self.assertNotIn(99, [row["finish_pos"] for row in filtered])
+
+        verified = race_rows(1, terminal=True)
+        verified[-1].update({
+            "result_status": "unranked_terminal",
+            "terminal_reason": "Derecesiz",
+            "result_source": "tjk_official_results",
+        })
+
+        self.assertEqual(len(competitive_race_rows(verified)), 4)
 
     def test_score_diagnostics_flags_real_compression(self):
         tight = score_diagnostics(

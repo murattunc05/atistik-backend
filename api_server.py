@@ -432,10 +432,7 @@ def auto_label():
                     row_date = cells[0].text.strip().replace('/', '.').replace('-', '.')[:10]
                     position = cells[4].text.strip()
                     if row_date == race_date_norm:
-                        if position.isdigit():
-                            found_pos = int(position)
-                        else:
-                            found_pos = 99  # K/D/F vb.
+                        found_pos = _parse_history_finish_position(position)
                         break
 
                 if found_pos is not None:
@@ -993,6 +990,52 @@ def _explicit_terminal_reason(*values):
     return None
 
 
+def _parse_history_finish_position(raw_position):
+    """Parse horse-history positions without inventing terminal labels.
+
+    Horse-history rows do not provide the exact official result-table context
+    required for ``0 + Derecesiz``.  Therefore only a positive rank or an
+    explicit ``Koşmaz`` marker is accepted here; bare zero and all unknown
+    status codes remain unresolved.
+    """
+    text = str(raw_position or '').strip()
+    if text.isdigit() and int(text) > 0:
+        return int(text)
+    if _explicit_terminal_reason(text):
+        return _RESULT_TERMINAL_POSITION
+    return None
+
+
+def _official_terminal_result(raw_position, raw_degree, row_text=''):
+    """Return a fail-closed terminal status from one official result row.
+
+    ``Derecesiz`` is an official participated-but-unranked outcome.  TJK emits
+    it with ``SONUCNO=0``.  Neither a bare zero nor an unknown text status is
+    enough: the exact zero + exact ``Derecesiz`` pair is required, and this
+    helper is called only while parsing the exact official race table.
+    """
+    non_runner_reason = _explicit_terminal_reason(
+        raw_position,
+        raw_degree,
+        row_text,
+    )
+    if non_runner_reason:
+        return {
+            'result_status': 'non_runner',
+            'terminal_reason': non_runner_reason,
+        }
+
+    if (
+        _fold_result_status(raw_position) == '0'
+        and _fold_result_status(raw_degree) == 'DERECESIZ'
+    ):
+        return {
+            'result_status': 'unranked_terminal',
+            'terminal_reason': 'Derecesiz',
+        }
+    return None
+
+
 def _parse_official_result_race(html, race_id):
     """Parse one exact race from TJK's official daily-results HTML."""
     soup = BeautifulSoup(html or '', 'html.parser')
@@ -1003,6 +1046,7 @@ def _parse_official_result_race(html, race_id):
             'results': [],
             'unresolved': [],
             'explicitNonRunnerCount': 0,
+            'explicitUnrankedTerminalCount': 0,
         }
 
     table = next(
@@ -1019,11 +1063,13 @@ def _parse_official_result_race(html, race_id):
             'results': [],
             'unresolved': [{'reason': 'official_result_table_missing'}],
             'explicitNonRunnerCount': 0,
+            'explicitUnrankedTerminalCount': 0,
         }
 
     parsed = []
     unresolved = []
     explicit_non_runners = 0
+    explicit_unranked_terminals = 0
     for row in table.select('tr'):
         name_cell = row.select_one('.gunluk-GunlukYarisSonuclari-AtAdi3')
         if name_cell is None:
@@ -1049,14 +1095,16 @@ def _parse_official_result_race(html, race_id):
             })
             continue
 
-        terminal_reason = _explicit_terminal_reason(raw_position, raw_degree, row_text)
-        if terminal_reason:
-            explicit_non_runners += 1
+        terminal = _official_terminal_result(raw_position, raw_degree, row_text)
+        if terminal:
+            if terminal['result_status'] == 'non_runner':
+                explicit_non_runners += 1
+            else:
+                explicit_unranked_terminals += 1
             parsed.append({
                 'horse_name': horse_name,
                 'finish_pos': _RESULT_TERMINAL_POSITION,
-                'result_status': 'non_runner',
-                'terminal_reason': terminal_reason,
+                **terminal,
                 'result_source': 'tjk_official_results',
             })
             continue
@@ -1073,6 +1121,7 @@ def _parse_official_result_race(html, race_id):
         'results': parsed,
         'unresolved': unresolved,
         'explicitNonRunnerCount': explicit_non_runners,
+        'explicitUnrankedTerminalCount': explicit_unranked_terminals,
     }
 
 
@@ -1257,17 +1306,8 @@ def fetch_race_results():
                         # Koşu numarası da eşleştirmeye çalış
                         # cells[1] genellikle şehir, bazı formatlarda race_no var
                         # Tarihe göre buldukta ilk eşleşmeyi al (en yakın koşu)
-                        if position.isdigit() and int(position) > 0:
-                            found_pos = int(position)
-                            break
-                        else:
-                            # An unknown text or zero is not proof of a terminal
-                            # result. Only an explicit official Koşmaz marker may
-                            # produce the terminal 99 label.
-                            terminal_reason = _explicit_terminal_reason(position)
-                            if terminal_reason:
-                                found_pos = _RESULT_TERMINAL_POSITION
-                            break
+                        found_pos = _parse_history_finish_position(position)
+                        break
 
                 if found_pos is not None:
                     results.append({
@@ -1749,6 +1789,66 @@ def _clean_daily_text(value):
     return re.sub(r'\s+', ' ', value or '').strip()
 
 
+def _parse_daily_agf_cell(cell):
+    """Return one backwards-compatible AGF value plus pool-aware details.
+
+    TJK renders rounded percentages as cell text (for example ``%8(5)``)
+    while the anchor title retains the exact value (``%8,33(5)``).  Races
+    shared by the first and second six-leg pools contain two anchors.  Keep
+    the legacy parseable string contract, and also preserve every pool value
+    so downstream coupon research does not silently merge the two markets.
+    """
+    if cell is None:
+        return '', '', []
+
+    display_text = _clean_daily_text(cell.get_text(' ', strip=True))
+    pools = []
+    value_pattern = re.compile(r'%\s*(\d+(?:[.,]\d+)?)\s*(?:\(\s*(\d+)\s*\))?')
+    pool_pattern = re.compile(r'\b(\d+)\s*\.\s*6\s*[\'\u2019]?\s*LI\b', re.IGNORECASE)
+
+    for anchor in cell.find_all('a'):
+        anchor_display = _clean_daily_text(anchor.get_text(' ', strip=True))
+        title = _clean_daily_text(anchor.get('title', ''))
+
+        # Prefer the exact title value, but fail safely to the visible text if
+        # TJK changes or omits the title format.
+        match = value_pattern.search(title)
+        source = 'title'
+        if match is None:
+            match = value_pattern.search(anchor_display)
+            source = 'display'
+        if match is None:
+            continue
+
+        percent_text = match.group(1)
+        rank_text = match.group(2)
+        try:
+            percent = float(percent_text.replace(',', '.'))
+        except (TypeError, ValueError):
+            continue
+
+        pool_match = pool_pattern.search(title)
+        pool_no = int(pool_match.group(1)) if pool_match else None
+        rank = int(rank_text) if rank_text else None
+        raw = f"%{percent_text}"
+        if rank is not None:
+            raw += f"({rank})"
+
+        pools.append({
+            'poolNo': pool_no,
+            'percent': percent,
+            'rank': rank,
+            'raw': raw,
+            'display': anchor_display or raw,
+            'source': source,
+        })
+
+    # Preserve the old visible-scoring contract byte-for-byte: analyze_race
+    # continues to consume the rounded cell text.  Exact title values live
+    # only in ``agfPools`` until a prospective market shadow passes its gates.
+    return display_text, display_text, pools
+
+
 def _tjk_daily_get(url, **kwargs):
     """Fetch TJK daily-program HTML through the backend-only scraper path."""
     response = requests.get(
@@ -1824,6 +1924,9 @@ def _parse_daily_horses(table):
             mother = parts[1].split('/')[0].strip()
 
         best_rating = cell_text('.gunluk-GunlukYarisProgrami-DERECE').split(' ')[0]
+        agf_value, agf_display, agf_pools = _parse_daily_agf_cell(
+            row.select_one('.gunluk-GunlukYarisProgrami-AGFORAN')
+        )
         terminal_reason = _explicit_terminal_reason(
             name_cell.get_text(' ', strip=True) if name_cell else '',
             row.get_text(' ', strip=True),
@@ -1848,7 +1951,9 @@ def _parse_daily_horses(table):
             'kgs': cell_text('.gunluk-GunlukYarisProgrami-KGS'),
             's20': cell_text('.gunluk-GunlukYarisProgrami-s20') or cell_text('.gunluk-GunlukYarisProgrami-S20'),
             'bestRating': best_rating,
-            'agf': cell_text('.gunluk-GunlukYarisProgrami-AGFORAN'),
+            'agf': agf_value,
+            'agfDisplay': agf_display,
+            'agfPools': agf_pools,
             'detailLink': detail_link,
             'runnerStatus': 'non_runner' if terminal_reason else 'declared',
             'isNonRunner': bool(terminal_reason),
@@ -9158,6 +9263,13 @@ def analyze_race():
                     # Arka plan loglarına ve frontend'e dönmesi için original_horse içine yedekle
                     original_horse['_raw_hp'] = raw_hp if raw_hp else '-';
                     raw_agf = str(original_horse.get('agf', '')).strip()
+                    raw_agf_display = str(original_horse.get('agfDisplay', '')).strip()
+                    raw_agf_pools = original_horse.get('agfPools', [])
+                    agf_pools = (
+                        [dict(pool) for pool in raw_agf_pools[:2] if isinstance(pool, dict)]
+                        if isinstance(raw_agf_pools, list)
+                        else []
+                    )
                     has_valid_agf = parse_agf_percent(raw_agf) is not None
                     agf_score_val = calculate_agf_score(original_horse.get('agf', ''), valid_agf_values)
                     raw_age = str(original_horse.get('age', '')).strip()
@@ -9348,6 +9460,12 @@ def analyze_race():
                         'trainingDate': training_data.get('trainingDate') if training_data else None,
                         'hasAgf': has_valid_agf,
                         'rawAgf': raw_agf or None,
+                        'agfDisplay': raw_agf_display or raw_agf or None,
+                        'agfPools': agf_pools,
+                        'agfPoolCount': len(agf_pools),
+                        'agfPrimaryPoolNo': (
+                            agf_pools[0].get('poolNo') if agf_pools else None
+                        ),
                         'validAgfCountInRace': len(valid_agf_values),
                         'agfNeutral': abs(float(agf_score_val) - 50.0) < 1.0,
                         'hasHp': has_hp_source,
@@ -9597,6 +9715,12 @@ def analyze_race():
                     })
                 else:
                     # Veri çekilemediyse
+                    failure_raw_agf_pools = original_horse.get('agfPools', [])
+                    failure_agf_pools = (
+                        [dict(pool) for pool in failure_raw_agf_pools[:2] if isinstance(pool, dict)]
+                        if isinstance(failure_raw_agf_pools, list)
+                        else []
+                    )
                     intermediate_horses.append({
                         'name': original_horse.get('name', 'Bilinmiyor'),
                         'no': original_horse.get('no', ''),
@@ -9620,6 +9744,18 @@ def analyze_race():
                             'hasTrainingTimes': False,
                             'hasTrainingProjection': False,
                             'hasAgf': False,
+                            'rawAgf': original_horse.get('agf') or None,
+                            'agfDisplay': (
+                                original_horse.get('agfDisplay')
+                                or original_horse.get('agf')
+                                or None
+                            ),
+                            'agfPools': failure_agf_pools,
+                            'agfPoolCount': len(failure_agf_pools),
+                            'agfPrimaryPoolNo': (
+                                failure_agf_pools[0].get('poolNo')
+                                if failure_agf_pools else None
+                            ),
                             'validAgfCountInRace': len(valid_agf_values),
                             'hasWeight': False,
                             'hasJockey': False,
@@ -10264,6 +10400,9 @@ def analyze_race():
                     if _prev.get('finish_pos') is not None:
                         _entry['finish_pos'] = _prev['finish_pos']
                         _entry['is_winner']  = _prev.get('is_winner')
+                        for _label_key in ('result_status', 'terminal_reason', 'result_source'):
+                            if _prev.get(_label_key) not in (None, ''):
+                                _entry[_label_key] = _prev[_label_key]
                     _preserve_sart1_candidate_snapshot(_entry, _prev)
                     _preserve_maiden_candidate_snapshot(_entry, _prev)
                     _preserve_handicap_trainer_candidate_snapshot(_entry, _prev)
@@ -10456,6 +10595,9 @@ def ml_cleanup():
                             # Zaten etiketli → sadece feature'ları güncelle, label koru
                             entry['finish_pos'] = prev['finish_pos']
                             entry['is_winner'] = prev.get('is_winner')
+                            for label_key in ('result_status', 'terminal_reason', 'result_source'):
+                                if prev.get(label_key) not in (None, ''):
+                                    entry[label_key] = prev[label_key]
                         duplicates_removed += 1
                     entries[key] = entry
                 except Exception:

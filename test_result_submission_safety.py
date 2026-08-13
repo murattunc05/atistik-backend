@@ -58,6 +58,131 @@ class ResultSubmissionSafetyTests(unittest.TestCase):
         self.assertEqual(len(outcome["conflicts"]), 1)
         self.assertIsNone(outcome["entries"][1]["finish_pos"])
 
+    def test_new_terminal_label_preserves_official_status_metadata(self):
+        entries = [
+            {
+                "race_id": "226749",
+                "race_date": "13.08.2026",
+                "race_no": "9",
+                "horse_name": "UĞURLU NİLGÜN",
+                "finish_pos": None,
+            },
+        ]
+
+        outcome = reconcile_result_submission(
+            entries,
+            race_id="226749",
+            race_date="13.08.2026",
+            race_no="9",
+            results=[{
+                "horse_name": "UĞURLU NİLGÜN",
+                "finish_pos": 99,
+                "result_status": "unranked_terminal",
+                "terminal_reason": "Derecesiz",
+                "result_source": "tjk_official_results",
+            }],
+        )
+
+        self.assertEqual(outcome["updated"], 1)
+        labeled = outcome["entries"][0]
+        self.assertEqual(labeled["finish_pos"], 99)
+        self.assertEqual(labeled["result_status"], "unranked_terminal")
+        self.assertEqual(labeled["terminal_reason"], "Derecesiz")
+        self.assertEqual(labeled["result_source"], "tjk_official_results")
+
+    def test_same_position_backfills_missing_official_metadata(self):
+        entries = [{
+            "race_id": "226749",
+            "race_date": "13.08.2026",
+            "race_no": "9",
+            "horse_name": "UĞURLU NİLGÜN",
+            "finish_pos": 99,
+            "is_winner": 0,
+        }]
+        result = {
+            "horse_name": "UĞURLU NİLGÜN",
+            "finish_pos": 99,
+            "result_status": "unranked_terminal",
+            "terminal_reason": "Derecesiz",
+            "result_source": "tjk_official_results",
+        }
+
+        backfill = reconcile_result_submission(
+            entries,
+            race_id="226749",
+            race_date="13.08.2026",
+            race_no="9",
+            results=[result],
+        )
+        replay = reconcile_result_submission(
+            backfill["entries"],
+            race_id="226749",
+            race_date="13.08.2026",
+            race_no="9",
+            results=[result],
+        )
+
+        self.assertEqual(backfill["updated"], 1)
+        self.assertEqual(backfill["idempotent"], 0)
+        self.assertEqual(backfill["entries"][0]["result_status"], "unranked_terminal")
+        self.assertEqual(replay["updated"], 0)
+        self.assertEqual(replay["idempotent"], 1)
+
+    def test_conflicting_nonempty_terminal_metadata_is_atomic_no_op(self):
+        entries = [
+            {
+                "race_id": "226749",
+                "race_date": "13.08.2026",
+                "race_no": "9",
+                "horse_name": "UĞURLU NİLGÜN",
+                "finish_pos": 99,
+                "is_winner": 0,
+                "result_status": "non_runner",
+                "terminal_reason": "Koşmaz",
+                "result_source": "tjk_official_results",
+            },
+            {
+                "race_id": "226749",
+                "race_date": "13.08.2026",
+                "race_no": "9",
+                "horse_name": "HAÇOVALI",
+                "finish_pos": 1,
+                "is_winner": 1,
+            },
+        ]
+
+        outcome = reconcile_result_submission(
+            entries,
+            race_id="226749",
+            race_date="13.08.2026",
+            race_no="9",
+            results=[
+                {
+                    "horse_name": "UĞURLU NİLGÜN",
+                    "finish_pos": 99,
+                    "result_status": "unranked_terminal",
+                    "terminal_reason": "Derecesiz",
+                    "result_source": "tjk_official_results",
+                },
+                {
+                    "horse_name": "HAÇOVALI",
+                    "finish_pos": 1,
+                    "result_status": "finished",
+                    "result_source": "tjk_official_results",
+                },
+            ],
+        )
+
+        self.assertEqual(outcome["updated"], 0)
+        self.assertEqual(outcome["would_update"], 1)
+        self.assertEqual(outcome["entries"], entries)
+        self.assertEqual(len(outcome["conflicts"]), 1)
+        self.assertEqual(outcome["conflicts"][0]["conflict_type"], "result_metadata")
+        self.assertEqual(
+            {item["field"] for item in outcome["conflicts"][0]["metadata_conflicts"]},
+            {"result_status", "terminal_reason"},
+        )
+
     def test_legacy_fallback_only_considers_entries_without_race_date(self):
         entries = [
             {"race_id": "old-dated", "race_date": "01.06.2026", "race_no": "1", "horse_name": "A", "finish_pos": None},

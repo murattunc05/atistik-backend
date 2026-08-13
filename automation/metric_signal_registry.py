@@ -265,6 +265,41 @@ def classify_race(rows: list[dict[str, Any]]) -> str:
     return "fully_labeled"
 
 
+def is_verified_unranked_terminal(row: dict[str, Any]) -> bool:
+    """Accept 99 competitively only with the exact official Derecesiz proof."""
+    return (
+        safe_int(row.get("finish_pos"), 0) in TERMINAL_FINISH_POSITIONS
+        and str(row.get("result_status") or "").strip() == "unranked_terminal"
+        and fold_text(row.get("terminal_reason")) == "DERECESIZ"
+        and str(row.get("result_source") or "").strip() == "tjk_official_results"
+    )
+
+
+def competitive_race_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop non-runners/unknown 99 and collapse visible ranks for evaluation."""
+    selected = [
+        row for row in rows
+        if safe_int(row.get("finish_pos"), 0) not in TERMINAL_FINISH_POSITIONS
+        or is_verified_unranked_terminal(row)
+    ]
+    ordered = sorted(
+        selected,
+        key=lambda row: (
+            safe_int(row.get("rank_pred"), 999),
+            str(row.get("horse_name") or ""),
+        ),
+    )
+    collapsed_rank = {id(row): rank for rank, row in enumerate(ordered, start=1)}
+    return [
+        {
+            **row,
+            "rank_pred": collapsed_rank[id(row)],
+            "field_size": len(selected),
+        }
+        for row in selected
+    ]
+
+
 def feature_value(row: dict[str, Any], metric: str) -> float | None:
     features = row.get("features") or {}
     return safe_float(features.get(metric)) if isinstance(features, dict) else None
@@ -722,7 +757,12 @@ def summarize_scope(
     states: dict[tuple[str, str], str],
 ) -> dict[str, Any]:
     coverage_counts = Counter(states[race_key(rows[0])] for rows in races)
-    clean = [rows for rows in races if states[race_key(rows[0])] == "fully_labeled"]
+    clean = [
+        competitive
+        for rows in races
+        if states[race_key(rows[0])] == "fully_labeled"
+        if len(competitive := competitive_race_rows(rows)) >= 2
+    ]
     if scope_type == "GROUP":
         analysis_threshold = GROUP_ANALYSIS_RACES
         live_threshold = GROUP_LIVE_RACES

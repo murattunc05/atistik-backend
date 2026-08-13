@@ -1,0 +1,15 @@
+[Unit]
+Description=Collect Atistik late-market AGF prospective shadow
+After=atistik-raspberry-api.service atistik-raspberry-analyze.service atistik-raspberry-analyze-guard.service network-online.target
+Wants=atistik-raspberry-api.service network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+WorkingDirectory=/opt/atistik/backend
+ExecStart=/opt/atistik/backend/scripts/raspberry/run-late-market-agf-shadow.sh
+TimeoutStartSec=540
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=384M

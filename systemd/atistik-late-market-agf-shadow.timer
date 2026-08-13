@@ -1,0 +1,15 @@
+[Unit]
+Description=Probe official TJK late-market AGF without changing predictions
+
+[Timer]
+OnCalendar=*-*-* 09:55:00
+OnCalendar=*-*-* 10:05:00
+OnCalendar=*-*-* 10:15:00
+OnCalendar=*-*-* 10:25:00
+OnCalendar=*-*-* 10:35:00
+OnCalendar=*-*-* 10:45:00
+Persistent=false
+Unit=atistik-late-market-agf-shadow.service
+
+[Install]
+WantedBy=timers.target

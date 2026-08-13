@@ -24,6 +24,7 @@ try:
         PLUS_WEIGHT_POINTS,
         active_weights,
         classify_race,
+        competitive_race_rows,
         group_races,
         load_jsonl,
         profile_of,
@@ -41,6 +42,7 @@ except ModuleNotFoundError:  # direct: python automation/metric_signal_replay.py
         PLUS_WEIGHT_POINTS,
         active_weights,
         classify_race,
+        competitive_race_rows,
         group_races,
         load_jsonl,
         profile_of,
@@ -120,13 +122,16 @@ def candidate_races(
     for rows in races:
         if classify_race(rows) != "fully_labeled":
             continue
-        if not compatible_race(rows):
+        competitive = competitive_race_rows(rows)
+        if len(competitive) < 2:
             continue
-        if not rows_in_scope(rows, candidate["scopeType"], candidate["scopeKey"]):
+        if not compatible_race(competitive):
             continue
-        control = race_metric_outcome(rows, candidate["metric"])
+        if not rows_in_scope(competitive, candidate["scopeType"], candidate["scopeKey"]):
+            continue
+        control = race_metric_outcome(competitive, candidate["metric"])
         if control and control["replayTop3SetAgreement"]:
-            selected.append(rows)
+            selected.append(competitive)
     return selected
 
 

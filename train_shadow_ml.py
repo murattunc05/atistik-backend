@@ -165,6 +165,29 @@ def fold_text(value):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def is_verified_unranked_terminal(row):
+    """Only the exact persisted official Derecesiz marker is competitive."""
+    return (
+        int(safe_float(row.get("finish_pos"), 0.0)) in TERMINAL_FINISH_POSITIONS
+        and str(row.get("result_status") or "").strip() == "unranked_terminal"
+        and fold_text(row.get("terminal_reason")) == "DERECESIZ"
+        and str(row.get("result_source") or "").strip() == "tjk_official_results"
+    )
+
+
+def exclude_from_competitive_labels(row):
+    """Exclude Koşmaz and legacy/unknown 99 rows from training and metrics."""
+    finish = int(safe_float(row.get("finish_pos"), 0.0))
+    return finish in TERMINAL_FINISH_POSITIONS and not is_verified_unranked_terminal(row)
+
+
+def effective_finish_rank(row, field_size):
+    finish = int(safe_float(row.get("finish_pos"), field_size))
+    if finish in TERMINAL_FINISH_POSITIONS:
+        return field_size
+    return max(1, min(field_size, finish))
+
+
 def track_bucket(track):
     folded = fold_text(track)
     if "SENTETIK" in folded:
@@ -443,18 +466,22 @@ def filter_training_entries(entries, include_partial_races=False):
         "valid_tie_races",
         "terminal_status_races",
         "terminal_status_rows",
+        "excluded_terminal_races",
+        "excluded_terminal_rows",
     ]:
         summary[key] = 0
     for rows in races.values():
         labeled_rows = [row for row in rows if valid_finish_position(row.get("finish_pos"))]
-        feature_rows = [row for row in rows if row.get("features")]
         if not labeled_rows:
             summary["unlabeled_races"] += 1
             continue
         if len(labeled_rows) != len(rows):
             summary["partial_races"] += 1
             if include_partial_races:
-                clean.extend(row for row in labeled_rows if row.get("features"))
+                clean.extend(
+                    row for row in labeled_rows
+                    if row.get("features") and not exclude_from_competitive_labels(row)
+                )
             continue
         integrity = finish_rank_integrity(rows)
         if integrity["terminal_status_count"]:
@@ -472,14 +499,20 @@ def filter_training_entries(entries, include_partial_races=False):
         summary["integrity_clean_races"] += 1
         if integrity["has_tie"]:
             summary["valid_tie_races"] += 1
-        if len(feature_rows) != len(rows):
+        competitive_rows = [row for row in rows if not exclude_from_competitive_labels(row)]
+        excluded_count = len(rows) - len(competitive_rows)
+        if excluded_count:
+            summary["excluded_terminal_races"] += 1
+            summary["excluded_terminal_rows"] += excluded_count
+        feature_rows = [row for row in competitive_rows if row.get("features")]
+        if len(feature_rows) != len(competitive_rows):
             summary["missing_feature_races"] += 1
             continue
-        if len(rows) < 2:
+        if len(competitive_rows) < 2:
             summary["single_runner_races"] += 1
             continue
         summary["complete_races"] += 1
-        clean.extend(rows)
+        clean.extend(competitive_rows)
 
     summary["selected_entries"] = len(clean)
     summary["selected_races"] = len({race_key(entry) for entry in clean})
@@ -625,16 +658,20 @@ def without_agf_features(feature_cols):
 def matrix_from_races(races, feature_cols):
     X, y, groups, flat_entries = [], [], [], []
     for _, rows in races.items():
-        valid_rows = [row for row in rows if row.get("finish_pos") is not None]
+        valid_rows = [
+            row for row in rows
+            if row.get("finish_pos") is not None
+            and not exclude_from_competitive_labels(row)
+        ]
         valid_rows.sort(key=lambda row: safe_float(row.get("finish_pos"), 999.0))
         if len(valid_rows) < 2:
             continue
-        field_size = max(int(safe_float(row.get("field_size"), len(valid_rows))) for row in valid_rows)
+        field_size = len(valid_rows)
         groups.append(len(valid_rows))
         for row in valid_rows:
             values = feature_dict(row)
             X.append([safe_float(values.get(col), 0.0) for col in feature_cols])
-            relevance = max(0.0, field_size - safe_float(row.get("finish_pos"), field_size) + 1.0)
+            relevance = max(0.0, field_size - effective_finish_rank(row, field_size) + 1.0)
             y.append(relevance)
             flat_entries.append(row)
     return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32), groups, flat_entries
@@ -698,27 +735,31 @@ def evaluate_ranks(races, rank_builder):
     rhos, maes, ndcgs, winner_ranks, top_finishes = [], [], [], [], []
     race_count = 0
     for _, rows in races.items():
-        rows = [row for row in rows if row.get("finish_pos") is not None]
+        rows = [
+            row for row in rows
+            if row.get("finish_pos") is not None
+            and not exclude_from_competitive_labels(row)
+        ]
         if len(rows) < 2:
             continue
         ranks = rank_builder(rows)
         if not ranks:
             continue
         race_count += 1
-        winner = min(rows, key=lambda row: safe_float(row.get("finish_pos"), 999.0))
+        field_size = len(rows)
+        winner = min(rows, key=lambda row: effective_finish_rank(row, field_size))
         top = min(rows, key=lambda row: ranks.get(id(row), 999))
         winner_rank = ranks.get(id(winner), 999)
         top1 += int(top.get("finish_pos") == 1)
         top3 += int(winner_rank <= 3)
         top5 += int(winner_rank <= 5)
         winner_ranks.append(winner_rank)
-        top_finishes.append(safe_float(top.get("finish_pos"), 999.0))
+        top_finishes.append(float(effective_finish_rank(top, field_size)))
         pairs = []
         y_true, y_score = [], []
-        field_size = max(int(safe_float(row.get("field_size"), len(rows))) for row in rows)
         for row in rows:
             pred_rank = ranks.get(id(row), 999)
-            finish_pos = safe_float(row.get("finish_pos"), 999.0)
+            finish_pos = effective_finish_rank(row, field_size)
             pairs.append((pred_rank, finish_pos))
             maes.append(abs(pred_rank - finish_pos))
             y_true.append(max(0.0, field_size - finish_pos + 1.0))
@@ -842,7 +883,11 @@ def compare_model_to_existing(model, races, feature_cols):
     baseline_crowds, candidate_crowds = [], []
     race_count = 0
     for _, raw_rows in races.items():
-        rows = [row for row in raw_rows if row.get("finish_pos") is not None]
+        rows = [
+            row for row in raw_rows
+            if row.get("finish_pos") is not None
+            and not exclude_from_competitive_labels(row)
+        ]
         if len(rows) < 2:
             continue
         X = np.array(
@@ -852,7 +897,7 @@ def compare_model_to_existing(model, races, feature_cols):
         candidate_scores = [float(value) for value in model.predict(X)]
         candidate_ranks = rank_from_scores(rows, candidate_scores)
         baseline_ranks = rank_from_visible_v4(rows)
-        winner = min(rows, key=lambda row: safe_float(row.get("finish_pos"), 999.0))
+        winner = min(rows, key=lambda row: effective_finish_rank(row, len(rows)))
         baseline_rank = baseline_ranks.get(id(winner), 999)
         candidate_rank = candidate_ranks.get(id(winner), 999)
         baseline_hit = baseline_rank <= 3
