@@ -388,27 +388,151 @@ def validate_snapshot(
     return True, "valid"
 
 
-def classify_labels(rows: list[dict[str, Any]], field_size: int) -> str:
+def _is_verified_unranked_terminal(row: dict[str, Any]) -> bool:
+    """Accept 99 competitively only with exact official Derecesiz evidence."""
+    return (
+        safe_int(row.get("finish_pos"), 0) in TERMINAL_FINISH_POSITIONS
+        and clean_id(row.get("result_status")) == "unranked_terminal"
+        and clean_name(row.get("terminal_reason")) == "DERECESIZ"
+        and clean_id(row.get("result_source")) == "tjk_official_results"
+    )
+
+
+def _is_verified_non_runner(row: dict[str, Any]) -> bool:
+    return (
+        safe_int(row.get("finish_pos"), 0) in TERMINAL_FINISH_POSITIONS
+        and clean_id(row.get("result_status")) == "non_runner"
+        and clean_name(row.get("terminal_reason")) == "KOSMAZ"
+        and clean_id(row.get("result_source")) == "tjk_official_results"
+    )
+
+
+def _classify_labels(rows: list[dict[str, Any]], field_size: int) -> tuple[str, str]:
+    """Classify a complete result set without treating every 99 as a finisher.
+
+    An official post-snapshot non-runner is a valid result event, but the race is
+    deliberately kept out of performance and promotion evidence: its captured
+    market and field no longer describe the field that actually competed.
+    """
     if len(rows) != field_size:
-        return "partial"
-    positions: list[int] = []
+        return "partial", "field_size_mismatch"
+
+    present = [row.get("finish_pos") not in (None, "") for row in rows]
+    if not any(present):
+        return "unlabeled", "unlabeled"
+    if not all(present):
+        return "partial", "partial"
+
+    parsed: list[tuple[dict[str, Any], int]] = []
     for row in rows:
-        value = row.get("finish_pos")
-        if value is None:
-            return "partial" if any(item.get("finish_pos") is not None for item in rows) else "unlabeled"
-        position = safe_int(value, 0)
-        if position <= 0:
-            return "integrity_invalid"
-        positions.append(position)
+        numeric = finite(row.get("finish_pos"))
+        if numeric is None or numeric <= 0 or not numeric.is_integer():
+            return "integrity_invalid", "finish_position_invalid"
+        position = int(numeric)
+        status = clean_id(row.get("result_status"))
+        if position not in TERMINAL_FINISH_POSITIONS and status in {
+            "non_runner",
+            "unranked_terminal",
+        }:
+            return "integrity_invalid", "terminal_metadata_finish_mismatch"
+        parsed.append((row, position))
+
+    verified_non_runners = [row for row, position in parsed if position == 99 and _is_verified_non_runner(row)]
+    unverified_terminals = [
+        row
+        for row, position in parsed
+        if position == 99
+        and not _is_verified_non_runner(row)
+        and not _is_verified_unranked_terminal(row)
+    ]
+    competitive = [
+        (row, position)
+        for row, position in parsed
+        if position != 99 or _is_verified_unranked_terminal(row)
+    ]
+    if unverified_terminals:
+        return "integrity_invalid", "unverified_terminal_99"
+    if len(competitive) < 2:
+        return "integrity_invalid", "competitive_field_too_small"
+
+    positions = [position for _row, position in competitive]
     if positions.count(1) != 1:
-        return "integrity_invalid"
+        return "integrity_invalid", "winner_count_invalid"
     ranked = [value for value in positions if value not in TERMINAL_FINISH_POSITIONS]
+    if any(value > len(competitive) for value in ranked):
+        return "integrity_invalid", "finish_position_out_of_range"
     expected = 1
     for rank, tied_count in sorted(Counter(ranked).items()):
         if rank != expected:
-            return "integrity_invalid"
+            return "integrity_invalid", "finish_rank_pattern_invalid"
         expected += tied_count
-    return "fully_labeled"
+    if verified_non_runners:
+        return "post_snapshot_non_runner", "post_snapshot_non_runner"
+    return "fully_labeled", "valid"
+
+
+def classify_labels(rows: list[dict[str, Any]], field_size: int) -> str:
+    return _classify_labels(rows, field_size)[0]
+
+
+def _competitive_evaluation_rows(
+    snapshot: dict[str, Any],
+    predictions: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop non-competitive 99 rows and collapse both visible rank orders."""
+    selected = [
+        runner
+        for runner in snapshot["runners"]
+        if (
+            safe_int(predictions[clean_name(runner.get("horseName"))].get("finish_pos"), 0)
+            not in TERMINAL_FINISH_POSITIONS
+            or _is_verified_unranked_terminal(
+                predictions[clean_name(runner.get("horseName"))]
+            )
+        )
+    ]
+
+    def horse_key(runner: dict[str, Any]) -> tuple[int, str, str]:
+        return (
+            safe_int(runner.get("horseNo"), 999999),
+            clean_id(runner.get("horseNo")),
+            clean_name(runner.get("horseName")),
+        )
+
+    def collapsed(rank_key: str) -> dict[str, int]:
+        ordered = sorted(
+            selected,
+            key=lambda runner: (
+                safe_int(runner.get(rank_key), 999999),
+                *horse_key(runner),
+            ),
+        )
+        return {
+            clean_name(runner.get("horseName")): rank
+            for rank, runner in enumerate(ordered, start=1)
+        }
+
+    baseline_ranks = collapsed("baselineRank")
+    candidate_ranks = collapsed("candidateRank")
+    evaluation_rows: list[dict[str, Any]] = []
+    for runner in sorted(selected, key=horse_key):
+        name = clean_name(runner.get("horseName"))
+        prediction = predictions[name]
+        finish_pos = (
+            len(selected)
+            if _is_verified_unranked_terminal(prediction)
+            else safe_int(prediction.get("finish_pos"), 0)
+        )
+        evaluation_rows.append(
+            {
+                "horse_name": name,
+                "horse_no": clean_id(runner.get("horseNo")),
+                "finish_pos": finish_pos,
+                "baseline_rank": baseline_ranks[name],
+                "candidate_rank": candidate_ranks[name],
+            }
+        )
+    return evaluation_rows
 
 
 def evaluate_snapshot(snapshot: dict[str, Any], prediction_rows: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None, str]:
@@ -416,20 +540,14 @@ def evaluate_snapshot(snapshot: dict[str, Any], prediction_rows: list[dict[str, 
     if not valid:
         return "integrity_invalid", None, reason
     identity = snapshot["identity"]
-    label_status = classify_labels(prediction_rows, safe_int(identity.get("fieldSize")))
+    label_status, label_reason = _classify_labels(
+        prediction_rows,
+        safe_int(identity.get("fieldSize")),
+    )
     if label_status != "fully_labeled":
-        return label_status, None, label_status
+        return label_status, None, label_reason
     predictions = {clean_name(row.get("horse_name")): row for row in prediction_rows}
-    evaluation_rows = []
-    for runner in snapshot["runners"]:
-        row = predictions[clean_name(runner.get("horseName"))]
-        evaluation_rows.append(
-            {
-                "finish_pos": row.get("finish_pos"),
-                "baseline_rank": runner.get("baselineRank"),
-                "candidate_rank": runner.get("candidateRank"),
-            }
-        )
+    evaluation_rows = _competitive_evaluation_rows(snapshot, predictions)
     winner = next(row for row in evaluation_rows if safe_int(row.get("finish_pos")) == 1)
     baseline_rank = safe_int(winner.get("baseline_rank"))
     candidate_rank = safe_int(winner.get("candidate_rank"))
@@ -464,7 +582,7 @@ def evaluate_snapshot(snapshot: dict[str, Any], prediction_rows: list[dict[str, 
             "raceId": identity["raceId"],
             "raceNo": identity["raceNo"],
             "profile": identity["profile"],
-            "fieldSize": identity["fieldSize"],
+            "fieldSize": len(evaluation_rows),
             "coverage": snapshot["coverage"]["ratio"],
             "preferredCoverage": snapshot["coverage"]["preferredReached"],
             "baselineWinnerRank": baseline_rank,
@@ -656,6 +774,7 @@ def build_report(
             "fullyLabeledRaces": statuses["fully_labeled"],
             "partialRaces": statuses["partial"],
             "unlabeledRaces": statuses["unlabeled"],
+            "postSnapshotNonRunnerRaces": statuses["post_snapshot_non_runner"],
             "integrityInvalidRaces": statuses["integrity_invalid"],
             "integrityInvalidReasons": dict(sorted(invalid_reasons.items())),
         },
@@ -678,7 +797,8 @@ def markdown(report: dict[str, Any]) -> str:
         "Visible ranking and Telegram: **unchanged**.",
         "",
         f"Snapshots: {coverage['snapshotRaces']}; fully labeled: {coverage['fullyLabeledRaces']}; "
-        f"partial: {coverage['partialRaces']}; invalid: {coverage['integrityInvalidRaces']}.",
+        f"partial: {coverage['partialRaces']}; post-snapshot non-runner: "
+        f"{coverage['postSnapshotNonRunnerRaces']}; invalid: {coverage['integrityInvalidRaces']}.",
         "",
         "| Profile | Clean | Baseline WTop3 | Candidate WTop3 | B/C cutoff gap | Rescue/Damage | Next | Status |",
         "|---|---:|---:|---:|---:|---:|---:|---|",

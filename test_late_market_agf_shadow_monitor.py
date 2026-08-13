@@ -5,8 +5,12 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from automation.late_market_agf_shadow import build_snapshot, sha256_payload
-from automation.late_market_agf_shadow_monitor import build_report, persist
+from automation.late_market_agf_shadow import build_snapshot, clean_name, sha256_payload
+from automation.late_market_agf_shadow_monitor import (
+    _competitive_evaluation_rows,
+    build_report,
+    persist,
+)
 from test_late_market_agf_shadow import analysis_manifest, live_race, prediction_rows
 
 
@@ -119,6 +123,70 @@ class LateMarketAgfShadowMonitorTests(unittest.TestCase):
             report["coverage"]["integrityInvalidReasons"],
             {"source_request_identity": 1},
         )
+
+    def test_verified_derecesiz_is_kept_as_competitive_last_rank(self):
+        snapshot, rows = race(0)
+        rows[-1].update(
+            {
+                "finish_pos": 99,
+                "result_status": "unranked_terminal",
+                "terminal_reason": "Derecesiz",
+                "result_source": "tjk_official_results",
+            }
+        )
+
+        report = build_report([snapshot], rows, "2026-08-14")
+
+        self.assertEqual(report["coverage"]["fullyLabeledRaces"], 1)
+        self.assertEqual(report["coverage"]["integrityInvalidRaces"], 0)
+        self.assertEqual(report["overall"]["races"], 1)
+        self.assertEqual(report["overall"]["baseline"]["mae"], 0.0)
+
+    def test_post_snapshot_non_runner_is_not_performance_or_promotion_evidence(self):
+        snapshot, rows = race(0)
+        rows[1].update(
+            {
+                "finish_pos": 99,
+                "result_status": "non_runner",
+                "terminal_reason": "Koşmaz",
+                "result_source": "tjk_official_results",
+            }
+        )
+        for finish_pos, row in enumerate((rows[0], *rows[2:]), start=1):
+            row["finish_pos"] = finish_pos
+
+        predictions = {clean_name(row["horse_name"]): row for row in rows}
+        competitive = _competitive_evaluation_rows(snapshot, predictions)
+        collapsed = {row["horse_name"]: row for row in competitive}
+        report = build_report([snapshot], rows, "2026-08-14")
+
+        self.assertNotIn("HORSE2", collapsed)
+        self.assertEqual(collapsed["HORSE3"]["baseline_rank"], 2)
+        self.assertEqual(collapsed["HORSE3"]["candidate_rank"], 2)
+        self.assertEqual(report["coverage"]["postSnapshotNonRunnerRaces"], 1)
+        self.assertEqual(report["coverage"]["fullyLabeledRaces"], 0)
+        self.assertEqual(report["overall"]["races"], 0)
+        self.assertEqual(report["profiles"]["MAIDEN"]["cumulative"]["races"], 0)
+        self.assertFalse(report["profiles"]["MAIDEN"]["formalReplaySupported"])
+
+    def test_metadata_less_99_is_excluded_and_fails_closed(self):
+        snapshot, rows = race(0)
+        rows[1]["finish_pos"] = 99
+        for finish_pos, row in enumerate((rows[0], *rows[2:]), start=1):
+            row["finish_pos"] = finish_pos
+
+        predictions = {clean_name(row["horse_name"]): row for row in rows}
+        competitive = _competitive_evaluation_rows(snapshot, predictions)
+        report = build_report([snapshot], rows, "2026-08-14")
+
+        self.assertEqual(len(competitive), 4)
+        self.assertEqual(report["coverage"]["fullyLabeledRaces"], 0)
+        self.assertEqual(report["coverage"]["integrityInvalidRaces"], 1)
+        self.assertEqual(
+            report["coverage"]["integrityInvalidReasons"],
+            {"unverified_terminal_99": 1},
+        )
+        self.assertEqual(report["overall"]["races"], 0)
 
     def test_fifteen_clean_but_neutral_races_do_not_unlock_formal_replay(self):
         snapshots = []
