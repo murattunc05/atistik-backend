@@ -49,6 +49,7 @@ else:
         and data.get("status") == "completed"
         and checked > 0
         and submitted == checked
+        and int(totals.get("partialLabels", 0) or 0) == 0
         and int(totals.get("pending", 0) or 0) == 0
         and int(totals.get("failed", 0) or 0) == 0
     )

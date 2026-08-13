@@ -649,10 +649,10 @@ def fetch_results(base_url: str, day: date, race: dict[str, Any], timeout: int) 
             "detailLink": h.get("detailLink", ""),
         }
         for h in (race.get("horses", []) or [])
-        if h.get("name") and h.get("detailLink")
+        if h.get("name")
     ]
     if not horses:
-        return {"success": False, "error": "no_horses_with_detail_link", "results": []}
+        return {"success": False, "error": "no_named_horses", "results": []}
 
     return http_json(
         "POST",

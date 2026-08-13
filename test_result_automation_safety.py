@@ -99,6 +99,23 @@ class ResultAutomationSafetyTests(unittest.TestCase):
         self.assertEqual(payload["city_id"], "")
         self.assertEqual(payload["city_name"], "")
 
+    def test_official_results_can_run_when_detail_link_is_missing(self):
+        race = {
+            "raceId": "226100",
+            "raceNo": "1",
+            "cityId": "3",
+            "city": "İstanbul",
+            "horses": [{"name": "SUPER CHIRON", "no": "1", "detailLink": ""}],
+        }
+        with patch("automation.atistik_daily_job.http_json", return_value={"success": True}) as call:
+            result = fetch_results("https://example.test", date(2026, 7, 15), race, 10)
+
+        self.assertTrue(result["success"])
+        payload = call.call_args.kwargs["payload"]
+        self.assertEqual(payload["horses"], [
+            {"name": "SUPER CHIRON", "no": "1", "detailLink": ""}
+        ])
+
     def test_idempotent_api_response_counts_as_completed_submission(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
