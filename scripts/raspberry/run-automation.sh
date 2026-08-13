@@ -242,11 +242,31 @@ if [[ "$MODE" == "results" ]]; then
     echo "[MAIDEN SHADOW] Monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
   fi
 
+  if ! python3 automation/handicap_trainer_shadow_monitor.py \
+    --predictions "$DATA_DIR/predictions.jsonl" \
+    --data-dir "$DATA_DIR" \
+    --run-date "$MONITOR_DATE"; then
+    echo "[HANDIKAP TRAINER SHADOW] Monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
+  fi
+
   if ! python3 automation/metric_signal_registry.py \
     --predictions "$DATA_DIR/predictions.jsonl" \
     --data-dir "$DATA_DIR" \
     --run-date "$MONITOR_DATE"; then
     echo "[METRIC SIGNAL] Registry raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
+  elif ! python3 automation/metric_signal_replay.py \
+    --predictions "$DATA_DIR/predictions.jsonl" \
+    --registry "$DATA_DIR/automation/metric-signals/latest.json" \
+    --data-dir "$DATA_DIR" \
+    --run-date "$MONITOR_DATE"; then
+    echo "[METRIC REPLAY] Guncel registry adaylari replay edilemedi; sonuc/backup akisi devam ediyor." >&2
+  fi
+
+  if ! python3 automation/six_leg_coupon_scorecard.py \
+    --predictions "$DATA_DIR/predictions.jsonl" \
+    --data-dir "$DATA_DIR" \
+    --run-date "$MONITOR_DATE"; then
+    echo "[ALTILI SCORECARD] Rapor uretilemedi; sonuc/backup akisi devam ediyor." >&2
   fi
 
   if ! python3 automation/confidence_calibration.py \

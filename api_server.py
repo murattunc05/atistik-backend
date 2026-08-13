@@ -16,6 +16,7 @@ import math
 import random
 import statistics
 from datetime import datetime
+from automation.future_signal_ledger import build_race_signal_ledger
 
 app = Flask(__name__)
 CORS(app)  # Flutter'dan gelen isteklere izin ver
@@ -42,6 +43,10 @@ _maiden_shadow_load_error = None
 _MAIDEN_SHADOW_VERSION = "maiden-ml15-20260810-v1"
 _MAIDEN_SHADOW_OBSERVATION_START = "10.08.2026"
 _MAIDEN_SHADOW_ALPHA = 0.15
+_HANDICAP_TRAINER_SHADOW_VERSION = "handicap-trainer-ablation-20260814-v1"
+_HANDICAP_TRAINER_SHADOW_OBSERVATION_START = "14.08.2026"
+_HANDICAP_TRAINER_SHADOW_METRIC = "trainer_score"
+_FUTURE_SIGNAL_OBSERVATION_START = "14.08.2026"
 
 def load_ml_model():
     """Load the optional shadow ranker without affecting visible v4 ranking."""
@@ -235,6 +240,17 @@ def ml_status():
             'artifact_sha256': _maiden_shadow_manifest.get('modelSha256'),
             'feature_schema_sha256': _maiden_shadow_manifest.get('featureSchemaSha256'),
             'training_cutoff': _maiden_shadow_manifest.get('trainingCutoff'),
+        },
+        'handicap_trainer_shadow': {
+            'version': _HANDICAP_TRAINER_SHADOW_VERSION,
+            'mode': 'prospective_shadow_ablation',
+            'observation_start': _HANDICAP_TRAINER_SHADOW_OBSERVATION_START,
+            'used_for_ranking': False,
+            'rollout_eligible': False,
+            'profile': 'HANDIKAP',
+            'ablated_metric': _HANDICAP_TRAINER_SHADOW_METRIC,
+            'candidate_value_pct': 0.0,
+            'checkpoints': [5, 10, 15],
         },
         'metadata': _ml_shadow_metadata,
         'predictions': prediction_stats,
@@ -951,6 +967,181 @@ def search_horses():
 # FAZ 7: OTOMATİK SONUÇ ÇEKME
 # ══════════════════════════════════════════════════════════════════
 
+_TJK_DAILY_RESULTS_CITY_URL = (
+    "https://www.tjk.org/TR/YarisSever/Info/Sehir/GunlukYarisSonuclari"
+)
+_RESULT_TERMINAL_POSITION = 99
+
+
+def _clean_result_horse_name(value):
+    """Remove the saddle-number suffix used by TJK result pages."""
+    value = re.sub(r'\s+', ' ', str(value or '')).strip()
+    return re.sub(r'\s*\(\s*\d+\s*\)\s*$', '', value).strip()
+
+
+def _fold_result_status(value):
+    value = unicodedata.normalize('NFKD', str(value or ''))
+    value = ''.join(char for char in value if not unicodedata.combining(char))
+    return re.sub(r'[^A-Z0-9]+', '', value.upper())
+
+
+def _explicit_terminal_reason(*values):
+    """Accept a terminal label only when TJK explicitly says ``Koşmaz``."""
+    for value in values:
+        if 'KOSMAZ' in _fold_result_status(value):
+            return 'Koşmaz'
+    return None
+
+
+def _parse_official_result_race(html, race_id):
+    """Parse one exact race from TJK's official daily-results HTML."""
+    soup = BeautifulSoup(html or '', 'html.parser')
+    race_root = soup.find('div', id=str(race_id or '').strip())
+    if race_root is None:
+        return {
+            'raceFound': False,
+            'results': [],
+            'unresolved': [],
+            'explicitNonRunnerCount': 0,
+        }
+
+    table = next(
+        (
+            candidate
+            for candidate in race_root.find_all('table')
+            if candidate.select_one('.gunluk-GunlukYarisSonuclari-AtAdi3')
+        ),
+        None,
+    )
+    if table is None:
+        return {
+            'raceFound': True,
+            'results': [],
+            'unresolved': [{'reason': 'official_result_table_missing'}],
+            'explicitNonRunnerCount': 0,
+        }
+
+    parsed = []
+    unresolved = []
+    explicit_non_runners = 0
+    for row in table.select('tr'):
+        name_cell = row.select_one('.gunluk-GunlukYarisSonuclari-AtAdi3')
+        if name_cell is None:
+            continue
+        anchor = name_cell.find('a')
+        raw_name = anchor.get_text(' ', strip=True) if anchor else name_cell.get_text(' ', strip=True)
+        horse_name = _clean_result_horse_name(raw_name)
+        if not horse_name:
+            continue
+
+        position_cell = row.select_one('.gunluk-GunlukYarisSonuclari-SONUCNO')
+        raw_position = position_cell.get_text(' ', strip=True) if position_cell else ''
+        degree_cell = row.select_one('.gunluk-GunlukYarisSonuclari-Derece')
+        raw_degree = degree_cell.get_text(' ', strip=True) if degree_cell else ''
+        row_text = row.get_text(' ', strip=True)
+
+        if raw_position.isdigit() and int(raw_position) > 0:
+            parsed.append({
+                'horse_name': horse_name,
+                'finish_pos': int(raw_position),
+                'result_status': 'finished',
+                'result_source': 'tjk_official_results',
+            })
+            continue
+
+        terminal_reason = _explicit_terminal_reason(raw_position, raw_degree, row_text)
+        if terminal_reason:
+            explicit_non_runners += 1
+            parsed.append({
+                'horse_name': horse_name,
+                'finish_pos': _RESULT_TERMINAL_POSITION,
+                'result_status': 'non_runner',
+                'terminal_reason': terminal_reason,
+                'result_source': 'tjk_official_results',
+            })
+            continue
+
+        unresolved.append({
+            'horse_name': horse_name,
+            'raw_position': raw_position,
+            'raw_degree': raw_degree,
+            'reason': 'official_terminal_status_unrecognized',
+        })
+
+    return {
+        'raceFound': True,
+        'results': parsed,
+        'unresolved': unresolved,
+        'explicitNonRunnerCount': explicit_non_runners,
+    }
+
+
+def _fetch_official_result_race(race_date, race_id, city_id, city_name):
+    if not str(race_id or '').strip() or not str(city_id or '').strip():
+        return {
+            'attempted': False,
+            'raceFound': False,
+            'results': [],
+            'unresolved': [],
+            'errors': [],
+        }
+    try:
+        official_date = str(race_date or '').replace('.', '/').replace('-', '/')
+        response = requests.get(
+            _TJK_DAILY_RESULTS_CITY_URL,
+            headers=TJK_DAILY_HEADERS,
+            params={
+                'SehirId': str(city_id),
+                'QueryParameter_Tarih': official_date,
+                'SehirAdi': str(city_name or ''),
+                'Era': 'yesterday',
+            },
+            timeout=20,
+            verify=False,
+        )
+        if response.status_code != 200:
+            return {
+                'attempted': True,
+                'raceFound': False,
+                'results': [],
+                'unresolved': [],
+                'errors': [f'official results HTTP {response.status_code}'],
+            }
+        parsed = _parse_official_result_race(response.text, race_id)
+        return {'attempted': True, 'errors': [], **parsed}
+    except Exception as exc:
+        return {
+            'attempted': True,
+            'raceFound': False,
+            'results': [],
+            'unresolved': [],
+            'errors': [f'official results: {exc}'],
+        }
+
+
+def _result_label_coverage(horses_in, results):
+    expected = {
+        re.sub(r'[\W_]+', '', _clean_result_horse_name(horse.get('name', '')).upper(), flags=re.UNICODE)
+        for horse in horses_in
+        if horse.get('name')
+    }
+    incoming = {
+        re.sub(r'[\W_]+', '', _clean_result_horse_name(row.get('horse_name', '')).upper(), flags=re.UNICODE)
+        for row in results
+        if row.get('horse_name')
+        and isinstance(row.get('finish_pos'), int)
+        and row.get('finish_pos') > 0
+    }
+    matched = expected & incoming
+    return {
+        'expectedCount': len(expected),
+        'labeledCount': len(matched),
+        'missingHorses': sorted(expected - incoming),
+        'extraHorses': sorted(incoming - expected),
+        'complete': bool(expected) and matched == expected and incoming == expected,
+    }
+
+
 @app.route('/api/fetch-race-results', methods=['POST'])
 def fetch_race_results():
     """
@@ -983,6 +1174,8 @@ def fetch_race_results():
         race_date   = data.get('race_date', '').strip()   # "24.04.2026"
         race_no     = data.get('race_no', '').strip()     # "3"
         horses_in   = data.get('horses', [])
+        city_id     = str(data.get('city_id', '') or '').strip()
+        city_name   = str(data.get('city_name', '') or '').strip()
 
         if not race_date or not horses_in:
             return jsonify({'success': False, 'error': 'race_date ve horses zorunlu'}), 400
@@ -991,8 +1184,27 @@ def fetch_race_results():
 
         results = []
         errors  = []
+        unresolved = []
+        result_source = 'horse_history_fallback'
 
-        for horse in horses_in:
+        # Exact race-id + city based official results are authoritative and
+        # include explicit Koşmaz rows. Horse-history scraping remains a
+        # compatibility fallback when the official result page is unavailable.
+        official = _fetch_official_result_race(
+            race_date,
+            requested_race_id,
+            city_id,
+            city_name,
+        )
+        if official.get('raceFound'):
+            results = list(official.get('results', []) or [])
+            unresolved = list(official.get('unresolved', []) or [])
+            errors.extend(official.get('errors', []) or [])
+            result_source = 'tjk_official_results'
+        else:
+            errors.extend(official.get('errors', []) or [])
+
+        for horse in ([] if official.get('raceFound') else horses_in):
             horse_name  = horse.get('name', '').strip()
             horse_no = str(horse.get('no', '') or '').strip()
             # FAZ 7.4: TJK scraper at ismine newline + derece numarası ekleyebiliyor
@@ -1045,12 +1257,16 @@ def fetch_race_results():
                         # Koşu numarası da eşleştirmeye çalış
                         # cells[1] genellikle şehir, bazı formatlarda race_no var
                         # Tarihe göre buldukta ilk eşleşmeyi al (en yakın koşu)
-                        if position.isdigit():
+                        if position.isdigit() and int(position) > 0:
                             found_pos = int(position)
                             break
                         else:
-                            # K=Kalp, D=Disklifiye, F=Foul vb. — sona koy
-                            found_pos = 99
+                            # An unknown text or zero is not proof of a terminal
+                            # result. Only an explicit official Koşmaz marker may
+                            # produce the terminal 99 label.
+                            terminal_reason = _explicit_terminal_reason(position)
+                            if terminal_reason:
+                                found_pos = _RESULT_TERMINAL_POSITION
                             break
 
                 if found_pos is not None:
@@ -1058,9 +1274,16 @@ def fetch_race_results():
                         'horse_name': horse_name,
                         'horse_no': horse_no,
                         'finish_pos': found_pos,
+                        'result_status': 'non_runner' if found_pos == _RESULT_TERMINAL_POSITION else 'finished',
+                        'terminal_reason': 'Koşmaz' if found_pos == _RESULT_TERMINAL_POSITION else None,
+                        'result_source': result_source,
                     })
                 else:
                     errors.append(f'{horse_name}: {race_date} tarihli koşu geçmişte bulunamadı')
+                    unresolved.append({
+                        'horse_name': horse_name,
+                        'reason': 'horse_history_result_missing_or_unrecognized',
+                    })
 
             except Exception as e:
                 errors.append(f'{horse_name}: {str(e)}')
@@ -1071,10 +1294,14 @@ def fetch_race_results():
                 'success': False,
                 'error': 'Hiçbir at için sonuç bulunamadı.',
                 'details': errors,
+                'unresolved': unresolved,
+                'result_source': result_source,
+                'label_status': 'partial',
             }), 404
 
         # Sıralamaya göre tertle
         results_sorted = sorted(results, key=lambda x: x['finish_pos'])
+        label_coverage = _result_label_coverage(horses_in, results_sorted)
 
         # FAZ 7.3: predictions.jsonl'dan numeric race_id lookup
         # fetch-race-results "28.04.2026-3" formatında ID üretiyor ama
@@ -1128,6 +1355,10 @@ def fetch_race_results():
             'race_id': final_race_id,   # numeric ID (varsa), yoksa tarih-format
             'results': results_sorted,
             'errors':  errors,
+            'unresolved': unresolved,
+            'result_source': result_source,
+            'label_status': 'complete' if label_coverage['complete'] and not unresolved else 'partial',
+            'label_coverage': label_coverage,
         })
 
     except Exception as e:
@@ -1593,6 +1824,10 @@ def _parse_daily_horses(table):
             mother = parts[1].split('/')[0].strip()
 
         best_rating = cell_text('.gunluk-GunlukYarisProgrami-DERECE').split(' ')[0]
+        terminal_reason = _explicit_terminal_reason(
+            name_cell.get_text(' ', strip=True) if name_cell else '',
+            row.get_text(' ', strip=True),
+        )
 
         horses.append({
             'no': no,
@@ -1615,6 +1850,9 @@ def _parse_daily_horses(table):
             'bestRating': best_rating,
             'agf': cell_text('.gunluk-GunlukYarisProgrami-AGFORAN'),
             'detailLink': detail_link,
+            'runnerStatus': 'non_runner' if terminal_reason else 'declared',
+            'isNonRunner': bool(terminal_reason),
+            'nonRunnerReason': terminal_reason,
         })
 
     return horses
@@ -6878,6 +7116,28 @@ def _preserve_maiden_candidate_snapshot(entry, previous):
     return entry
 
 
+def _preserve_handicap_trainer_candidate_snapshot(entry, previous):
+    """Keep the first pre-race HANDIKAP ablation snapshot across retries."""
+    current_version = entry.get('handicap_trainer_candidate_version')
+    previous_version = previous.get('handicap_trainer_candidate_version')
+    if not previous_version:
+        return entry
+    if current_version and current_version != previous_version:
+        return entry
+    for key, value in previous.items():
+        if key.startswith('handicap_trainer_candidate_'):
+            entry[key] = value
+    return entry
+
+
+def _preserve_future_signal_ledger_snapshot(entry, previous):
+    """Keep the first pre-race research telemetry across analysis retries."""
+    previous_snapshot = previous.get('future_signal_ledger')
+    if isinstance(previous_snapshot, dict) and previous_snapshot:
+        entry['future_signal_ledger'] = previous_snapshot
+    return entry
+
+
 def _v417_is_handikap_profile(profile):
     return profile.get('category') == 'HANDIKAP' or str(profile.get('subtype', '')).startswith('HANDIKAP')
 
@@ -7698,6 +7958,176 @@ def apply_v4_shadow_mode(analyzed_horses, race_type='', distance='', track=''):
         f"valid={data_quality['validRunnerCount']} zero={data_quality['zeroScoreCount']} "
         f"confidence={decision_confidence['label']} open={decision_confidence['openRace']}"
     )
+
+
+def attach_handicap_trainer_ablation_candidate(
+    analyzed_horses,
+    race_type='',
+    distance='',
+    track='',
+):
+    """Attach a trainer_score=0 HANDIKAP candidate without changing ranking.
+
+    The candidate always derives from the exact v4 profile selected for this
+    race.  It is intentionally calculated after v4 so the stored baseline is
+    the same immutable pre-race score/rank that users and Telegram received.
+    """
+    profile = extract_v4_race_profile(
+        race_type=race_type,
+        distance=distance,
+        track=track,
+        field_size=len(analyzed_horses),
+    )
+    if not _v417_is_handikap_profile(profile):
+        return analyzed_horses
+    if not analyzed_horses:
+        return analyzed_horses
+
+    resolved = resolve_v4_profile_weights(profile)
+    baseline_weights = dict(resolved.get('weights') or {})
+    candidate_raw_weights = dict(baseline_weights)
+    candidate_raw_weights[_HANDICAP_TRAINER_SHADOW_METRIC] = 0.0
+    candidate_weights = _v4_normalize_weights(candidate_raw_weights)
+    baseline_weights_pct = {
+        key: round(value * 100.0, 4)
+        for key, value in baseline_weights.items()
+        if value > 0
+    }
+    candidate_weights_pct = {
+        key: round(value * 100.0, 4)
+        for key, value in candidate_weights.items()
+        if value > 0
+    }
+    weight_delta_pct = {
+        key: round(
+            (candidate_weights.get(key, 0.0) - baseline_weights.get(key, 0.0))
+            * 100.0,
+            4,
+        )
+        for key in set(baseline_weights) | set(candidate_weights)
+        if abs(candidate_weights.get(key, 0.0) - baseline_weights.get(key, 0.0))
+        > 1e-12
+    }
+    removed_trainer_weight_pct = round(
+        baseline_weights.get(_HANDICAP_TRAINER_SHADOW_METRIC, 0.0) * 100.0,
+        4,
+    )
+    trainer_source_count = sum(
+        bool((horse.get('metricSourceFlags', {}) or {}).get('hasTrainer'))
+        for horse in analyzed_horses
+    )
+    runner_count = len(analyzed_horses)
+    created_ts = int(time.time())
+
+    for horse in analyzed_horses:
+        metrics = dict(horse.get('_mf', {}) or {})
+        base_score = (
+            calculate_v4_shadow_score(metrics, candidate_weights)
+            if metrics
+            else 0.0
+        )
+        try:
+            penalty_total = max(
+                0.0,
+                float(horse.get('v4PenaltyTotal', 0.0) or 0.0),
+            )
+        except (ValueError, TypeError):
+            penalty_total = 0.0
+        score = round(max(0.0, min(100.0, base_score - penalty_total)), 1)
+        metric_source_flags = dict(horse.get('metricSourceFlags', {}) or {})
+        score_components = {}
+        for metric, weight in candidate_weights.items():
+            if weight <= 0:
+                continue
+            guard_key = _V4_SOURCE_GUARDS.get(metric)
+            included = not (
+                guard_key
+                and guard_key in metrics
+                and not metrics.get(guard_key, False)
+            )
+            try:
+                metric_value = float(metrics.get(metric, 50.0))
+                if not math.isfinite(metric_value):
+                    metric_value = 50.0
+            except (ValueError, TypeError):
+                metric_value = 50.0
+            score_components[metric] = {
+                'value': metric_value,
+                'weightPct': round(weight * 100.0, 6),
+                'guard': guard_key,
+                'included': included,
+            }
+
+        horse['handicapTrainerCandidateVersion'] = _HANDICAP_TRAINER_SHADOW_VERSION
+        horse['handicapTrainerCandidateMode'] = 'prospective_shadow_ablation'
+        horse['handicapTrainerCandidateObservationStart'] = (
+            _HANDICAP_TRAINER_SHADOW_OBSERVATION_START
+        )
+        horse['handicapTrainerCandidateCreatedTs'] = created_ts
+        horse['handicapTrainerCandidateBaselineVersion'] = horse.get(
+            'v4Version',
+            _V4_VERSION,
+        )
+        horse['handicapTrainerCandidateBaselineScore'] = horse.get('v4Score')
+        horse['handicapTrainerCandidateBaselineRank'] = horse.get('v4Rank')
+        horse['handicapTrainerCandidateBaseScore'] = base_score
+        horse['handicapTrainerCandidatePenaltyTotal'] = penalty_total
+        horse['handicapTrainerCandidateScore'] = score
+        horse['handicapTrainerCandidateRank'] = None
+        horse['handicapTrainerCandidateUsedForRanking'] = False
+        horse['handicapTrainerCandidateRolloutEligible'] = False
+        horse['handicapTrainerCandidateProfile'] = {
+            **profile,
+            'selectedKey': resolved.get('selectedKey'),
+            'fallbackLevel': resolved.get('fallbackLevel'),
+        }
+        horse['handicapTrainerCandidateBaselineWeights'] = baseline_weights_pct
+        horse['handicapTrainerCandidateWeights'] = candidate_weights_pct
+        horse['handicapTrainerCandidateWeightDeltaPct'] = weight_delta_pct
+        horse['handicapTrainerCandidateAblatedMetric'] = (
+            _HANDICAP_TRAINER_SHADOW_METRIC
+        )
+        horse['handicapTrainerCandidateRemovedWeightPct'] = (
+            removed_trainer_weight_pct
+        )
+        horse['handicapTrainerCandidateMetricSourceFlags'] = metric_source_flags
+        horse['handicapTrainerCandidateSource'] = {
+            'metric': _HANDICAP_TRAINER_SHADOW_METRIC,
+            'guard': 'hasTrainer',
+            'hasSource': bool(metric_source_flags.get('hasTrainer')),
+            'sourceCount': trainer_source_count,
+            'runnerCount': runner_count,
+            'coverage': round(trainer_source_count / runner_count, 4),
+        }
+        horse['handicapTrainerCandidateFeatureSnapshot'] = {
+            key: metrics.get(key)
+            for key in baseline_weights
+            if not key.startswith('_')
+        }
+        horse['handicapTrainerCandidateScoreComponents'] = score_components
+        horse['handicapTrainerCandidateReason'] = (
+            'Prospective HANDIKAP trainer_score ablation; the exact selected '
+            'v4.25 profile is retained except trainer_score=0. Visible v4 '
+            'ranking and Telegram output are unchanged.'
+        )
+
+    candidate_ranked = sorted(
+        analyzed_horses,
+        key=lambda horse: (
+            -float(horse.get('handicapTrainerCandidateScore', 0.0) or 0.0),
+            int(horse.get('v4Rank', 999) or 999),
+        ),
+    )
+    for index, horse in enumerate(candidate_ranked):
+        horse['handicapTrainerCandidateRank'] = index + 1
+
+    print(
+        f"[HANDIKAP TRAINER SHADOW] version={_HANDICAP_TRAINER_SHADOW_VERSION} "
+        f"profile={resolved.get('selectedKey')} runners={runner_count} "
+        f"trainer_weight={removed_trainer_weight_pct:.4f}->0 source="
+        f"{trainer_source_count}/{runner_count}"
+    )
+    return analyzed_horses
 
 
 def attach_sart1_shadow_candidate(analyzed_horses, race_type='', distance='', track=''):
@@ -8923,6 +9353,12 @@ def analyze_race():
                         'hasHp': has_hp_source,
                         'rawHp': raw_hp or None,
                         'validHpCountInRace': len(valid_hps),
+                        # These two source flags already drive the v4 source
+                        # gates in ``_mf``.  Persist them as well so the nightly
+                        # metric registry does not mistake real inputs for
+                        # neutral fallbacks.
+                        'hasWeight': has_weight_source,
+                        'hasJockey': has_jockey_source,
                         'hasHandicapEfficiency': has_handicap_efficiency,
                         'hasHandicapWeightRelief': has_handicap_efficiency,
                         'hasHandicapLoadValue': has_handicap_efficiency,
@@ -9185,6 +9621,8 @@ def analyze_race():
                             'hasTrainingProjection': False,
                             'hasAgf': False,
                             'validAgfCountInRace': len(valid_agf_values),
+                            'hasWeight': False,
+                            'hasJockey': False,
                             'hasAge': parse_horse_age(original_horse.get('age', '')) is not None,
                             'hasAgeActionable': False,
                             'rawAge': original_horse.get('age', '') or None,
@@ -9456,6 +9894,84 @@ def analyze_race():
         except Exception as _v4_err:
             print(f"[V4 SHADOW] Hesaplama hatasi, mevcut algoritma ile devam: {_v4_err}")
 
+        # Collect stricter same-surface/comparable-distance timing evidence for
+        # future feature work.  This ledger is diagnostic only and cannot alter
+        # either the visible v4 scores or their ordering.
+        try:
+            _future_signal_ledger = build_race_signal_ledger(
+                analyzed_horses,
+                target_distance=target_distance,
+                target_track=target_track,
+                target_city=race_city,
+                profile=race_type,
+            )
+            _future_signal_created_ts = int(time.time())
+            _future_signal_by_name = {
+                str(_row.get('horseName') or '').strip().casefold(): _row
+                for _row in _future_signal_ledger.get('horses', [])
+            }
+            for _h in analyzed_horses:
+                _row = _future_signal_by_name.get(
+                    str(_h.get('name') or '').strip().casefold(),
+                    {},
+                )
+                _h['futureSignalLedger'] = {
+                    'schemaVersion': _future_signal_ledger.get('schemaVersion'),
+                    'mode': _future_signal_ledger.get('mode'),
+                    'observationStart': _FUTURE_SIGNAL_OBSERVATION_START,
+                    'createdTs': _future_signal_created_ts,
+                    'usedForRanking': False,
+                    'rolloutEligible': False,
+                    'profile': _future_signal_ledger.get('profile'),
+                    'context': _future_signal_ledger.get('context'),
+                    'coverage': _future_signal_ledger.get('coverage'),
+                    'telemetry': _row.get('telemetry'),
+                    'fieldDiagnosticScores': _row.get('fieldDiagnosticScores'),
+                    'promotionPolicy': _future_signal_ledger.get('promotionPolicy'),
+                }
+        except Exception as _future_signal_err:
+            print(
+                '[FUTURE SIGNAL] Diagnostic telemetry unavailable; visible v4 '
+                f'ranking preserved: {_future_signal_err}'
+            )
+            for _h in analyzed_horses:
+                _h['futureSignalLedger'] = {
+                    'mode': 'unavailable',
+                    'usedForRanking': False,
+                    'rolloutEligible': False,
+                    'reason': str(_future_signal_err),
+                }
+
+        try:
+            attach_handicap_trainer_ablation_candidate(
+                analyzed_horses,
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+            )
+        except Exception as _handicap_trainer_shadow_err:
+            _handicap_profile = extract_v4_race_profile(
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+                field_size=len(analyzed_horses),
+            )
+            if _v417_is_handikap_profile(_handicap_profile):
+                print(
+                    '[HANDIKAP TRAINER SHADOW] Hesaplama hatasi; gorunur v4 '
+                    f'siralamasi korundu: {_handicap_trainer_shadow_err}'
+                )
+                for _h in analyzed_horses:
+                    _h['handicapTrainerCandidateVersion'] = (
+                        _HANDICAP_TRAINER_SHADOW_VERSION
+                    )
+                    _h['handicapTrainerCandidateMode'] = 'unavailable'
+                    _h['handicapTrainerCandidateUsedForRanking'] = False
+                    _h['handicapTrainerCandidateRolloutEligible'] = False
+                    _h['handicapTrainerCandidateReason'] = str(
+                        _handicap_trainer_shadow_err
+                    )
+
         try:
             attach_sart1_shadow_candidate(
                 analyzed_horses,
@@ -9615,6 +10131,31 @@ def analyze_race():
                     'v422_candidate_weights': _h.get('v422CandidateWeights', {}),
                     'v422_candidate_profile': _h.get('v422CandidateProfile', {}),
                     'v422_candidate_reason': _h.get('v422CandidateReason'),
+                    'future_signal_ledger': _h.get('futureSignalLedger', {}),
+                    'handicap_trainer_candidate_version': _h.get('handicapTrainerCandidateVersion'),
+                    'handicap_trainer_candidate_mode': _h.get('handicapTrainerCandidateMode'),
+                    'handicap_trainer_candidate_observation_start': _h.get('handicapTrainerCandidateObservationStart'),
+                    'handicap_trainer_candidate_created_ts': _h.get('handicapTrainerCandidateCreatedTs'),
+                    'handicap_trainer_candidate_baseline_version': _h.get('handicapTrainerCandidateBaselineVersion'),
+                    'handicap_trainer_candidate_baseline_score': _h.get('handicapTrainerCandidateBaselineScore'),
+                    'handicap_trainer_candidate_baseline_rank': _h.get('handicapTrainerCandidateBaselineRank'),
+                    'handicap_trainer_candidate_base_score': _h.get('handicapTrainerCandidateBaseScore'),
+                    'handicap_trainer_candidate_penalty_total': _h.get('handicapTrainerCandidatePenaltyTotal'),
+                    'handicap_trainer_candidate_score': _h.get('handicapTrainerCandidateScore'),
+                    'handicap_trainer_candidate_rank': _h.get('handicapTrainerCandidateRank'),
+                    'handicap_trainer_candidate_used_for_ranking': _h.get('handicapTrainerCandidateUsedForRanking', False),
+                    'handicap_trainer_candidate_rollout_eligible': _h.get('handicapTrainerCandidateRolloutEligible', False),
+                    'handicap_trainer_candidate_profile': _h.get('handicapTrainerCandidateProfile', {}),
+                    'handicap_trainer_candidate_baseline_weights': _h.get('handicapTrainerCandidateBaselineWeights', {}),
+                    'handicap_trainer_candidate_weights': _h.get('handicapTrainerCandidateWeights', {}),
+                    'handicap_trainer_candidate_weight_delta_pct': _h.get('handicapTrainerCandidateWeightDeltaPct', {}),
+                    'handicap_trainer_candidate_ablated_metric': _h.get('handicapTrainerCandidateAblatedMetric'),
+                    'handicap_trainer_candidate_removed_weight_pct': _h.get('handicapTrainerCandidateRemovedWeightPct'),
+                    'handicap_trainer_candidate_metric_source_flags': _h.get('handicapTrainerCandidateMetricSourceFlags', {}),
+                    'handicap_trainer_candidate_source': _h.get('handicapTrainerCandidateSource', {}),
+                    'handicap_trainer_candidate_feature_snapshot': _h.get('handicapTrainerCandidateFeatureSnapshot', {}),
+                    'handicap_trainer_candidate_score_components': _h.get('handicapTrainerCandidateScoreComponents', {}),
+                    'handicap_trainer_candidate_reason': _h.get('handicapTrainerCandidateReason'),
                     'sart1_candidate_version': _h.get('sart1CandidateVersion'),
                     'sart1_candidate_mode': _h.get('sart1CandidateMode'),
                     'sart1_candidate_observation_start': _h.get('sart1CandidateObservationStart'),
@@ -9725,6 +10266,8 @@ def analyze_race():
                         _entry['is_winner']  = _prev.get('is_winner')
                     _preserve_sart1_candidate_snapshot(_entry, _prev)
                     _preserve_maiden_candidate_snapshot(_entry, _prev)
+                    _preserve_handicap_trainer_candidate_snapshot(_entry, _prev)
+                    _preserve_future_signal_ledger_snapshot(_entry, _prev)
 
                 _new_entries.append(_json.dumps(_entry, ensure_ascii=False))
 

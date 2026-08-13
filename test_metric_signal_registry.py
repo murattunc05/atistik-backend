@@ -165,10 +165,20 @@ class MetricSignalRegistryTests(unittest.TestCase):
         script = (ROOT / "scripts" / "raspberry" / "run-automation.sh").read_text(encoding="utf-8")
         persist_at = script.rindex("persist_state_predictions")
         registry_at = script.index("python3 automation/metric_signal_registry.py")
+        replay_at = script.index("python3 automation/metric_signal_replay.py")
+        coupon_at = script.index("python3 automation/six_leg_coupon_scorecard.py")
         commit_at = script.index('git -C "$DATA_DIR" add automation predictions.jsonl')
         self.assertLess(persist_at, registry_at)
-        self.assertLess(registry_at, commit_at)
+        self.assertLess(registry_at, replay_at)
+        self.assertLess(replay_at, coupon_at)
+        self.assertLess(coupon_at, commit_at)
         self.assertIn("if ! python3 automation/metric_signal_registry.py", script)
+        self.assertIn("elif ! python3 automation/metric_signal_replay.py", script)
+        self.assertIn(
+            '--registry "$DATA_DIR/automation/metric-signals/latest.json"',
+            script,
+        )
+        self.assertIn("if ! python3 automation/six_leg_coupon_scorecard.py", script)
 
 
 if __name__ == "__main__":

@@ -643,7 +643,11 @@ def analyze_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
 
 def fetch_results(base_url: str, day: date, race: dict[str, Any], timeout: int) -> dict[str, Any]:
     horses = [
-        {"name": h.get("name", ""), "detailLink": h.get("detailLink", "")}
+        {
+            "name": h.get("name", ""),
+            "no": h.get("no", ""),
+            "detailLink": h.get("detailLink", ""),
+        }
         for h in (race.get("horses", []) or [])
         if h.get("name") and h.get("detailLink")
     ]
@@ -657,6 +661,8 @@ def fetch_results(base_url: str, day: date, race: dict[str, Any], timeout: int) 
             "race_id": str(race.get("raceId", "")),
             "race_date": date_dot(day),
             "race_no": str(race.get("raceNo", "")),
+            "city_id": str(race.get("cityId", "") or ""),
+            "city_name": str(race.get("city", "") or ""),
             "horses": horses,
         },
         timeout=timeout,
@@ -665,7 +671,17 @@ def fetch_results(base_url: str, day: date, race: dict[str, Any], timeout: int) 
 
 def result_match_stats(race: dict[str, Any], fetched: list[dict[str, Any]]) -> dict[str, Any]:
     expected = {clean_name(h.get("name", "")) for h in race.get("horses", []) or [] if h.get("name")}
-    incoming = {clean_name(r.get("horse_name", "")) for r in fetched if r.get("horse_name")}
+    incoming = set()
+    invalid = []
+    for row in fetched:
+        name = clean_name(row.get("horse_name", ""))
+        position = row.get("finish_pos")
+        if not name:
+            continue
+        if isinstance(position, bool) or not isinstance(position, int) or position <= 0:
+            invalid.append({"horse": name, "finishPos": position})
+            continue
+        incoming.add(name)
     matched = expected & incoming
     ratio = (len(matched) / len(expected)) if expected else 0.0
     return {
@@ -675,6 +691,13 @@ def result_match_stats(race: dict[str, Any], fetched: list[dict[str, Any]]) -> d
         "matchRatio": round(ratio, 3),
         "missingHorses": sorted(expected - incoming),
         "extraHorses": sorted(incoming - expected),
+        "invalidLabels": invalid,
+        "labelsComplete": (
+            bool(expected)
+            and matched == expected
+            and incoming == expected
+            and not invalid
+        ),
     }
 
 
@@ -688,7 +711,11 @@ def set_results_status(report: dict[str, Any], dry_run: bool) -> None:
     totals = report.get("totals", {}) or {}
     checked = int(totals.get("checked", 0) or 0)
     submitted = int(totals.get("submitted", 0) or 0)
-    unresolved = int(totals.get("pending", 0) or 0) + int(totals.get("failed", 0) or 0)
+    unresolved = (
+        int(totals.get("pending", 0) or 0)
+        + int(totals.get("failed", 0) or 0)
+        + int(totals.get("partialLabels", 0) or 0)
+    )
     if checked == 0:
         report["status"] = "skipped"
     elif dry_run:
@@ -728,6 +755,7 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
                 "found": 0,
                 "submitted": 0,
                 "idempotent": 0,
+                "partialLabels": 0,
                 "pending": 0,
                 "failed": 0,
             },
@@ -746,6 +774,7 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             "found": 0,
             "submitted": 0,
             "idempotent": 0,
+            "partialLabels": 0,
             "pending": 0,
             "failed": 0,
         },
@@ -776,6 +805,7 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             and str(fetched.get("race_id")) != str(race.get("raceId"))
         )
         safe = submit_safe(config, stats) and not fetched_race_id_mismatch
+        labels_complete = bool(stats.get("labelsComplete")) and fetched.get("label_status") != "partial"
         entry.update(
             {
                 "status": "results_found",
@@ -784,6 +814,9 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
                 "match": stats,
                 "results": fetched_results,
                 "safeToSubmit": safe,
+                "labelStatus": "complete" if labels_complete else "partial",
+                "resultSource": fetched.get("result_source"),
+                "unresolvedLabels": fetched.get("unresolved", []) or [],
             }
         )
         report["totals"]["found"] += 1
@@ -793,7 +826,11 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             report["races"].append(entry)
             continue
         if dry_run:
-            entry["status"] = "would_submit"
+            if labels_complete:
+                entry["status"] = "would_submit"
+            else:
+                entry["status"] = "would_submit_partial"
+                report["totals"]["partialLabels"] += 1
             report["races"].append(entry)
             continue
 
@@ -829,7 +866,11 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             submit_ok = bool(submit.get("success")) and updated > 0
 
         if submit_ok:
-            entry["status"] = "submitted" if updated > 0 else "already_labeled"
+            if labels_complete:
+                entry["status"] = "submitted" if updated > 0 else "already_labeled"
+            else:
+                entry["status"] = "partial_label"
+                report["totals"]["partialLabels"] += 1
             report["totals"]["submitted"] += 1
             if updated == 0:
                 report["totals"]["idempotent"] += 1
@@ -853,7 +894,11 @@ def results_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
         report["attempt"] = attempt
         last_report = report
         totals = report.get("totals", {}) or {}
-        unresolved = int(totals.get("pending", 0) or 0) + int(totals.get("failed", 0) or 0)
+        unresolved = (
+            int(totals.get("pending", 0) or 0)
+            + int(totals.get("failed", 0) or 0)
+            + int(totals.get("partialLabels", 0) or 0)
+        )
         if dry_run or unresolved == 0 or attempt >= max_attempts:
             return report
         time.sleep(interval)
@@ -1080,6 +1125,7 @@ def build_summary(
                         ["Checked", totals.get("checked", 0)],
                         ["Found", totals.get("found", 0)],
                         ["Submitted", totals.get("submitted", 0)],
+                        ["Partial labels", totals.get("partialLabels", 0)],
                         ["Pending", totals.get("pending", 0)],
                         ["Failed", totals.get("failed", 0)],
                     ],
@@ -1288,6 +1334,7 @@ def main() -> int:
         int(totals.get("checked", 0) or 0) == 0
         or int(totals.get("pending", 0) or 0) > 0
         or int(totals.get("failed", 0) or 0) > 0
+        or int(totals.get("partialLabels", 0) or 0) > 0
     ):
         return 1
     if (
