@@ -67,11 +67,15 @@ def _fold_text(value: Any) -> str:
 
 def _surface_key(value: Any) -> str:
     folded = _fold_text(value)
-    if "SENTETIK" in folded or folded in {"S", "S:"}:
+    # TJK history rows commonly encode surface + condition as `K:Normal`,
+    # `Ç:Normal` or `S:Normal`; daily programs use the long surface names.
+    # Treat only the leading code (with its colon) as authoritative so a
+    # condition word cannot accidentally determine the surface.
+    if "SENTETIK" in folded or folded in {"S", "S:"} or folded.startswith("S:"):
         return "sentetik"
-    if "KUM" in folded or folded in {"K", "K:"}:
+    if "KUM" in folded or folded in {"K", "K:"} or folded.startswith("K:"):
         return "kum"
-    if "CIM" in folded or folded in {"C", "C:"}:
+    if "CIM" in folded or folded in {"C", "C:"} or folded.startswith("C:"):
         return "cim"
     return ""
 

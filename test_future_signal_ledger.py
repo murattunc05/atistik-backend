@@ -57,6 +57,22 @@ class FutureSignalLedgerTest(unittest.TestCase):
         self.assertTrue(result["source"]["legacyDistancePoolWouldMixSurfaces"])
         self.assertIn("LEGACY_DISTANCE_POOL_MIXES_SURFACES", result["reasonCodes"])
 
+    def test_accepts_tjk_surface_condition_codes(self):
+        cases = (("K:Normal", "Kum"), ("Ç:Normal", "Çim"), ("S:Normal", "Sentetik"))
+        for history_track, target_track in cases:
+            with self.subTest(history_track=history_track):
+                result = build_horse_signal_telemetry(
+                    [
+                        race("10.08.2026", 1600, history_track, 96.0),
+                        race("01.08.2026", 1600, history_track, 97.0),
+                    ],
+                    target_distance=1600,
+                    target_track=target_track,
+                )
+
+                self.assertEqual(result["source"]["comparableTimedRaceCount"], 2)
+                self.assertTrue(result["flags"]["hasComparableTimedRaces"])
+
     def test_recent_vs_baseline_and_trend_are_pre_race_raw_telemetry(self):
         result = build_horse_signal_telemetry(
             [
