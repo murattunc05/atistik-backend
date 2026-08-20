@@ -3,7 +3,9 @@ services:
     name: atistik-api
     runtime: python
     buildCommand: apt-get update && apt-get install -y libgomp1 && pip install -r requirements.txt
-    startCommand: gunicorn api_server:app --bind 0.0.0.0:$PORT --timeout 240
+    # Restore/write locks and readiness state are process-local. Keep a single
+    # worker so two startup restores cannot race on the shared JSONL file.
+    startCommand: gunicorn api_server:app --bind 0.0.0.0:$PORT --timeout 240 --workers 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
