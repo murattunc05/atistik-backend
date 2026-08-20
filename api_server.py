@@ -1043,14 +1043,33 @@ def github_backup(force=False):
     _threading.Thread(target=_do_backup, daemon=True).start()
 
 
-# Render'da büyük GitHub dosyası uygulama importunu/health'i bloklamasın.
-# Kalıcı Pi volume'unda geçerli veri varsa restore zaten gereksizdir.
-if (
-    _GITHUB_TOKEN
-    and _GITHUB_ML_REPO
-    and _prediction_file_stats()['valid_json_lines'] == 0
-):
-    schedule_github_restore(force=False)
+# Gunicorn on Render preloads the application in its master process. Threads
+# started during module import do not survive the worker fork, while their
+# in-memory ``running`` state does. Defer startup restore scheduling until the
+# first worker request so the background thread and its status share an owner.
+_startup_restore_init_lock = _threading.Lock()
+_startup_restore_initialized = False
+
+
+def _ensure_startup_restore_scheduled():
+    global _startup_restore_initialized
+    if _startup_restore_initialized:
+        return
+    with _startup_restore_init_lock:
+        if _startup_restore_initialized:
+            return
+        if (
+            _GITHUB_TOKEN
+            and _GITHUB_ML_REPO
+            and _prediction_file_stats()['valid_json_lines'] == 0
+        ):
+            schedule_github_restore(force=False)
+        _startup_restore_initialized = True
+
+
+@app.before_request
+def _initialize_prediction_store_in_worker():
+    _ensure_startup_restore_scheduled()
 
 
 @app.route('/api/ml-restore', methods=['POST'])

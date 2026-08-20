@@ -11,6 +11,26 @@ import api_server as api
 
 
 class MlRestoreAsyncTests(unittest.TestCase):
+    def test_startup_restore_is_scheduled_once_from_worker_request(self):
+        empty = {
+            "exists": False,
+            "bytes": 0,
+            "bytes_read": 0,
+            "lines": 0,
+            "valid_json_lines": 0,
+            "prediction_lines": 0,
+            "labeled_lines": 0,
+        }
+        with patch.object(api, "_startup_restore_initialized", False), patch.object(
+            api, "_GITHUB_TOKEN", "configured"
+        ), patch.object(api, "_GITHUB_ML_REPO", "owner/repo"), patch.object(
+            api, "_prediction_file_stats", return_value=empty
+        ), patch.object(api, "schedule_github_restore") as schedule:
+            api._ensure_startup_restore_scheduled()
+            api._ensure_startup_restore_scheduled()
+
+        schedule.assert_called_once_with(force=False)
+
     def test_default_restore_credential_is_only_a_sha256_digest(self):
         self.assertRegex(api._RESTORE_TOKEN_SHA256_DEFAULT, r"^[0-9a-f]{64}$")
 
