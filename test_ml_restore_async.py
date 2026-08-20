@@ -287,21 +287,33 @@ class MlRestoreAsyncTests(unittest.TestCase):
                 self.closed = True
 
         response = StreamingResponse()
+        original_job = api._restore_job_snapshot()
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "predictions.jsonl"
-            with patch.object(api, "_PREDICTIONS_PATH", str(target)), patch.object(
-                api.requests, "get", return_value=response
-            ) as get:
-                result = api._stream_github_predictions(
-                    {"download_url": None},
-                    minimum_stats={"valid_json_lines": 0, "labeled_lines": 0},
-                )
+            try:
+                with api._gh_restore_job_lock:
+                    api._gh_restore_job.update({"status": "running", "restored": False})
+                with patch.object(api, "_PREDICTIONS_PATH", str(target)), patch.object(
+                    api.requests, "get", return_value=response
+                ) as get:
+                    result = api._stream_github_predictions(
+                        {"download_url": None},
+                        minimum_stats={"valid_json_lines": 0, "labeled_lines": 0},
+                    )
+            finally:
+                completed_job = api._restore_job_snapshot()
+                with api._gh_restore_job_lock:
+                    api._gh_restore_job.clear()
+                    api._gh_restore_job.update(original_job)
 
             self.assertEqual(result["valid_json_lines"], 2)
             self.assertEqual(result["labeled_lines"], 2)
             self.assertTrue(response.closed)
             self.assertTrue(get.call_args.kwargs["stream"])
             self.assertEqual(get.call_args.kwargs["timeout"], (10, 180))
+            self.assertEqual(completed_job["status"], "completed")
+            self.assertTrue(completed_job["restored"])
+            self.assertEqual(completed_job["after"]["valid_json_lines"], 2)
 
 
 if __name__ == "__main__":

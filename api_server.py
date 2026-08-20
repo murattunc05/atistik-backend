@@ -795,6 +795,19 @@ def _replace_predictions_from_text(content, minimum_stats=None):
             pass
 
 
+def _mark_running_restore_installed(stats):
+    """Publish success at the atomic install boundary, before response cleanup."""
+    with _gh_restore_job_lock:
+        if _gh_restore_job.get('status') != 'running':
+            return
+        _gh_restore_job.update({
+            'status': 'completed',
+            'finished_at': datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
+            'restored': True,
+            'after': dict(stats),
+        })
+
+
 def _stream_github_predictions(data, minimum_stats=None):
     """Stream the private GitHub JSONL blob to disk without a full RAM copy."""
     global _gh_last_read_method
@@ -840,6 +853,7 @@ def _stream_github_predictions(data, minimum_stats=None):
             )
             if installed is not None:
                 _gh_last_read_method = method
+                _mark_running_restore_installed(installed)
                 return installed
         except Exception as exc:
             print(f"[GH-BACKUP] {method} exception: {exc}")
@@ -924,7 +938,10 @@ def _run_github_restore_job(force):
     except Exception as exc:
         print(f"[GH-BACKUP] Async restore exception: {exc}")
         status = 'failed'
-    after = _prediction_file_stats()
+    installed_snapshot = _restore_job_snapshot()
+    after = installed_snapshot.get('after') if restored else None
+    if not isinstance(after, dict):
+        after = _prediction_file_stats()
     with _gh_restore_job_lock:
         _gh_restore_job.update({
             'status': status,
