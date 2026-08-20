@@ -29,6 +29,30 @@ def _same_finish_position(left: Any, right: Any) -> bool:
         return str(left).strip() == str(right).strip()
 
 
+def _positive_finish_position(value: Any) -> bool:
+    """Accept only real, positive result labels from a submission."""
+    if isinstance(value, bool):
+        return False
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(numeric) and numeric > 0 and numeric.is_integer()
+
+
+def _missing_finish_position(value: Any) -> bool:
+    """Treat legacy zero/negative sentinels as unlabeled, like ``None``."""
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value is False
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(numeric) and numeric <= 0
+
+
 def _winner_flag(position: Any) -> int:
     try:
         return 1 if int(position) == 1 else 0
@@ -100,7 +124,7 @@ def reconcile_result_submission(
         if not isinstance(item, dict):
             continue
         name_key = clean_result_name(item.get("horse_name", ""))
-        if name_key and item.get("finish_pos") is not None:
+        if name_key and _positive_finish_position(item.get("finish_pos")):
             incoming[name_key] = {
                 "finish_pos": item.get("finish_pos"),
                 "metadata": {
@@ -169,7 +193,7 @@ def reconcile_result_submission(
         incoming_position = incoming[name_key]["finish_pos"]
         incoming_metadata = incoming[name_key]["metadata"]
         existing_position = entry.get("finish_pos")
-        if existing_position is None:
+        if _missing_finish_position(existing_position):
             staged.append((index, incoming_position, incoming_metadata))
         elif _same_finish_position(existing_position, incoming_position):
             metadata_conflicts = []

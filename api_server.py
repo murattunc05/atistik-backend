@@ -15,11 +15,61 @@ import hashlib
 import math
 import random
 import statistics
-from datetime import datetime
+import threading
+from functools import wraps
+from datetime import datetime, timezone
 from automation.future_signal_ledger import build_race_signal_ledger
 
 app = Flask(__name__)
 CORS(app)  # Flutter'dan gelen isteklere izin ver
+
+# predictions.jsonl read-modify-write operations must never overlap a restore.
+_prediction_mutation_lock = threading.RLock()
+
+
+def _prediction_restore_running():
+    job = globals().get('_gh_restore_job') or {}
+    return job.get('status') == 'running'
+
+
+def _prediction_writes_blocked():
+    if _prediction_restore_running():
+        return True
+    configured = bool(
+        globals().get('_GITHUB_TOKEN') and globals().get('_GITHUB_ML_REPO')
+    )
+    stats_fn = globals().get('_prediction_file_stats')
+    if configured and callable(stats_fn):
+        stats = stats_fn()
+        return not (
+            not stats.get('error')
+            and stats.get('bytes_read') == stats.get('bytes')
+            and stats.get('valid_json_lines', 0) > 0
+            and stats.get('lines') == stats.get('valid_json_lines')
+            and stats.get('prediction_lines') == stats.get('valid_json_lines')
+        )
+    return False
+
+
+def _prediction_mutation_guard(func):
+    """Serialize prediction writers and fail fast while a restore is active."""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        if _prediction_writes_blocked():
+            return jsonify({
+                'success': False,
+                'error': 'Tahmin verisi geri yukleniyor; islem daha sonra tekrar denenmeli.',
+                'code': 'prediction_restore_in_progress',
+            }), 503
+        with _prediction_mutation_lock:
+            if _prediction_writes_blocked():
+                return jsonify({
+                    'success': False,
+                    'error': 'Tahmin verisi geri yukleniyor; islem daha sonra tekrar denenmeli.',
+                    'code': 'prediction_restore_in_progress',
+                }), 503
+            return func(*args, **kwargs)
+    return wrapped
 
 # ══════════════════════════════════════════════════════════════════
 # FAZ 8: ML MODEL YÜKLEME (XGBoost Blend)
@@ -206,6 +256,14 @@ load_maiden_shadow_model()
 def ml_status():
     """ML model yükleme durumunu döner (teşhis endpoint'i)."""
     prediction_stats = _prediction_file_stats() if '_prediction_file_stats' in globals() else {}
+    prediction_data_ready = bool(
+        not prediction_stats.get('error')
+        and prediction_stats.get('bytes_read') == prediction_stats.get('bytes')
+        and prediction_stats.get('valid_json_lines', 0) > 0
+        and prediction_stats.get('lines') == prediction_stats.get('valid_json_lines')
+        and prediction_stats.get('prediction_lines') == prediction_stats.get('valid_json_lines')
+        and not _prediction_writes_blocked()
+    )
     return jsonify({
         'model_loaded': _ml_shadow_model is not None,
         'feature_count': len(_ml_shadow_feature_cols),
@@ -213,6 +271,7 @@ def ml_status():
         'mode': _ML_SHADOW_MODE if _ml_shadow_model else 'unavailable',
         'model_version': _ml_shadow_metadata.get('model_version'),
         'ranking_version': f'v{globals().get("_V4_VERSION", "unknown")}',
+        'data_ready': prediction_data_ready,
         'confidence_diagnostics': {
             'schema_version': globals().get('_V4_CONFIDENCE_SCHEMA'),
             'ranking_impact': False,
@@ -263,6 +322,7 @@ def ml_status():
 # ══════════════════════════════════════════════════════════════════
 
 @app.route('/api/auto-label', methods=['GET'])
+@_prediction_mutation_guard
 def auto_label():
     """
     Geçmiş tarihli, etiketlenmemiş tahminler için TJK'dan
@@ -506,6 +566,9 @@ import os as _os
 import json as _json
 import base64 as _b64
 import threading as _threading
+import tempfile as _tempfile
+import stat as _stat
+import hmac as _hmac
 
 _GITHUB_TOKEN    = _os.environ.get('GITHUB_TOKEN', '')
 _GITHUB_ML_REPO  = _os.environ.get('GITHUB_ML_REPO', '')   # "kullanici/repo-adi"
@@ -524,6 +587,16 @@ _gh_lock = _threading.Lock()
 # Son backup SHA'sı — güncelleme için gerekli
 _gh_file_sha = None
 _gh_last_read_method = None
+_gh_restore_job_lock = _threading.Lock()
+_gh_restore_job = {
+    'status': 'idle',
+    'started_at': None,
+    'finished_at': None,
+    'force': False,
+    'restored': False,
+    'before': None,
+    'after': None,
+}
 
 
 def _prediction_file_stats(path=None):
@@ -532,30 +605,63 @@ def _prediction_file_stats(path=None):
     stats = {
         'exists': _os.path.exists(target),
         'bytes': 0,
+        'bytes_read': 0,
         'lines': 0,
         'valid_json_lines': 0,
+        'prediction_lines': 0,
         'labeled_lines': 0,
     }
     if not stats['exists']:
         return stats
 
     stats['bytes'] = _os.path.getsize(target)
+    digest = hashlib.sha256()
     try:
-        with open(target, 'r', encoding='utf-8') as f:
-            for line in f:
+        with open(target, 'rb') as f:
+            for raw_line in f:
+                stats['bytes_read'] += len(raw_line)
+                digest.update(raw_line)
+                line = raw_line.decode('utf-8')
                 if not line.strip():
                     continue
                 stats['lines'] += 1
                 try:
                     entry = _json.loads(line)
                     stats['valid_json_lines'] += 1
-                    if isinstance(entry, dict) and entry.get('finish_pos') is not None:
-                        stats['labeled_lines'] += 1
+                    if isinstance(entry, dict):
+                        if (
+                            str(entry.get('race_id') or '').strip()
+                            and str(entry.get('horse_name') or '').strip()
+                            and isinstance(entry.get('rank_pred'), int)
+                            and not isinstance(entry.get('rank_pred'), bool)
+                            and entry.get('rank_pred') > 0
+                        ):
+                            stats['prediction_lines'] += 1
+                        if entry.get('finish_pos') is not None:
+                            stats['labeled_lines'] += 1
                 except Exception:
                     pass
     except Exception as exc:
         stats['error'] = str(exc)
+    if 'error' not in stats and stats['bytes_read'] == stats['bytes']:
+        stats['sha256'] = digest.hexdigest()
     return stats
+
+
+def _restore_request_authorized():
+    """Authenticate remote restore triggers without placing secrets in URLs."""
+    expected = _os.environ.get('ATISTIK_RESTORE_TOKEN', '').strip()
+    if not expected and _GITHUB_TOKEN.strip():
+        # Domain-separated credential: the GitHub PAT itself is never sent.
+        expected = _hmac.new(
+            _GITHUB_TOKEN.strip().encode('utf-8'),
+            b'atistik-restore-v1',
+            hashlib.sha256,
+        ).hexdigest()
+    if not expected:
+        return True
+    provided = request.headers.get('X-Atistik-Restore-Token', '')
+    return bool(provided) and _hmac.compare_digest(provided, expected)
 
 
 def _gh_headers():
@@ -614,6 +720,144 @@ def _github_file_text(data):
     return ''
 
 
+def _install_prediction_temp(temp_path, minimum_stats=None, expected_bytes=None):
+    """Validate and atomically install a same-filesystem JSONL temp file."""
+    minimum_stats = minimum_stats or {}
+    try:
+        stats = _prediction_file_stats(temp_path)
+        if (
+            stats.get('error')
+            or stats.get('bytes_read') != stats.get('bytes')
+            or stats['valid_json_lines'] <= 0
+            or stats['valid_json_lines'] != stats['lines']
+            or stats['prediction_lines'] != stats['valid_json_lines']
+        ):
+            print(
+                '[GH-BACKUP] Restore payload reddedildi: '
+                f"lines={stats['lines']}, valid={stats['valid_json_lines']}, "
+                f"predictions={stats['prediction_lines']}"
+            )
+            return None
+        if expected_bytes is not None and stats['bytes'] != int(expected_bytes):
+            print(
+                '[GH-BACKUP] Restore byte boyutu uyusmuyor: '
+                f"incoming={stats['bytes']}, expected={expected_bytes}"
+            )
+            return None
+        if (
+            stats['valid_json_lines'] < int(minimum_stats.get('valid_json_lines', 0) or 0)
+            or stats['labeled_lines'] < int(minimum_stats.get('labeled_lines', 0) or 0)
+        ):
+            print(
+                '[GH-BACKUP] Restore gerilemesi reddedildi: '
+                f"incoming={stats['valid_json_lines']}/{stats['labeled_lines']}, "
+                f"current={minimum_stats.get('valid_json_lines', 0)}/"
+                f"{minimum_stats.get('labeled_lines', 0)}"
+            )
+            return None
+        target_mode = 0o644
+        if _os.path.exists(_PREDICTIONS_PATH):
+            target_mode = _stat.S_IMODE(_os.stat(_PREDICTIONS_PATH).st_mode)
+        _os.chmod(temp_path, target_mode)
+        _os.replace(temp_path, _PREDICTIONS_PATH)
+        return stats
+    finally:
+        try:
+            if _os.path.exists(temp_path):
+                _os.remove(temp_path)
+        except OSError:
+            pass
+
+
+def _replace_predictions_from_text(content, minimum_stats=None):
+    """Atomically install a small in-memory restore payload (test/fallback path)."""
+    target_dir = _os.path.dirname(_PREDICTIONS_PATH) or '.'
+    temp_path = None
+    try:
+        with _tempfile.NamedTemporaryFile(
+            mode='w',
+            encoding='utf-8',
+            dir=target_dir,
+            prefix='.predictions-restore-',
+            suffix='.tmp',
+            delete=False,
+        ) as handle:
+            temp_path = handle.name
+            handle.write(content)
+            handle.flush()
+            _os.fsync(handle.fileno())
+        return _install_prediction_temp(temp_path, minimum_stats=minimum_stats)
+    finally:
+        try:
+            if temp_path and _os.path.exists(temp_path):
+                _os.remove(temp_path)
+        except OSError:
+            pass
+
+
+def _stream_github_predictions(data, minimum_stats=None):
+    """Stream the private GitHub JSONL blob to disk without a full RAM copy."""
+    global _gh_last_read_method
+    raw_url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
+    raw_headers = _gh_headers()
+    raw_headers['Accept'] = 'application/vnd.github.raw+json'
+    sources = [('contents_raw_stream', raw_url, raw_headers)]
+    download_url = data.get('download_url')
+    if download_url:
+        sources.append(('download_url_stream', download_url, _gh_headers()))
+
+    target_dir = _os.path.dirname(_PREDICTIONS_PATH) or '.'
+    for method, url, headers in sources:
+        temp_path = None
+        response = None
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=(10, 180),
+                stream=True,
+            )
+            if response.status_code != 200:
+                print(f"[GH-BACKUP] {method} okunamadı: HTTP {response.status_code}")
+                continue
+            with _tempfile.NamedTemporaryFile(
+                mode='wb',
+                dir=target_dir,
+                prefix='.predictions-restore-',
+                suffix='.tmp',
+                delete=False,
+            ) as handle:
+                temp_path = handle.name
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        handle.write(chunk)
+                handle.flush()
+                _os.fsync(handle.fileno())
+            installed = _install_prediction_temp(
+                temp_path,
+                minimum_stats=minimum_stats,
+                expected_bytes=data.get('size'),
+            )
+            if installed is not None:
+                _gh_last_read_method = method
+                return installed
+        except Exception as exc:
+            print(f"[GH-BACKUP] {method} exception: {exc}")
+        finally:
+            try:
+                if response is not None:
+                    response.close()
+            except Exception:
+                pass
+            try:
+                if temp_path and _os.path.exists(temp_path):
+                    _os.remove(temp_path)
+            except OSError:
+                pass
+    _gh_last_read_method = 'stream_failed'
+    return None
+
+
 def github_restore(force=False):
     """
     Sunucu başlangıcında predictions.jsonl'ı GitHub'dan indirir.
@@ -644,13 +888,13 @@ def github_restore(force=False):
 
         if r.status_code == 200:
             data = r.json()
-            content = _github_file_text(data)
             _gh_file_sha = data.get('sha')
-
-            with open(_PREDICTIONS_PATH, 'w', encoding='utf-8') as f:
-                f.write(content)
-
-            restored_stats = _prediction_file_stats()
+            restored_stats = _stream_github_predictions(
+                data,
+                minimum_stats=local_stats,
+            )
+            if restored_stats is None:
+                return False
             print(f"[GH-BACKUP] ✅ Restore başarılı: {restored_stats['valid_json_lines']} kayıt GitHub'dan indirildi (method={_gh_last_read_method}).")
             return True
         elif r.status_code == 404:
@@ -661,6 +905,58 @@ def github_restore(force=False):
     except Exception as e:
         print(f"[GH-BACKUP] Restore exception: {e}")
     return False
+
+
+def _restore_job_snapshot():
+    with _gh_restore_job_lock:
+        return _json.loads(_json.dumps(_gh_restore_job))
+
+
+def _run_github_restore_job(force):
+    global _gh_restore_job
+    restored = False
+    try:
+        # Serialize a restore with the existing asynchronous backup writer.
+        with _gh_lock:
+            with _prediction_mutation_lock:
+                restored = bool(github_restore(force=force))
+        status = 'completed' if restored else 'failed'
+    except Exception as exc:
+        print(f"[GH-BACKUP] Async restore exception: {exc}")
+        status = 'failed'
+    after = _prediction_file_stats()
+    with _gh_restore_job_lock:
+        _gh_restore_job.update({
+            'status': status,
+            'finished_at': datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
+            'restored': restored,
+            'after': after,
+        })
+
+
+def schedule_github_restore(force=False):
+    """Start at most one background restore in this worker."""
+    global _gh_restore_job
+    with _gh_restore_job_lock:
+        if _gh_restore_job.get('status') == 'running':
+            return False, _json.loads(_json.dumps(_gh_restore_job))
+        _gh_restore_job = {
+            'status': 'running',
+            'started_at': datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
+            'finished_at': None,
+            'force': bool(force),
+            'restored': False,
+            'before': _prediction_file_stats(),
+            'after': None,
+        }
+        snapshot = _json.loads(_json.dumps(_gh_restore_job))
+    _threading.Thread(
+        target=_run_github_restore_job,
+        args=(bool(force),),
+        daemon=True,
+        name='atistik-github-restore',
+    ).start()
+    return True, snapshot
 
 
 def github_backup(force=False):
@@ -679,13 +975,14 @@ def github_backup(force=False):
         global _gh_file_sha
         with _gh_lock:
             try:
-                if not _os.path.exists(_PREDICTIONS_PATH):
-                    return
+                with _prediction_mutation_lock:
+                    if not _os.path.exists(_PREDICTIONS_PATH):
+                        return
 
-                with open(_PREDICTIONS_PATH, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                    with open(_PREDICTIONS_PATH, 'r', encoding='utf-8') as f:
+                        content = f.read()
 
-                local_stats = _prediction_file_stats()
+                    local_stats = _prediction_file_stats()
                 if not force and local_stats['valid_json_lines'] == 0:
                     print("[GH-BACKUP] Boş predictions.jsonl yedeklenmedi.")
                     return
@@ -725,18 +1022,40 @@ def github_backup(force=False):
     _threading.Thread(target=_do_backup, daemon=True).start()
 
 
-# Sunucu başlarken otomatik restore
-github_restore()
+# Render'da büyük GitHub dosyası uygulama importunu/health'i bloklamasın.
+# Kalıcı Pi volume'unda geçerli veri varsa restore zaten gereksizdir.
+if (
+    _GITHUB_TOKEN
+    and _GITHUB_ML_REPO
+    and _prediction_file_stats()['valid_json_lines'] == 0
+):
+    schedule_github_restore(force=False)
 
 
 @app.route('/api/ml-restore', methods=['POST'])
 def ml_restore():
     """GitHub yedeğinden predictions.jsonl dosyasını manuel geri yükler."""
     try:
+        if not _restore_request_authorized():
+            return jsonify({'success': False, 'error': 'Yetkisiz erisim'}), 403
         payload = request.get_json(silent=True) or {}
         force = str(request.args.get('force', payload.get('force', ''))).lower() in {'1', 'true', 'yes'}
+        async_requested = str(
+            request.args.get('async', payload.get('async', ''))
+        ).lower() in {'1', 'true', 'yes'}
+        if async_requested:
+            started, job = schedule_github_restore(force=force)
+            return jsonify({
+                'success': True,
+                'async': True,
+                'accepted': started,
+                'github_backup_configured': bool(_GITHUB_TOKEN and _GITHUB_ML_REPO),
+                'job': job,
+            }), 202 if started else 200
         before = _prediction_file_stats()
-        restored = github_restore(force=force)
+        with _gh_lock:
+            with _prediction_mutation_lock:
+                restored = github_restore(force=force)
         after = _prediction_file_stats()
         return jsonify({
             'success': True,
@@ -748,6 +1067,17 @@ def ml_restore():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/ml-restore-status', methods=['GET'])
+def ml_restore_status():
+    """Return the current background restore state without downloading backup data."""
+    return jsonify({
+        'success': True,
+        'github_backup_configured': bool(_GITHUB_TOKEN and _GITHUB_ML_REPO),
+        'job': _restore_job_snapshot(),
+        'local': _prediction_file_stats(),
+    })
 
 
 @app.route('/api/ml-backup-status', methods=['GET'])
@@ -766,29 +1096,20 @@ def ml_backup_status():
 
     try:
         url = f'{_GITHUB_API_BASE}/repos/{_GITHUB_ML_REPO}/contents/{_GITHUB_FILE}'
-        r = requests.get(url, headers=_gh_headers(), timeout=15)
+        r = requests.get(url, headers=_gh_headers(), timeout=8)
         remote = {
             'http_status': r.status_code,
             'exists': r.status_code == 200,
         }
         if r.status_code == 200:
             data = r.json()
-            content = _github_file_text(data)
             remote.update({
                 'size': data.get('size', 0),
                 'sha': data.get('sha', ''),
-                'read_method': _gh_last_read_method,
-                'line_count': len([line for line in content.splitlines() if line.strip()]),
-                'valid_json_lines': 0,
+                'read_method': 'metadata_only',
+                'line_count': None,
+                'valid_json_lines': None,
             })
-            for line in content.splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    _json.loads(line)
-                    remote['valid_json_lines'] += 1
-                except Exception:
-                    pass
         else:
             remote['error'] = r.text[:200]
         result['remote'] = remote
@@ -8992,6 +9313,7 @@ def generate_insight(name, metrics, ai_score):
 
 
 @app.route('/api/analyze-race', methods=['POST'])
+@_prediction_mutation_guard
 def analyze_race():
     """🧠 Gelişmiş Yarış Analizi ve Tahmin Modülü"""
     try:
@@ -10449,6 +10771,7 @@ def analyze_race():
 # ══════════════════════════════════════════════════════════════════
 
 @app.route('/api/submit-results', methods=['POST'])
+@_prediction_mutation_guard
 def submit_results():
     """
     Kullanıcı gerçek yarış sonuçlarını girinceye kadar predictions.jsonl'daki
@@ -10558,6 +10881,7 @@ def submit_results():
 # ══════════════════════════════════════════════════════════════════
 
 @app.route('/api/ml-cleanup', methods=['POST'])
+@_prediction_mutation_guard
 def ml_cleanup():
     """
     predictions.jsonl içindeki duplike satırları temizler.

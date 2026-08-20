@@ -18,6 +18,8 @@ from typing import Any
 
 
 DEFAULT_RENDER_BACKEND = "https://atistik-backend.onrender.com"
+RESOLVED_CITY_STATUSES = {"ok", "no_races"}
+RESOLVED_RACE_STATUSES = {"analyzed"}
 
 
 def parse_date(value: str | None) -> date:
@@ -59,23 +61,89 @@ def analysis_ok(data: dict[str, Any] | None) -> bool:
     if not data:
         return False
     totals = data.get("totals") or {}
-    return (
-        str(data.get("mode")) == "analyze"
-        and int(totals.get("analyzed", 0) or 0) > 0
-        and int(totals.get("failed", 0) or 0) == 0
-    )
+    if str(data.get("mode")) != "analyze":
+        return False
+    if data.get("status") != "completed":
+        return False
+    for field in ("failed", "failedCities", "unresolvedRaces", "unresolved"):
+        try:
+            if int(totals.get(field, 0) or 0) > 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+
+    cities = data.get("cities") or []
+    if not cities:
+        return False
+    requested = [str(city).strip().casefold() for city in (data.get("citiesRequested") or []) if str(city).strip()]
+    reported = [str(city.get("city") or "").strip().casefold() for city in cities if str(city.get("city") or "").strip()]
+    if not requested or sorted(requested) != sorted(reported):
+        return False
+    derived_races = 0
+    derived_analyzed = 0
+    for city in cities:
+        city_status = str(city.get("status") or "").strip()
+        races = city.get("races") or []
+        if city_status not in RESOLVED_CITY_STATUSES:
+            return False
+        if city_status == "no_races" and races:
+            return False
+        if city_status == "ok" and not races:
+            return False
+        if any(str(race.get("status") or "").strip() not in RESOLVED_RACE_STATUSES for race in races):
+            return False
+        derived_races += len(races)
+        derived_analyzed += len(races)
+
+    for field, derived in (
+        ("cities", len(cities)),
+        ("racesFound", derived_races),
+        ("analyzed", derived_analyzed),
+    ):
+        if field in totals:
+            try:
+                if int(totals.get(field, 0) or 0) != derived:
+                    return False
+            except (TypeError, ValueError):
+                return False
+
+    analyzed = int(totals.get("analyzed", 0) or 0)
+    if analyzed > 0:
+        return True
+
+    return all(str(city.get("status") or "").strip() == "no_races" for city in cities)
 
 
-def results_ok(data: dict[str, Any] | None) -> bool:
+def results_ok(
+    data: dict[str, Any] | None,
+    analysis: dict[str, Any] | None = None,
+    *,
+    require_analysis: bool = False,
+) -> bool:
     if not data:
+        return False
+    if require_analysis and not analysis_ok(analysis):
         return False
     totals = data.get("totals") or {}
     checked = int(totals.get("checked", 0) or 0)
     submitted = int(totals.get("submitted", 0) or 0)
+    no_races = (
+        data.get("reason") == "analysis_manifest_no_races"
+        and checked == 0
+        and submitted == 0
+        and analysis is not None
+        and analysis_ok(analysis)
+        and all(
+            str(city.get("status") or "").strip() == "no_races"
+            for city in (analysis.get("cities") or [])
+        )
+    )
     return (
         str(data.get("mode")) == "results"
         and str(data.get("status")) == "completed"
-        and checked > 0
+        and data.get("reason") != "analysis_manifest_incomplete"
+        and data.get("analysisManifestComplete") is not False
+        and (checked > 0 or no_races)
         and submitted == checked
         and int(totals.get("partialLabels", 0) or 0) == 0
         and int(totals.get("pending", 0) or 0) == 0
@@ -90,8 +158,14 @@ def report_diagnosis(kind: str, path: Path, data: dict[str, Any] | None) -> dict
         return {"ok": False, "reason": "report_unreadable", "path": str(path)}
 
     totals = data.get("totals") or {}
-    ok = analysis_ok(data) if kind == "analyze" else results_ok(data)
-    return {
+    analysis_path = path.with_name("analysis.json") if kind == "results" else path
+    source_analysis = read_json(analysis_path) if kind == "results" else data
+    ok = (
+        analysis_ok(data)
+        if kind == "analyze"
+        else results_ok(data, source_analysis, require_analysis=True)
+    )
+    diagnosis = {
         "ok": ok,
         "reason": "successful_primary_report" if ok else "primary_report_not_successful",
         "path": str(path),
@@ -101,6 +175,15 @@ def report_diagnosis(kind: str, path: Path, data: dict[str, Any] | None) -> dict
         "startedAt": data.get("startedAt"),
         "finishedAt": data.get("finishedAt"),
     }
+    if kind == "results":
+        diagnosis["analysisManifest"] = {
+            "path": str(analysis_path),
+            "present": analysis_path.exists(),
+            "complete": analysis_ok(source_analysis),
+            "status": source_analysis.get("status") if source_analysis else None,
+            "totals": (source_analysis.get("totals") or {}) if source_analysis else {},
+        }
+    return diagnosis
 
 
 def preserve_primary_report(out_dir: Path, kind: str, data: dict[str, Any] | None) -> str | None:

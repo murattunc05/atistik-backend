@@ -87,6 +87,8 @@ KNOWN_DOMESTIC_CITIES = {
     ]
 }
 
+RESOLVED_CITY_STATUSES = {"ok", "no_races"}
+
 
 def clean_name(value: str) -> str:
     value = str(value or "").split("\n")[0].strip().upper()
@@ -449,12 +451,38 @@ def analyze_race(
 
 def refresh_analysis_totals(report: dict[str, Any]) -> None:
     totals = report["totals"]
+    totals["cities"] = 0
+    totals["successfulCities"] = 0
+    totals["noRaceCities"] = 0
+    totals["failedCities"] = 0
+    totals["racesFound"] = 0
     totals["ready"] = 0
     totals["analyzed"] = 0
+    totals["skippedRaces"] = 0
     totals["skipped"] = 0
     totals["failed"] = 0
+    unresolved_cities = []
     for city in report.get("cities", []) or []:
-        for race in city.get("races", []) or []:
+        totals["cities"] += 1
+        city_status = str(city.get("status") or "").strip()
+        if city_status in RESOLVED_CITY_STATUSES:
+            totals["successfulCities"] += 1
+            if city_status == "no_races":
+                totals["noRaceCities"] += 1
+        else:
+            totals["failedCities"] += 1
+            unresolved_cities.append(
+                {
+                    "city": city.get("city"),
+                    "cityId": city.get("cityId"),
+                    "status": city_status or "missing_status",
+                    "error": city.get("error"),
+                }
+            )
+
+        races = city.get("races", []) or []
+        totals["racesFound"] += len(races)
+        for race in races:
             status = race.get("status")
             if status == "ready":
                 totals["ready"] += 1
@@ -463,17 +491,108 @@ def refresh_analysis_totals(report: dict[str, Any]) -> None:
             elif status == "failed":
                 totals["failed"] += 1
             else:
-                totals["skipped"] += 1
+                totals["skippedRaces"] += 1
+
+    # Keep the legacy aggregate for existing report consumers while exposing
+    # whether a skip was a legitimate city with no races or an unresolved race.
+    totals["skipped"] = totals["noRaceCities"] + totals["skippedRaces"]
+    totals["unresolvedRaces"] = totals["failed"] + totals["skippedRaces"]
+    totals["unresolved"] = totals["failedCities"] + totals["unresolvedRaces"]
+    report["unresolvedCities"] = unresolved_cities
 
 
 def set_analysis_status(report: dict[str, Any]) -> None:
     totals = report["totals"]
-    if totals["failed"] and totals["analyzed"]:
+    unresolved = int(totals.get("unresolved", 0) or 0)
+    resolved = (
+        int(totals.get("analyzed", 0) or 0)
+        + int(totals.get("ready", 0) or 0)
+        + int(totals.get("noRaceCities", 0) or 0)
+    )
+    if unresolved and resolved:
         report["status"] = "partial_success"
-    elif totals["failed"]:
+    elif unresolved:
         report["status"] = "failed"
     else:
         report["status"] = "completed"
+
+
+def analysis_has_unresolved(report: dict[str, Any]) -> bool:
+    """Fail closed for city/race outcomes, including legacy reports."""
+
+    totals = report.get("totals") or {}
+    for field in ("failedCities", "unresolvedRaces", "unresolved", "failed"):
+        try:
+            if int(totals.get(field, 0) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            return True
+
+    resolved_race_statuses = (
+        {"ready"} if report.get("mode") == "analyze-dry-run" else {"analyzed"}
+    )
+    for city in report.get("cities", []) or []:
+        if str(city.get("status") or "").strip() not in RESOLVED_CITY_STATUSES:
+            return True
+        for race in city.get("races", []) or []:
+            if str(race.get("status") or "").strip() not in resolved_race_statuses:
+                return True
+    return False
+
+
+def analysis_manifest_issues(report: dict[str, Any]) -> list[str]:
+    """Return fail-closed reasons that make a live analysis unsafe downstream."""
+
+    if not isinstance(report, dict):
+        return ["manifest_not_object"]
+    issues: list[str] = []
+    if str(report.get("mode") or "") != "analyze":
+        issues.append("mode_not_analyze")
+    if str(report.get("status") or "") != "completed":
+        issues.append("status_not_completed")
+    if analysis_has_unresolved(report):
+        issues.append("unresolved_city_or_race")
+
+    cities = report.get("cities") or []
+    if not cities:
+        issues.append("cities_missing")
+        return issues
+
+    requested = [tr_fold(str(city)) for city in (report.get("citiesRequested") or []) if tr_fold(str(city))]
+    reported = [tr_fold(str(city.get("city") or "")) for city in cities if tr_fold(str(city.get("city") or ""))]
+    if not requested:
+        issues.append("cities_requested_missing")
+    elif sorted(requested) != sorted(reported):
+        issues.append("requested_city_set_mismatch")
+
+    for city in cities:
+        city_status = str(city.get("status") or "").strip()
+        races = city.get("races") or []
+        if city_status == "ok" and not races:
+            issues.append("ok_city_without_races")
+        elif city_status == "no_races" and races:
+            issues.append("no_races_city_with_races")
+
+    derived_report = {"totals": {}, "cities": cities}
+    refresh_analysis_totals(derived_report)
+    derived = derived_report["totals"]
+    recorded = report.get("totals") or {}
+    for field in ("cities", "racesFound", "analyzed", "failed"):
+        if field not in recorded:
+            continue
+        try:
+            value = int(recorded.get(field, 0) or 0)
+        except (TypeError, ValueError):
+            issues.append(f"invalid_total_{field}")
+            continue
+        if value != int(derived.get(field, 0) or 0):
+            issues.append(f"total_mismatch_{field}")
+
+    return list(dict.fromkeys(issues))
+
+
+def analysis_manifest_complete(report: dict[str, Any]) -> bool:
+    return not analysis_manifest_issues(report)
 
 
 def recover_failed_analysis_races(
@@ -572,11 +691,17 @@ def analyze_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
         "cities": [],
         "totals": {
             "cities": 0,
+            "successfulCities": 0,
+            "noRaceCities": 0,
+            "failedCities": 0,
             "racesFound": 0,
             "ready": 0,
             "analyzed": 0,
+            "skippedRaces": 0,
             "skipped": 0,
             "failed": 0,
+            "unresolvedRaces": 0,
+            "unresolved": 0,
         },
     }
 
@@ -636,6 +761,7 @@ def analyze_mode(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
         recovery_passes,
         recovery_delay,
     )
+    refresh_analysis_totals(report)
     report["finishedAt"] = now_utc_iso()
     set_analysis_status(report)
     return report
@@ -748,6 +874,7 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             "date": date_iso(args.day),
             "status": "skipped",
             "reason": "analysis_manifest_missing",
+            "analysisManifestComplete": False,
             "error": f"analysis manifest not found: {analysis_path}",
             "races": [],
             "totals": {
@@ -761,6 +888,31 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             },
         }
 
+    manifest_issues = analysis_manifest_issues(analysis)
+    if manifest_issues:
+        return {
+            "mode": args.mode,
+            "dryRun": dry_run,
+            "date": date_iso(args.day),
+            "status": "failed",
+            "reason": "analysis_manifest_incomplete",
+            "error": "analysis manifest contains unresolved or inconsistent city/race outcomes",
+            "analysisManifestComplete": False,
+            "analysisManifestIssues": manifest_issues,
+            "analysisManifestStatus": analysis.get("status"),
+            "analysisManifestTotals": analysis.get("totals") or {},
+            "races": [],
+            "totals": {
+                "checked": 0,
+                "found": 0,
+                "submitted": 0,
+                "idempotent": 0,
+                "partialLabels": 0,
+                "pending": 0,
+                "failed": 1,
+            },
+        }
+
     report: dict[str, Any] = {
         "mode": args.mode,
         "dryRun": dry_run,
@@ -768,6 +920,7 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
         "raceDate": date_dot(args.day),
         "startedAt": now_utc_iso(),
         "backendUrl": args.backend_url,
+        "analysisManifestComplete": True,
         "races": [],
         "totals": {
             "checked": 0,
@@ -779,7 +932,14 @@ def results_once(args: argparse.Namespace, config: dict[str, Any], dry_run: bool
             "failed": 0,
         },
     }
-    for race in iter_manifest_races(analysis):
+    manifest_races = iter_manifest_races(analysis)
+    if not manifest_races:
+        report["finishedAt"] = now_utc_iso()
+        report["status"] = "completed"
+        report["reason"] = "analysis_manifest_no_races"
+        return report
+
+    for race in manifest_races:
         entry = {
             "city": race.get("city"),
             "raceId": race.get("raceId"),
@@ -1068,7 +1228,16 @@ def build_summary(
     lines = [f"# Atistik Automation Summary - {date_iso(day)}", ""]
 
     if analysis:
-        totals = analysis.get("totals", {})
+        # Re-derive the analysis totals from nested city/race outcomes so a
+        # summary generated after an upgrade also exposes legacy false-success
+        # reports (for example, a failed city hidden behind failed=0).
+        summary_report = {
+            "totals": dict(analysis.get("totals") or {}),
+            "cities": analysis.get("cities", []) or [],
+        }
+        refresh_analysis_totals(summary_report)
+        set_analysis_status(summary_report)
+        totals = summary_report["totals"]
         lines.extend(
             [
                 "## Analysis",
@@ -1077,12 +1246,18 @@ def build_summary(
                     ["Metric", "Value"],
                     [
                         ["Mode", analysis.get("mode", "")],
+                        ["Reported status", analysis.get("status", "")],
+                        ["Effective status", summary_report.get("status", "")],
                         ["Cities", totals.get("cities", 0)],
+                        ["Successful cities", totals.get("successfulCities", 0)],
+                        ["No-race cities", totals.get("noRaceCities", 0)],
+                        ["Failed cities", totals.get("failedCities", 0)],
                         ["Races found", totals.get("racesFound", 0)],
                         ["Ready", totals.get("ready", 0)],
                         ["Analyzed", totals.get("analyzed", 0)],
-                        ["Skipped", totals.get("skipped", 0)],
-                        ["Failed", totals.get("failed", 0)],
+                        ["Skipped races", totals.get("skippedRaces", 0)],
+                        ["Failed races", totals.get("failed", 0)],
+                        ["Unresolved", totals.get("unresolved", 0)],
                     ],
                 ),
                 "",
@@ -1122,6 +1297,9 @@ def build_summary(
                     ["Metric", "Value"],
                     [
                         ["Mode", results.get("mode", "")],
+                        ["Status", results.get("status", "")],
+                        ["Reason", results.get("reason", "")],
+                        ["Analysis manifest complete", results.get("analysisManifestComplete", "")],
                         ["Checked", totals.get("checked", 0)],
                         ["Found", totals.get("found", 0)],
                         ["Submitted", totals.get("submitted", 0)],
@@ -1331,18 +1509,16 @@ def main() -> int:
         return 1
     totals = report.get("totals", {})
     if args.mode == "results" and (
-        int(totals.get("checked", 0) or 0) == 0
+        (
+            int(totals.get("checked", 0) or 0) == 0
+            and report.get("reason") != "analysis_manifest_no_races"
+        )
         or int(totals.get("pending", 0) or 0) > 0
         or int(totals.get("failed", 0) or 0) > 0
         or int(totals.get("partialLabels", 0) or 0) > 0
     ):
         return 1
-    if (
-        args.mode == "analyze"
-        and int(totals.get("failed", 0) or 0) > 0
-        and int(totals.get("analyzed", 0) or 0) == 0
-        and int(totals.get("racesFound", 0) or 0) > 0
-    ):
+    if args.mode in ("analyze", "analyze-dry-run") and analysis_has_unresolved(report):
         return 1
     return 0
 

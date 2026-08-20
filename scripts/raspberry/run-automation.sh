@@ -12,7 +12,7 @@ BACKEND_URL="${ATISTIK_BACKEND_URL:-http://atistik-api:5000}"
 HOST_BACKEND_URL="${ATISTIK_HOST_BACKEND_URL:-http://127.0.0.1:5000}"
 IMAGE_NAME="${ATISTIK_IMAGE_NAME:-atistik-api:raspberry}"
 RENDER_BACKEND_URL="${ATISTIK_RENDER_BACKEND_URL:-https://atistik-backend.onrender.com}"
-RENDER_RESTORE_MAX_ATTEMPTS="${ATISTIK_RENDER_RESTORE_MAX_ATTEMPTS:-6}"
+RENDER_RESTORE_MAX_ATTEMPTS="${ATISTIK_RENDER_RESTORE_MAX_ATTEMPTS:-18}"
 RENDER_RESTORE_SLEEP_SECONDS="${ATISTIK_RENDER_RESTORE_SLEEP_SECONDS:-10}"
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
@@ -33,6 +33,16 @@ if [[ -z "${ML_DATA_REPO:-}" || -z "${ML_DATA_TOKEN:-}" ]]; then
   exit 2
 fi
 
+RESTORE_TOKEN="${ATISTIK_RESTORE_TOKEN:-}"
+if [[ -z "$RESTORE_TOKEN" && -n "${GITHUB_TOKEN:-}" ]]; then
+  RESTORE_TOKEN="$(python3 -c 'import hashlib, hmac, os
+print(hmac.new(os.environ["GITHUB_TOKEN"].strip().encode(), b"atistik-restore-v1", hashlib.sha256).hexdigest())')"
+fi
+if [[ -z "$RESTORE_TOKEN" ]]; then
+  echo "ATISTIK_RESTORE_TOKEN veya GITHUB_TOKEN restore dogrulamasi icin tanimli olmali." >&2
+  exit 2
+fi
+
 GIT_AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$ML_DATA_TOKEN" | base64 | tr -d '\n')"
 git_ml() {
   git -c "http.https://github.com/.extraheader=$GIT_AUTH_HEADER" "$@"
@@ -50,13 +60,37 @@ image_revision() {
 backend_prediction_stats() {
   local base_url="$1"
   local status_json
-  status_json="$(curl -fsS "${base_url%/}/api/ml-status" 2>/dev/null)" || return 1
+  status_json="$(curl -fsS --max-time 30 "${base_url%/}/api/ml-status" 2>/dev/null)" || return 1
   python3 -c 'import json, sys
 try:
     predictions = json.load(sys.stdin).get("predictions") or {}
     total = predictions.get("valid_json_lines", predictions.get("lines", 0))
     labeled = predictions.get("labeled_lines", 0)
-    print(f"{int(total)}\t{int(labeled)}")
+    byte_count = predictions.get("bytes", 0)
+    sha256 = predictions.get("sha256") or "-"
+    print(f"{int(total)}\t{int(labeled)}\t{int(byte_count)}\t{sha256}")
+except Exception:
+    print("")' \
+    <<<"$status_json" 2>/dev/null
+}
+
+backend_restore_status() {
+  local base_url="$1"
+  local status_json
+  status_json="$(curl -fsS --max-time 30 "${base_url%/}/api/ml-restore-status" 2>/dev/null)" || return 1
+  python3 -c 'import json, sys
+try:
+    payload = json.load(sys.stdin)
+    local = payload.get("local") or {}
+    job = payload.get("job") or {}
+    print("\t".join([
+        str(int(local.get("valid_json_lines", local.get("lines", 0)))),
+        str(int(local.get("labeled_lines", 0))),
+        str(int(local.get("bytes", 0))),
+        str(local.get("sha256") or "-"),
+        str(job.get("status") or "unknown"),
+        "true" if job.get("restored") is True else "false",
+    ]))
 except Exception:
     print("")' \
     <<<"$status_json" 2>/dev/null
@@ -111,31 +145,57 @@ restore_render_from_backup() {
   local expected_stats
   local expected_total
   local expected_labeled
+  local expected_bytes
+  local expected_sha
   expected_stats="$(backend_prediction_stats "$HOST_BACKEND_URL" || true)"
-  read -r expected_total expected_labeled <<<"$expected_stats"
-  if [[ -z "$expected_total" || -z "$expected_labeled" ]]; then
+  read -r expected_total expected_labeled expected_bytes expected_sha <<<"$expected_stats"
+  if [[ -z "$expected_total" || -z "$expected_labeled" || -z "$expected_bytes" || -z "$expected_sha" || "$expected_sha" == "-" ]]; then
     echo "[ATISTIK] Pi local prediction sayaclari okunamadi; Render restore dogrulanamiyor." >&2
     return 1
   fi
 
-  echo "[ATISTIK] Render predictions restore basliyor; hedef total=${expected_total}, labeled=${expected_labeled}."
+  echo "[ATISTIK] Render predictions restore basliyor; hedef total=${expected_total}, labeled=${expected_labeled}, sha=${expected_sha:0:12}."
 
   local attempt
   local actual_stats
   local actual_total
   local actual_labeled
+  local actual_bytes
+  local actual_sha
+  local job_status
+  local job_restored
+  local restore_started=0
   for ((attempt = 1; attempt <= RENDER_RESTORE_MAX_ATTEMPTS; attempt++)); do
-    if curl -fsS -X POST "${RENDER_BACKEND_URL%/}/api/ml-restore?force=true" >/dev/null; then
-      actual_stats="$(backend_prediction_stats "$RENDER_BACKEND_URL" || true)"
-      read -r actual_total actual_labeled <<<"$actual_stats"
-      if [[ -n "$actual_total" && -n "$actual_labeled" && "$actual_total" -ge "$expected_total" && "$actual_labeled" -ge "$expected_labeled" ]]; then
-        echo "[ATISTIK] Render restore tamam: total=${actual_total}, labeled=${actual_labeled}."
-        return 0
-      fi
-      echo "[ATISTIK] Render restore bekleniyor: total=${actual_total:-unknown}/${expected_total}, labeled=${actual_labeled:-unknown}/${expected_labeled} (attempt ${attempt}/${RENDER_RESTORE_MAX_ATTEMPTS})."
-    else
-      echo "[ATISTIK] Render restore istegi basarisiz (attempt ${attempt}/${RENDER_RESTORE_MAX_ATTEMPTS})." >&2
+    actual_stats="$(backend_restore_status "$RENDER_BACKEND_URL" || true)"
+    read -r actual_total actual_labeled actual_bytes actual_sha job_status job_restored <<<"$actual_stats"
+
+    if [[ "$job_status" == "running" ]]; then
+      restore_started=1
     fi
+
+    if [[ -n "$actual_total" && "$actual_total" == "$expected_total" \
+      && "$actual_labeled" == "$expected_labeled" \
+      && "$actual_bytes" == "$expected_bytes" \
+      && "$actual_sha" == "$expected_sha" \
+      && ( "$restore_started" == "0" || ( "$job_status" == "completed" && "$job_restored" == "true" ) ) ]]; then
+      echo "[ATISTIK] Render restore parity tamam: total=${actual_total}, labeled=${actual_labeled}, sha=${actual_sha:0:12}."
+      return 0
+    fi
+
+    if [[ "$restore_started" == "0" ]]; then
+      if curl -fsS --max-time 30 -X POST \
+        -H "X-Atistik-Restore-Token: ${RESTORE_TOKEN}" \
+        "${RENDER_BACKEND_URL%/}/api/ml-restore?force=true&async=true" >/dev/null; then
+        restore_started=1
+      else
+        echo "[ATISTIK] Render async restore baslatma istegi beklemede (attempt ${attempt}/${RENDER_RESTORE_MAX_ATTEMPTS})." >&2
+      fi
+    elif [[ "$job_status" == "failed" ]]; then
+      echo "[ATISTIK] Render async restore job failed." >&2
+      return 1
+    fi
+
+    echo "[ATISTIK] Render restore bekleniyor: total=${actual_total:-unknown}/${expected_total}, labeled=${actual_labeled:-unknown}/${expected_labeled}, job=${job_status:-unknown} (attempt ${attempt}/${RENDER_RESTORE_MAX_ATTEMPTS})."
 
     if [[ "$attempt" -lt "$RENDER_RESTORE_MAX_ATTEMPTS" ]]; then
       sleep "$RENDER_RESTORE_SLEEP_SECONDS"
@@ -201,7 +261,9 @@ docker compose -f "$COMPOSE_FILE" up -d atistik-api
 
 echo "[ATISTIK] Syncing predictions.jsonl from GitHub backup before ${MODE}..."
 docker compose -f "$COMPOSE_FILE" run --rm atistik-worker \
-  curl -fsS -X POST "${BACKEND_URL}/api/ml-restore?force=true" >/dev/null
+  curl -fsS -X POST \
+    -H "X-Atistik-Restore-Token: ${RESTORE_TOKEN}" \
+    "${BACKEND_URL}/api/ml-restore?force=true" >/dev/null
 
 DATE_ARGS=()
 if [[ -n "$RUN_DATE" ]]; then

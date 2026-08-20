@@ -90,6 +90,136 @@ class ResultSubmissionSafetyTests(unittest.TestCase):
         self.assertEqual(labeled["terminal_reason"], "Derecesiz")
         self.assertEqual(labeled["result_source"], "tjk_official_results")
 
+    def test_nonpositive_sentinels_are_replaced_by_authoritative_results(self):
+        entries = [
+            {
+                "race_id": "226684",
+                "race_date": "10.08.2026",
+                "race_no": "6",
+                "horse_name": "LITTLE STONE",
+                "finish_pos": 0,
+            },
+            {
+                "race_id": "226684",
+                "race_date": "10.08.2026",
+                "race_no": "6",
+                "horse_name": "SINIR KARTALI",
+                "finish_pos": -1,
+            },
+        ]
+        results = [
+            {
+                "horse_name": "LITTLE STONE",
+                "finish_pos": 99,
+                "result_status": "unranked_terminal",
+                "terminal_reason": "Derecesiz",
+                "result_source": "tjk_official_results",
+            },
+            {
+                "horse_name": "SINIR KARTALI",
+                "finish_pos": 99,
+                "result_status": "non_runner",
+                "terminal_reason": "Koşmaz",
+                "result_source": "tjk_official_results",
+            },
+        ]
+
+        repaired = reconcile_result_submission(
+            entries,
+            race_id="226684",
+            race_date="10.08.2026",
+            race_no="6",
+            results=results,
+        )
+        replay = reconcile_result_submission(
+            repaired["entries"],
+            race_id="226684",
+            race_date="10.08.2026",
+            race_no="6",
+            results=results,
+        )
+
+        self.assertEqual(repaired["updated"], 2)
+        self.assertEqual(repaired["conflicts"], [])
+        self.assertEqual(repaired["entries"][0]["finish_pos"], 99)
+        self.assertEqual(repaired["entries"][0]["terminal_reason"], "Derecesiz")
+        self.assertEqual(repaired["entries"][1]["finish_pos"], 99)
+        self.assertEqual(repaired["entries"][1]["terminal_reason"], "Koşmaz")
+        self.assertEqual(replay["updated"], 0)
+        self.assertEqual(replay["idempotent"], 2)
+
+    def test_sentinel_repair_is_atomic_with_a_positive_label_conflict(self):
+        entries = [
+            {
+                "race_id": "226707",
+                "race_date": "11.08.2026",
+                "race_no": "1",
+                "horse_name": "İKLİMECE",
+                "finish_pos": 0,
+            },
+            {
+                "race_id": "226707",
+                "race_date": "11.08.2026",
+                "race_no": "1",
+                "horse_name": "OTHER",
+                "finish_pos": 2,
+            },
+        ]
+
+        outcome = reconcile_result_submission(
+            entries,
+            race_id="226707",
+            race_date="11.08.2026",
+            race_no="1",
+            results=[
+                {
+                    "horse_name": "İKLİMECE",
+                    "finish_pos": 99,
+                    "result_status": "unranked_terminal",
+                    "terminal_reason": "Derecesiz",
+                    "result_source": "tjk_official_results",
+                },
+                {
+                    "horse_name": "OTHER",
+                    "finish_pos": 1,
+                    "result_status": "finished",
+                    "result_source": "tjk_official_results",
+                },
+            ],
+        )
+
+        self.assertEqual(outcome["would_update"], 1)
+        self.assertEqual(outcome["updated"], 0)
+        self.assertEqual(len(outcome["conflicts"]), 1)
+        self.assertEqual(outcome["entries"], entries)
+
+    def test_invalid_incoming_result_is_rejected(self):
+        entries = [{
+            "race_id": "226707",
+            "race_date": "11.08.2026",
+            "race_no": "1",
+            "horse_name": "İKLİMECE",
+            "finish_pos": 0,
+        }]
+
+        for invalid_position in (0, -1, 1.5, float("nan"), True):
+            with self.subTest(finish_pos=invalid_position):
+                outcome = reconcile_result_submission(
+                    entries,
+                    race_id="226707",
+                    race_date="11.08.2026",
+                    race_no="1",
+                    results=[{
+                        "horse_name": "İKLİMECE",
+                        "finish_pos": invalid_position,
+                    }],
+                )
+
+                self.assertEqual(outcome["incoming"], 0)
+                self.assertEqual(outcome["matched"], 0)
+                self.assertEqual(outcome["updated"], 0)
+                self.assertEqual(outcome["entries"], entries)
+
     def test_same_position_backfills_missing_official_metadata(self):
         entries = [{
             "race_id": "226749",

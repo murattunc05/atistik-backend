@@ -6,7 +6,14 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from automation.atistik_daily_job import fetch_results, main, result_match_stats, results_mode, results_once
+from automation.atistik_daily_job import (
+    analysis_manifest_complete,
+    fetch_results,
+    main,
+    result_match_stats,
+    results_mode,
+    results_once,
+)
 from automation.fallback_checker import results_ok
 
 
@@ -39,9 +46,74 @@ class ResultAutomationSafetyTests(unittest.TestCase):
             ],
         }
         (out_dir / "analysis.json").write_text(
-            json.dumps({"mode": "analyze", "cities": [{"city": "İstanbul", "races": [race]}]}),
+            json.dumps(
+                {
+                    "mode": "analyze",
+                    "status": "completed",
+                    "citiesRequested": ["İstanbul"],
+                    "totals": {"cities": 1, "racesFound": 1, "analyzed": 1, "failed": 0},
+                    "cities": [{"city": "İstanbul", "status": "ok", "races": [race]}],
+                }
+            ),
             encoding="utf-8",
         )
+
+    def _write_incomplete_aug15_analysis(self, data_dir: Path):
+        out_dir = data_dir / "automation" / "runs" / "2026-07-15"
+        out_dir.mkdir(parents=True)
+        races = []
+        for race_no in range(1, 9):
+            races.append(
+                {
+                    "city": "İzmir",
+                    "raceId": f"22610{race_no}",
+                    "raceNo": str(race_no),
+                    "status": "analyzed",
+                    "horses": [{"name": "A"}, {"name": "B"}, {"name": "C"}],
+                }
+            )
+        report = {
+            "mode": "analyze",
+            "status": "completed",
+            "citiesRequested": ["İstanbul", "Ankara", "İzmir", "Bursa", "Kocaeli"],
+            # Reproduces the old false-success counters: the city failure did
+            # not contribute to failed.
+            "totals": {"cities": 5, "racesFound": 8, "analyzed": 8, "failed": 0},
+            "cities": [
+                {"city": "İstanbul", "status": "no_races", "races": []},
+                {"city": "Ankara", "status": "failed", "error": "timeout", "races": []},
+                {"city": "İzmir", "status": "ok", "races": races},
+                {"city": "Bursa", "status": "no_races", "races": []},
+                {"city": "Kocaeli", "status": "no_races", "races": []},
+            ],
+        }
+        (out_dir / "analysis.json").write_text(json.dumps(report), encoding="utf-8")
+        return report
+
+    def _write_all_no_races_analysis(self, data_dir: Path):
+        out_dir = data_dir / "automation" / "runs" / "2026-07-15"
+        out_dir.mkdir(parents=True)
+        report = {
+            "mode": "analyze",
+            "status": "completed",
+            "citiesRequested": ["İstanbul", "Ankara"],
+            "totals": {
+                "cities": 2,
+                "racesFound": 0,
+                "analyzed": 0,
+                "failed": 0,
+                "failedCities": 0,
+                "noRaceCities": 2,
+                "unresolvedRaces": 0,
+                "unresolved": 0,
+            },
+            "cities": [
+                {"city": "İstanbul", "status": "no_races", "races": []},
+                {"city": "Ankara", "status": "no_races", "races": []},
+            ],
+        }
+        (out_dir / "analysis.json").write_text(json.dumps(report), encoding="utf-8")
+        return report
 
     def test_match_stats_use_same_compact_name_normalization_as_api(self):
         race = {"horses": [{"name": "SUPER CHIRON"}, {"name": "AĞA-SAÇAN"}]}
@@ -146,6 +218,46 @@ class ResultAutomationSafetyTests(unittest.TestCase):
         self.assertEqual(report["totals"]["submitted"], 1)
         self.assertEqual(report["totals"]["idempotent"], 1)
         self.assertEqual(report["races"][0]["status"], "already_labeled")
+
+    def test_incomplete_city_manifest_cannot_start_or_complete_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            analysis = self._write_incomplete_aug15_analysis(data_dir)
+            with patch("automation.atistik_daily_job.fetch_results") as fetch, patch(
+                "automation.atistik_daily_job.http_json"
+            ) as submit:
+                report = results_once(self._args(data_dir), {}, False)
+
+        self.assertFalse(analysis_manifest_complete(analysis))
+        fetch.assert_not_called()
+        submit.assert_not_called()
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["reason"], "analysis_manifest_incomplete")
+        self.assertFalse(report["analysisManifestComplete"])
+        self.assertIn("unresolved_city_or_race", report["analysisManifestIssues"])
+        self.assertEqual(report["totals"]["checked"], 0)
+        self.assertEqual(report["totals"]["submitted"], 0)
+        self.assertEqual(report["totals"]["failed"], 1)
+
+    def test_all_no_races_manifest_completes_results_without_endpoint_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            analysis = self._write_all_no_races_analysis(data_dir)
+            with patch("automation.atistik_daily_job.fetch_results") as fetch, patch(
+                "automation.atistik_daily_job.http_json"
+            ) as submit:
+                report = results_once(self._args(data_dir), {}, False)
+
+        self.assertTrue(analysis_manifest_complete(analysis))
+        fetch.assert_not_called()
+        submit.assert_not_called()
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["reason"], "analysis_manifest_no_races")
+        self.assertTrue(report["analysisManifestComplete"])
+        self.assertEqual(report["totals"]["checked"], 0)
+        self.assertEqual(report["totals"]["submitted"], 0)
+        self.assertEqual(report["totals"]["failed"], 0)
+        self.assertTrue(results_ok(report, analysis, require_analysis=True))
 
     def test_conflict_response_is_a_failed_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -377,11 +489,19 @@ class ResultAutomationSafetyTests(unittest.TestCase):
                 "failed": 0,
             },
         }
+        incomplete_manifest_forged_complete = {
+            "mode": "results",
+            "status": "completed",
+            "reason": "analysis_manifest_incomplete",
+            "analysisManifestComplete": False,
+            "totals": {"checked": 3, "submitted": 3, "pending": 0, "failed": 0},
+        }
 
         self.assertTrue(results_ok(complete))
         self.assertFalse(results_ok(pending))
         self.assertFalse(results_ok(incomplete))
         self.assertFalse(results_ok(mislabeled_complete))
+        self.assertFalse(results_ok(incomplete_manifest_forged_complete))
 
 
 if __name__ == "__main__":

@@ -31,8 +31,16 @@ class RaspberryPredictionBackupTest(unittest.TestCase):
         self.assertNotIn('if [[ "$MODE" != "results" ]]', restore_body)
         self.assertIn('backend_prediction_stats "$HOST_BACKEND_URL"', restore_body)
         self.assertNotIn('backend_prediction_stats "$BACKEND_URL"', restore_body)
-        self.assertIn('"$actual_total" -ge "$expected_total"', restore_body)
-        self.assertIn('"$actual_labeled" -ge "$expected_labeled"', restore_body)
+        self.assertIn('/api/ml-restore?force=true&async=true', restore_body)
+        self.assertEqual(restore_body.count('/api/ml-restore?force=true&async=true'), 1)
+        self.assertIn('backend_restore_status "$RENDER_BACKEND_URL"', restore_body)
+        self.assertIn('/api/ml-restore-status', self.run_script)
+        self.assertIn('"$actual_sha" == "$expected_sha"', restore_body)
+        self.assertIn('"$actual_bytes" == "$expected_bytes"', restore_body)
+        self.assertIn('"$job_status" == "completed"', restore_body)
+        self.assertIn('"$job_restored" == "true"', restore_body)
+        self.assertIn('X-Atistik-Restore-Token:', restore_body)
+        self.assertNotIn('"$actual_total" -ge "$expected_total"', restore_body)
 
     def test_partial_job_is_backed_up_and_restored_before_nonzero_exit(self):
         persist_index = self.run_script.rindex('\npersist_state_predictions\n')

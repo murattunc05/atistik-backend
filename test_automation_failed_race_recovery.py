@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from automation.atistik_daily_job import analyze_mode, load_city_program
+from automation.atistik_daily_job import analyze_mode, build_summary, load_city_program, main
 
 
 class FailedRaceRecoveryTest(unittest.TestCase):
@@ -102,6 +102,161 @@ class FailedRaceRecoveryTest(unittest.TestCase):
         self.assertEqual(program["status"], "ok")
         self.assertEqual(program["cityId"], "9")
         self.assertEqual(len(program["races"]), 1)
+
+    def test_analyzed_city_plus_city_load_failure_is_partial_and_unresolved(self):
+        race = {
+            "raceId": "226900",
+            "raceNo": "1",
+            "raceType": "ŞARTLI 4",
+            "time": "14.30",
+            "distance": "1400",
+            "track": "Kum",
+            "horses": [{"name": "A", "no": "1"}],
+        }
+        programs = [
+            {"city": "İstanbul", "cityId": "1", "status": "ok", "races": [race]},
+            {
+                "city": "Ankara",
+                "status": "failed",
+                "error": "daily-program city failed",
+                "races": [],
+            },
+        ]
+        analyzed = {
+            "city": "İstanbul",
+            "raceId": "226900",
+            "raceNo": "1",
+            "status": "analyzed",
+            "rankings": [{"horse": "A", "v4Rank": 1, "v4Score": 70.0}],
+        }
+
+        with patch("automation.atistik_daily_job.load_city_program", side_effect=programs), \
+             patch("automation.atistik_daily_job.analyze_race", return_value=analyzed):
+            report = analyze_mode(
+                self._args(),
+                {
+                    "cities": ["İstanbul", "Ankara"],
+                    "failedRaceRecoveryPasses": 0,
+                },
+            )
+
+        self.assertEqual(report["status"], "partial_success")
+        self.assertEqual(report["totals"]["analyzed"], 1)
+        self.assertEqual(report["totals"]["successfulCities"], 1)
+        self.assertEqual(report["totals"]["failedCities"], 1)
+        self.assertEqual(report["totals"]["unresolved"], 1)
+        self.assertEqual(report["unresolvedCities"][0]["city"], "Ankara")
+
+    def test_all_domestic_no_races_is_completed(self):
+        programs = [
+            {"city": "İstanbul", "status": "no_races", "races": []},
+            {"city": "Ankara", "status": "no_races", "races": []},
+        ]
+        with patch("automation.atistik_daily_job.load_city_program", side_effect=programs):
+            report = analyze_mode(
+                self._args(),
+                {
+                    "cities": ["İstanbul", "Ankara"],
+                    "failedRaceRecoveryPasses": 0,
+                },
+            )
+
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["totals"]["analyzed"], 0)
+        self.assertEqual(report["totals"]["noRaceCities"], 2)
+        self.assertEqual(report["totals"]["failedCities"], 0)
+        self.assertEqual(report["totals"]["unresolved"], 0)
+
+    def test_city_not_found_without_any_resolved_work_is_failed(self):
+        with patch(
+            "automation.atistik_daily_job.load_city_program",
+            return_value={"city": "Atlantis", "status": "city_not_found", "races": []},
+        ):
+            report = analyze_mode(
+                self._args(),
+                {"cities": ["Atlantis"], "failedRaceRecoveryPasses": 0},
+            )
+
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["totals"]["failedCities"], 1)
+        self.assertEqual(report["totals"]["unresolved"], 1)
+        self.assertEqual(report["unresolvedCities"][0]["status"], "city_not_found")
+
+    def test_unprocessable_race_keeps_mixed_city_report_partial(self):
+        races = [
+            {"raceId": "226901", "raceNo": "1", "horses": [{"name": "A"}]},
+            {"raceId": "", "raceNo": "2", "horses": []},
+        ]
+        program = {"city": "İzmir", "cityId": "3", "status": "ok", "races": races}
+        analyzed = {"city": "İzmir", "raceId": "226901", "status": "analyzed"}
+        skipped = {
+            "city": "İzmir",
+            "raceId": "",
+            "status": "skipped",
+            "skipReasons": ["missing_race_id", "empty_horse_list"],
+        }
+
+        with patch("automation.atistik_daily_job.load_city_program", return_value=program), \
+             patch("automation.atistik_daily_job.analyze_race", side_effect=[analyzed, skipped]):
+            report = analyze_mode(
+                self._args(),
+                {"cities": ["İzmir"], "failedRaceRecoveryPasses": 0},
+            )
+
+        self.assertEqual(report["status"], "partial_success")
+        self.assertEqual(report["totals"]["analyzed"], 1)
+        self.assertEqual(report["totals"]["skippedRaces"], 1)
+        self.assertEqual(report["totals"]["unresolvedRaces"], 1)
+        self.assertEqual(report["totals"]["unresolved"], 1)
+
+    def test_main_exits_nonzero_when_any_city_is_unresolved(self):
+        args = argparse.Namespace(
+            mode="analyze",
+            date="2026-08-15",
+            backend_url="https://example.test",
+            data_dir=Path("."),
+            cities=None,
+        )
+        report = {
+            "mode": "analyze",
+            "status": "partial_success",
+            "totals": {
+                "analyzed": 1,
+                "failed": 0,
+                "failedCities": 1,
+                "unresolvedRaces": 0,
+                "unresolved": 1,
+            },
+            "cities": [
+                {"city": "İstanbul", "status": "ok", "races": [{"status": "analyzed"}]},
+                {"city": "Ankara", "status": "failed", "races": []},
+            ],
+        }
+        with patch("automation.atistik_daily_job.parse_args", return_value=args), \
+             patch("automation.atistik_daily_job.load_config", return_value={}), \
+             patch("automation.atistik_daily_job.analyze_mode", return_value=report), \
+             patch("automation.atistik_daily_job.persist_report"):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 1)
+
+    def test_summary_exposes_legacy_false_success_city_failure(self):
+        legacy_report = {
+            "mode": "analyze",
+            "status": "completed",
+            "totals": {"cities": 2, "analyzed": 1, "failed": 0},
+            "cities": [
+                {"city": "İzmir", "status": "ok", "races": [{"status": "analyzed"}]},
+                {"city": "Ankara", "status": "failed", "error": "timeout", "races": []},
+            ],
+        }
+
+        summary = build_summary(date(2026, 8, 15), legacy_report, None)
+
+        self.assertIn("| Reported status | completed |", summary)
+        self.assertIn("| Effective status | partial_success |", summary)
+        self.assertIn("| Failed cities | 1 |", summary)
+        self.assertIn("| Unresolved | 1 |", summary)
 
 
 if __name__ == "__main__":
