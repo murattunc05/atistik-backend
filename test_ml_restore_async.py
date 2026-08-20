@@ -11,6 +11,9 @@ import api_server as api
 
 
 class MlRestoreAsyncTests(unittest.TestCase):
+    def test_default_restore_credential_is_only_a_sha256_digest(self):
+        self.assertRegex(api._RESTORE_TOKEN_SHA256_DEFAULT, r"^[0-9a-f]{64}$")
+
     def test_async_route_returns_before_restore_work(self):
         job = {
             "status": "running",

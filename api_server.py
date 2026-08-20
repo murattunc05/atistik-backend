@@ -574,6 +574,7 @@ _GITHUB_TOKEN    = _os.environ.get('GITHUB_TOKEN', '')
 _GITHUB_ML_REPO  = _os.environ.get('GITHUB_ML_REPO', '')   # "kullanici/repo-adi"
 _GITHUB_FILE     = 'predictions.jsonl'
 _GITHUB_API_BASE = 'https://api.github.com'
+_RESTORE_TOKEN_SHA256_DEFAULT = 'a74dbe069f765fda3e15b635291507b6aacedd9ac2610630768910d6c6a652da'
 _PREDICTIONS_PATH = (
     _os.environ.get('ATISTIK_PREDICTIONS_PATH', '').strip()
     or _os.path.join(_os.path.dirname(__file__), 'predictions.jsonl')
@@ -651,7 +652,10 @@ def _prediction_file_stats(path=None):
 def _restore_request_authorized():
     """Authenticate remote restore triggers without placing secrets in URLs."""
     expected = _os.environ.get('ATISTIK_RESTORE_TOKEN', '').strip()
-    expected_sha256 = _os.environ.get('ATISTIK_RESTORE_TOKEN_SHA256', '').strip().lower()
+    expected_sha256 = (
+        _os.environ.get('ATISTIK_RESTORE_TOKEN_SHA256', '').strip().lower()
+        or _RESTORE_TOKEN_SHA256_DEFAULT
+    )
     provided = request.headers.get('X-Atistik-Restore-Token', '')
     if expected:
         return bool(provided) and _hmac.compare_digest(provided, expected)
