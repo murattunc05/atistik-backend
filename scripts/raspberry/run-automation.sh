@@ -324,11 +324,22 @@ if [[ "$MODE" == "results" ]]; then
     echo "[MAIDEN SHADOW] Monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
   fi
 
-  if ! python3 automation/handicap_trainer_shadow_monitor.py \
+  if [[ "$MONITOR_DATE" < "2026-08-21" ]]; then
+    if ! python3 automation/handicap_trainer_shadow_monitor.py \
+      --predictions "$DATA_DIR/predictions.jsonl" \
+      --data-dir "$DATA_DIR" \
+      --run-date "$MONITOR_DATE"; then
+      echo "[HANDIKAP TRAINER SHADOW] Terminal monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
+    fi
+  else
+    echo "[HANDIKAP TRAINER SHADOW] retired_regression; yeni kanit toplanmiyor."
+  fi
+
+  if ! python3 automation/h15_training_shadow_monitor.py \
     --predictions "$DATA_DIR/predictions.jsonl" \
     --data-dir "$DATA_DIR" \
     --run-date "$MONITOR_DATE"; then
-    echo "[HANDIKAP TRAINER SHADOW] Monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
+    echo "[H15 TRAINING SHADOW] Monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
   fi
 
   if ! python3 automation/metric_signal_registry.py \

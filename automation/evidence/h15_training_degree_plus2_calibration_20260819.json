@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "h15-training-calibration-evidence-v1",
+  "candidateId": "PROFILE:HANDIKAP15/training_degree_score/plus2pp",
+  "sourceReport": "automation/runs/2026-08-19/metric-signal-replay.json",
+  "sourceReportSha256": "f438858fe5d17979bda499bfb48c9b047a1366ddfe8e7510b3f83b7e2fe14e2b",
+  "sourceReplayIdentity": {
+    "schemaVersion": "metric-signal-replay-v1",
+    "runDate": "2026-08-19",
+    "registryRunDate": "2026-08-19",
+    "registrySchemaVersion": "metric-signal-registry-v1",
+    "sourceSnapshotAt": "2026-08-19T03:38:22+00:00",
+    "minimumCompatibleVersion": "4.21"
+  },
+  "candidateIdentity": {
+    "scopeType": "PROFILE",
+    "scopeKey": "HANDIKAP15",
+    "metric": "training_degree_score",
+    "addedWeightPoints": 2.0,
+    "races": 34,
+    "rankingVersions": {
+      "4.21": 5,
+      "4.23": 11,
+      "4.24": 6,
+      "4.25": 12
+    },
+    "status": "SUPPORTED_FOR_PROSPECTIVE_SHADOW",
+    "liveRolloutEligible": false
+  },
+  "splitRaces": {
+    "build": 20,
+    "inner": 7,
+    "outer": 7
+  },
+  "temperatureFit": {
+    "baseline": 14.0,
+    "candidate": 14.0,
+    "fitSplit": "build"
+  },
+  "policy": {
+    "calibrationTemperatureFitOnBuildOnly": true,
+    "passingMeaning": "prospective_shadow_only",
+    "liveWeightChanged": false,
+    "liveRolloutEligible": false,
+    "outerIsUntouched": false
+  }
+}

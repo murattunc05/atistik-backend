@@ -96,6 +96,36 @@ _MAIDEN_SHADOW_ALPHA = 0.15
 _HANDICAP_TRAINER_SHADOW_VERSION = "handicap-trainer-ablation-20260814-v1"
 _HANDICAP_TRAINER_SHADOW_OBSERVATION_START = "14.08.2026"
 _HANDICAP_TRAINER_SHADOW_METRIC = "trainer_score"
+_HANDICAP_TRAINER_SHADOW_RETIRED = True
+_H15_TRAINING_SHADOW_VERSION = "h15-training-degree-plus2-20260821-v1"
+_H15_TRAINING_SHADOW_OBSERVATION_START = "21.08.2026"
+_H15_TRAINING_SHADOW_BASELINE_VERSION = "4.25"
+_H15_TRAINING_SHADOW_METRIC = "training_degree_score"
+_H15_TRAINING_SHADOW_RAW_ADD_POINTS = 2.0
+_H15_TRAINING_SHADOW_MODE = "prospective_shadow_bounded"
+_H15_TRAINING_SHADOW_TEMPERATURE = 14.0
+_H15_TRAINING_SHADOW_REPLAY_SOURCE = (
+    "automation/runs/2026-08-19/metric-signal-replay.json"
+)
+_H15_TRAINING_SHADOW_REPLAY_SHA256 = (
+    "f438858fe5d17979bda499bfb48c9b047a1366ddfe8e7510b3f83b7e2fe14e2b"
+)
+_H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_ARTIFACT = (
+    "automation/evidence/h15_training_degree_plus2_calibration_20260819.json"
+)
+_H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_SHA256 = (
+    "3e606f6c40f32f22858a24c10caa138f880e78b20494f237f7972d2d727f319e"
+)
+_H15_TRAINING_SHADOW_CALIBRATION_CONTRACT = {
+    'fitScope': 'build_only',
+    'buildInnerOuter': [20, 7, 7],
+    'baselineTemperature': _H15_TRAINING_SHADOW_TEMPERATURE,
+    'candidateTemperature': _H15_TRAINING_SHADOW_TEMPERATURE,
+    'sourceReport': _H15_TRAINING_SHADOW_REPLAY_SOURCE,
+    'sourceReportSha256': _H15_TRAINING_SHADOW_REPLAY_SHA256,
+    'evidenceArtifact': _H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_ARTIFACT,
+    'evidenceArtifactSha256': _H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_SHA256,
+}
 _FUTURE_SIGNAL_OBSERVATION_START = "14.08.2026"
 
 def load_ml_model():
@@ -302,14 +332,59 @@ def ml_status():
         },
         'handicap_trainer_shadow': {
             'version': _HANDICAP_TRAINER_SHADOW_VERSION,
-            'mode': 'prospective_shadow_ablation',
+            'mode': 'retired_evidence_only',
+            'status': 'retired_regression',
+            'active': not _HANDICAP_TRAINER_SHADOW_RETIRED,
             'observation_start': _HANDICAP_TRAINER_SHADOW_OBSERVATION_START,
             'used_for_ranking': False,
             'rollout_eligible': False,
+            'telegram_visible': False,
             'profile': 'HANDIKAP',
             'ablated_metric': _HANDICAP_TRAINER_SHADOW_METRIC,
             'candidate_value_pct': 0.0,
             'checkpoints': [5, 10, 15],
+            'retired_on': '20.08.2026',
+            'replaced_by': _H15_TRAINING_SHADOW_VERSION,
+            'retirement_reason': 'Prospective evidence did not improve TopK objectives.',
+        },
+        'h15_training_shadow': {
+            'version': _H15_TRAINING_SHADOW_VERSION,
+            'mode': _H15_TRAINING_SHADOW_MODE,
+            'status': 'collecting',
+            'observation_start': _H15_TRAINING_SHADOW_OBSERVATION_START,
+            'baseline_version': _H15_TRAINING_SHADOW_BASELINE_VERSION,
+            'used_for_ranking': False,
+            'rollout_eligible': False,
+            'telegram_visible': False,
+            'profile': 'HANDIKAP15',
+            'metric': _H15_TRAINING_SHADOW_METRIC,
+            'raw_weight_add_points': _H15_TRAINING_SHADOW_RAW_ADD_POINTS,
+            'normalization': 'exported_v4_weights_plus_raw_points_then_normalize',
+            'replay_baseline_compatibility_gate': 'visible_top3_set_equals_replay_top3_set',
+            'checkpoints': [5, 10, 15],
+            'calibration_gate': {
+                'fit_scope': 'build_only',
+                'brier_delta_max': 0.005,
+                'candidate_ece_max': 0.10,
+                'candidate_ece_strong_max': 0.05,
+                'ece_delta_max_otherwise': 0.01,
+            },
+            'historical_evidence': {
+                'snapshot_date': '19.08.2026',
+                'races': 34,
+                'winner_top3': {'baseline': 13, 'candidate': 16},
+                'rescues': 3,
+                'damages': 0,
+                'build_inner_outer': [20, 7, 7],
+                'baseline_temperature': _H15_TRAINING_SHADOW_TEMPERATURE,
+                'candidate_temperature': _H15_TRAINING_SHADOW_TEMPERATURE,
+                'temperature_fit_scope': 'build_only',
+                'source_report': _H15_TRAINING_SHADOW_REPLAY_SOURCE,
+                'source_report_sha256': _H15_TRAINING_SHADOW_REPLAY_SHA256,
+                'calibration_evidence_artifact': _H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_ARTIFACT,
+                'calibration_evidence_artifact_sha256': _H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_SHA256,
+            },
+            'promotion_ceiling': 'formal_replay_only',
         },
         'metadata': _ml_shadow_metadata,
         'predictions': prediction_stats,
@@ -7596,6 +7671,20 @@ def _preserve_handicap_trainer_candidate_snapshot(entry, previous):
     return entry
 
 
+def _preserve_h15_training_candidate_snapshot(entry, previous):
+    """Keep the first pre-race H15 training candidate immutable on retry."""
+    current_version = entry.get('h15_training_candidate_version')
+    previous_version = previous.get('h15_training_candidate_version')
+    if not previous_version:
+        return entry
+    if current_version and current_version != previous_version:
+        return entry
+    for key, value in previous.items():
+        if key.startswith('h15_training_candidate_'):
+            entry[key] = value
+    return entry
+
+
 def _preserve_future_signal_ledger_snapshot(entry, previous):
     """Keep the first pre-race research telemetry across analysis retries."""
     previous_snapshot = previous.get('future_signal_ledger')
@@ -8594,6 +8683,550 @@ def attach_handicap_trainer_ablation_candidate(
         f"{trainer_source_count}/{runner_count}"
     )
     return analyzed_horses
+
+
+def _h15_canonical_sha256(value):
+    import json as _json
+    encoded = _json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(',', ':'),
+    ).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def resolve_h15_training_candidate_weights(exported_v4_weights):
+    """Add two raw points to the persisted v4 weight map, then normalize.
+
+    ``v4Weights`` is the actual pre-race map exported to predictions.jsonl.
+    It is deliberately the source of truth here; resolving today's profile
+    again would make a retry or later code revision rewrite history.
+    """
+    if not isinstance(exported_v4_weights, dict) or not exported_v4_weights:
+        raise ValueError('H15 baseline v4Weights map is missing')
+    baseline = {}
+    for key, raw_value in exported_v4_weights.items():
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f'H15 baseline weight is not numeric: {key}')
+        if not str(key).strip() or not math.isfinite(value) or value < 0.0:
+            raise ValueError(f'H15 baseline weight is invalid: {key}')
+        if value > 0.0:
+            baseline[str(key)] = value
+    baseline_total = sum(baseline.values())
+    # The exported map is rounded to one decimal. Permit only that bounded
+    # rounding drift; a materially different denominator is not the replayed
+    # +2/102 formula and must fail closed.
+    if not (99.5 <= baseline_total <= 100.5):
+        raise ValueError(
+            f'H15 exported baseline weight total is not approximately 100: {baseline_total}'
+        )
+
+    raw_candidate = dict(baseline)
+    raw_candidate[_H15_TRAINING_SHADOW_METRIC] = (
+        raw_candidate.get(_H15_TRAINING_SHADOW_METRIC, 0.0)
+        + _H15_TRAINING_SHADOW_RAW_ADD_POINTS
+    )
+    raw_total = sum(raw_candidate.values())
+    candidate_pct = {
+        key: round((value / raw_total) * 100.0, 10)
+        for key, value in raw_candidate.items()
+        if value > 0.0
+    }
+    # Reconstruct the exact scoring fractions from the persisted high-precision
+    # percentage map so the monitor can independently reproduce every score.
+    candidate = {key: value / 100.0 for key, value in candidate_pct.items()}
+    delta_pct = {
+        key: round(candidate_pct.get(key, 0.0) - baseline.get(key, 0.0), 10)
+        for key in sorted(set(baseline) | set(candidate_pct))
+        if abs(candidate_pct.get(key, 0.0) - baseline.get(key, 0.0)) > 1e-12
+    }
+    return {
+        'baselineWeights': baseline,
+        'baselineRawTotal': round(baseline_total, 10),
+        'candidateRawWeights': raw_candidate,
+        'candidateRawTotal': round(raw_total, 10),
+        'candidateWeights': candidate,
+        'candidateWeightsPct': candidate_pct,
+        'weightDeltaPct': delta_pct,
+    }
+
+
+def calculate_h15_score_from_replay_totals(
+    baseline_weighted_numerator,
+    baseline_available_weight_total,
+    training_degree_value,
+    penalty_total=0.0,
+):
+    """Mirror metric_signal_replay's raw +2 algebra without score rounding."""
+    numerator = float(baseline_weighted_numerator)
+    denominator = float(baseline_available_weight_total)
+    if not math.isfinite(numerator) or not math.isfinite(denominator):
+        raise ValueError('H15 replay totals must be finite')
+    if denominator < 0.0:
+        raise ValueError('H15 replay denominator cannot be negative')
+    if training_degree_value is not None:
+        training_value = float(training_degree_value)
+        if not math.isfinite(training_value):
+            raise ValueError('H15 training degree value must be finite')
+        numerator += training_value * _H15_TRAINING_SHADOW_RAW_ADD_POINTS
+        denominator += _H15_TRAINING_SHADOW_RAW_ADD_POINTS
+    base_score = numerator / denominator if denominator > 0.0 else 50.0
+    penalty = max(0.0, float(penalty_total or 0.0))
+    score = max(0.0, min(100.0, base_score - penalty))
+    return {
+        'baseScore': base_score,
+        'score': score,
+        'candidateWeightedNumerator': numerator,
+        'candidateAvailableWeightTotal': denominator,
+    }
+
+
+def attach_h15_training_degree_candidate(
+    analyzed_horses,
+    race_type='',
+    distance='',
+    track='',
+    race_date='',
+    race_time='',
+):
+    """Attach the exact H15 training-degree +2 shadow without ranking impact."""
+    profile = extract_v4_race_profile(
+        race_type=race_type,
+        distance=distance,
+        track=track,
+        field_size=len(analyzed_horses),
+    )
+    if profile.get('subtype') != 'HANDIKAP15' or not analyzed_horses:
+        return analyzed_horses
+    if any(
+        str(horse.get('v4Version') or '')
+        != _H15_TRAINING_SHADOW_BASELINE_VERSION
+        for horse in analyzed_horses
+    ):
+        return analyzed_horses
+    if any(horse.get('v4AppliedForRanking') is not True for horse in analyzed_horses):
+        return analyzed_horses
+
+    from zoneinfo import ZoneInfo
+    parsed_race_day = None
+    for pattern in ('%d.%m.%Y', '%Y-%m-%d'):
+        try:
+            parsed_race_day = datetime.strptime(str(race_date or '').strip(), pattern)
+            break
+        except ValueError:
+            continue
+    observation_day = datetime.strptime(
+        _H15_TRAINING_SHADOW_OBSERVATION_START,
+        '%d.%m.%Y',
+    )
+    if parsed_race_day is None or parsed_race_day < observation_day:
+        return analyzed_horses
+    normalized_race_time = str(race_time or '').strip().replace('.', ':')
+    try:
+        race_hour, race_minute = (
+            int(part) for part in normalized_race_time.split(':', 1)
+        )
+        race_start = parsed_race_day.replace(
+            hour=race_hour,
+            minute=race_minute,
+            tzinfo=ZoneInfo('Europe/Istanbul'),
+        )
+    except (TypeError, ValueError):
+        return analyzed_horses
+    created_ts = int(time.time())
+    if created_ts >= int(race_start.timestamp()):
+        return analyzed_horses
+
+    visible_profiles = [horse.get('v4Profile') for horse in analyzed_horses]
+    if any(not isinstance(item, dict) for item in visible_profiles):
+        raise ValueError('H15 visible v4 profile snapshot is missing')
+    first_visible_profile = dict(visible_profiles[0])
+    if (
+        first_visible_profile.get('subtype') != 'HANDIKAP15'
+        or not first_visible_profile.get('selectedKey')
+        or any(
+            _h15_canonical_sha256(item)
+            != _h15_canonical_sha256(first_visible_profile)
+            for item in visible_profiles[1:]
+        )
+    ):
+        raise ValueError('H15 visible profile snapshots disagree')
+
+    exported_maps = [horse.get('v4Weights') for horse in analyzed_horses]
+    formula = resolve_h15_training_candidate_weights(exported_maps[0])
+    baseline_weights = formula['baselineWeights']
+    if any(
+        _h15_canonical_sha256(
+            resolve_h15_training_candidate_weights(value)['baselineWeights']
+        )
+        != _h15_canonical_sha256(baseline_weights)
+        for value in exported_maps[1:]
+    ):
+        raise ValueError('H15 exported v4Weights snapshots disagree')
+
+    source_rows = []
+    for horse in analyzed_horses:
+        metrics = horse.get('_mf') or {}
+        flags = horse.get('metricSourceFlags') or {}
+        flag_present = _H15_TRAINING_SHADOW_METRIC in {
+            'training_degree_score'
+        } and 'hasTrainingTimes' in flags
+        mf_present = '_has_training_times' in metrics
+        flag_value = flags.get('hasTrainingTimes')
+        mf_value = metrics.get('_has_training_times')
+        values_valid = (
+            flag_present
+            and mf_present
+            and isinstance(flag_value, bool)
+            and isinstance(mf_value, bool)
+        )
+        guards_agree = values_valid and flag_value == mf_value
+        if not guards_agree:
+            raise ValueError(
+                'H15 hasTrainingTimes and _mf._has_training_times disagree'
+            )
+        try:
+            metric_value = float(metrics.get(_H15_TRAINING_SHADOW_METRIC, 50.0))
+        except (TypeError, ValueError):
+            metric_value = float('nan')
+        if bool(flag_value) and not math.isfinite(metric_value):
+            raise ValueError('H15 sourced training_degree_score is not finite')
+        if not math.isfinite(metric_value):
+            metric_value = 50.0
+        has_source = bool(flag_value and mf_value)
+        neutral = bool(has_source and abs(metric_value - 50.0) < 1.0)
+        source_rows.append({
+            'metric': _H15_TRAINING_SHADOW_METRIC,
+            'metricSourceFlag': 'hasTrainingTimes',
+            'metricSourceFlagPresent': flag_present,
+            'metricSourceFlagValue': flag_value,
+            'mfGuard': '_has_training_times',
+            'mfGuardPresent': mf_present,
+            'mfGuardValue': mf_value,
+            'guardsAgree': guards_agree,
+            'hasSource': has_source,
+            'metricValue': metric_value,
+            'neutral': neutral,
+            'actionable': bool(has_source and not neutral),
+        })
+
+    runner_count = len(analyzed_horses)
+    source_count = sum(bool(row['hasSource']) for row in source_rows)
+    actionable_count = sum(bool(row['actionable']) for row in source_rows)
+    neutral_count = sum(bool(row['neutral']) for row in source_rows)
+    unavailable_count = runner_count - source_count
+    candidate_weights = formula['candidateWeights']
+    candidate_weights_pct = formula['candidateWeightsPct']
+    definition_payload = {
+        'schemaVersion': 'h15-training-shadow-v1',
+        'candidateVersion': _H15_TRAINING_SHADOW_VERSION,
+        'observationStart': _H15_TRAINING_SHADOW_OBSERVATION_START,
+        'baselineVersion': _H15_TRAINING_SHADOW_BASELINE_VERSION,
+        'profile': first_visible_profile,
+        'metric': _H15_TRAINING_SHADOW_METRIC,
+        'rawWeightAddPoints': _H15_TRAINING_SHADOW_RAW_ADD_POINTS,
+        'baselineWeights': baseline_weights,
+        'baselineRawTotal': formula['baselineRawTotal'],
+        'candidateRawWeights': formula['candidateRawWeights'],
+        'candidateRawTotal': formula['candidateRawTotal'],
+        'candidateWeights': candidate_weights_pct,
+        'weightDeltaPct': formula['weightDeltaPct'],
+        'normalization': 'exported_v4_weights_plus_raw_points_then_normalize',
+        'calibrationContract': _H15_TRAINING_SHADOW_CALIBRATION_CONTRACT,
+    }
+    definition_sha256 = _h15_canonical_sha256(definition_payload)
+
+    for horse, source in zip(analyzed_horses, source_rows):
+        metrics = dict(horse.get('_mf') or {})
+        source_guard_snapshot = {}
+        score_components = {}
+        feature_snapshot = {}
+        baseline_weighted_numerator = 0.0
+        baseline_available_weight_total = 0.0
+        for metric, weight in candidate_weights.items():
+            guard = _V4_SOURCE_GUARDS.get(metric)
+            guard_present = bool(guard and guard in metrics)
+            guard_value = bool(metrics.get(guard)) if guard_present else None
+            if guard:
+                source_guard_snapshot[guard] = {
+                    'present': guard_present,
+                    'value': guard_value,
+                }
+            included = not (guard_present and not bool(guard_value))
+            try:
+                value = float(metrics.get(metric, 50.0))
+            except (TypeError, ValueError):
+                value = 50.0
+            if not math.isfinite(value):
+                value = 50.0
+            feature_snapshot[metric] = value
+            baseline_raw_weight = baseline_weights.get(metric, 0.0)
+            candidate_raw_weight = formula['candidateRawWeights'].get(metric, 0.0)
+            score_components[metric] = {
+                'value': value,
+                'weightPct': candidate_weights_pct[metric],
+                'baselineRawWeightPoints': baseline_raw_weight,
+                'candidateRawWeightPoints': candidate_raw_weight,
+                'guard': guard,
+                'included': included,
+            }
+            if included and baseline_raw_weight > 0.0:
+                baseline_weighted_numerator += value * baseline_raw_weight
+                baseline_available_weight_total += baseline_raw_weight
+        try:
+            penalty_total = max(
+                0.0,
+                float(horse.get('v4PenaltyTotal', 0.0) or 0.0),
+            )
+        except (TypeError, ValueError):
+            penalty_total = 0.0
+        replay_score = calculate_h15_score_from_replay_totals(
+            baseline_weighted_numerator,
+            baseline_available_weight_total,
+            source['metricValue'] if source['hasSource'] else None,
+            penalty_total,
+        )
+        base_score = replay_score['baseScore']
+        score = replay_score['score']
+        replay_baseline_base_score = (
+            baseline_weighted_numerator / baseline_available_weight_total
+            if baseline_available_weight_total > 0.0
+            else 50.0
+        )
+        replay_baseline_score = max(
+            0.0,
+            min(100.0, replay_baseline_base_score - penalty_total),
+        )
+        feature_hash_payload = {
+            'horseName': str(horse.get('name') or '').strip(),
+            'features': feature_snapshot,
+            'sourceGuards': source_guard_snapshot,
+            'trainingSource': source,
+        }
+
+        horse['h15TrainingCandidateVersion'] = _H15_TRAINING_SHADOW_VERSION
+        horse['h15TrainingCandidateMode'] = _H15_TRAINING_SHADOW_MODE
+        horse['h15TrainingCandidateObservationStart'] = (
+            _H15_TRAINING_SHADOW_OBSERVATION_START
+        )
+        horse['h15TrainingCandidateCreatedTs'] = created_ts
+        horse['h15TrainingCandidateBaselineVersion'] = (
+            _H15_TRAINING_SHADOW_BASELINE_VERSION
+        )
+        horse['h15TrainingCandidateBaselineScore'] = horse.get('v4Score')
+        horse['h15TrainingCandidateBaselineRank'] = horse.get('v4Rank')
+        horse['h15TrainingCandidateBaselineWeightedNumerator'] = (
+            baseline_weighted_numerator
+        )
+        horse['h15TrainingCandidateBaselineAvailableWeightTotal'] = (
+            baseline_available_weight_total
+        )
+        horse['h15TrainingCandidateReplayBaselineBaseScore'] = (
+            replay_baseline_base_score
+        )
+        horse['h15TrainingCandidateReplayBaselineScore'] = (
+            replay_baseline_score
+        )
+        horse['h15TrainingCandidateReplayBaselineRank'] = None
+        horse['h15TrainingCandidateAddedMetricValue'] = (
+            source['metricValue'] if source['hasSource'] else None
+        )
+        horse['h15TrainingCandidateWeightedNumerator'] = replay_score[
+            'candidateWeightedNumerator'
+        ]
+        horse['h15TrainingCandidateAvailableWeightTotal'] = replay_score[
+            'candidateAvailableWeightTotal'
+        ]
+        horse['h15TrainingCandidateBaseScore'] = base_score
+        horse['h15TrainingCandidatePenaltyTotal'] = penalty_total
+        horse['h15TrainingCandidateScore'] = score
+        horse['h15TrainingCandidateRank'] = None
+        horse['h15TrainingCandidateUsedForRanking'] = False
+        horse['h15TrainingCandidateTelegramVisible'] = False
+        horse['h15TrainingCandidateRolloutEligible'] = False
+        horse['h15TrainingCandidateFormalReplayOnly'] = True
+        horse['h15TrainingCandidateProfile'] = first_visible_profile
+        horse['h15TrainingCandidateMetric'] = _H15_TRAINING_SHADOW_METRIC
+        horse['h15TrainingCandidateRawWeightAddPoints'] = (
+            _H15_TRAINING_SHADOW_RAW_ADD_POINTS
+        )
+        horse['h15TrainingCandidateBaselineWeights'] = baseline_weights
+        horse['h15TrainingCandidateBaselineRawTotal'] = formula['baselineRawTotal']
+        horse['h15TrainingCandidateRawWeights'] = formula['candidateRawWeights']
+        horse['h15TrainingCandidateRawTotal'] = formula['candidateRawTotal']
+        horse['h15TrainingCandidateWeights'] = candidate_weights_pct
+        horse['h15TrainingCandidateWeightDeltaPct'] = formula['weightDeltaPct']
+        horse['h15TrainingCandidateDefinitionSha256'] = definition_sha256
+        horse['h15TrainingCandidateCalibrationContract'] = dict(
+            _H15_TRAINING_SHADOW_CALIBRATION_CONTRACT
+        )
+        horse['h15TrainingCandidateFeatureSnapshot'] = feature_snapshot
+        horse['h15TrainingCandidateSourceGuardSnapshot'] = source_guard_snapshot
+        horse['h15TrainingCandidateScoreComponents'] = score_components
+        horse['h15TrainingCandidateFeatureVectorSha256'] = (
+            _h15_canonical_sha256(feature_hash_payload)
+        )
+        horse['h15TrainingCandidateSource'] = {
+            **source,
+            'sourceCount': source_count,
+            'actionableCount': actionable_count,
+            'neutralCount': neutral_count,
+            'unavailableCount': unavailable_count,
+            'runnerCount': runner_count,
+            'coverage': round(source_count / runner_count, 6),
+            'actionableCoverage': round(actionable_count / runner_count, 6),
+        }
+        horse['h15TrainingCandidateReplayTop3SetAgreement'] = None
+        horse['h15TrainingCandidateEvidenceIssue'] = None
+        horse['h15TrainingCandidateRaceEvidenceEligible'] = False
+        horse['h15TrainingCandidateReason'] = (
+            'Exact HANDIKAP15 v4.25 prospective shadow: add 2.0 raw points '
+            'to training_degree_score in the exported v4Weights map, then '
+            'normalize. Visible ranking and Telegram are unchanged.'
+        )
+
+    # Match metric_signal_registry.race_metric_outcome exactly: both replay
+    # orders break score ties with the frozen visible rank, then horse name.
+    replay_baseline_ranked = sorted(
+        analyzed_horses,
+        key=lambda horse: (
+            -float(
+                horse.get('h15TrainingCandidateReplayBaselineScore', 0.0)
+                or 0.0
+            ),
+            int(horse.get('v4Rank', 999) or 999),
+            str(horse.get('name') or ''),
+        ),
+    )
+    for index, horse in enumerate(replay_baseline_ranked):
+        horse['h15TrainingCandidateReplayBaselineRank'] = index + 1
+
+    candidate_ranked = sorted(
+        analyzed_horses,
+        key=lambda horse: (
+            -float(horse.get('h15TrainingCandidateScore', 0.0) or 0.0),
+            int(horse.get('v4Rank', 999) or 999),
+            str(horse.get('name') or ''),
+        ),
+    )
+    for index, horse in enumerate(candidate_ranked):
+        horse['h15TrainingCandidateRank'] = index + 1
+
+    visible_top3 = {
+        id(horse)
+        for horse in sorted(
+            analyzed_horses,
+            key=lambda horse: int(horse.get('v4Rank', 999) or 999),
+        )[:3]
+    }
+    replay_baseline_top3 = {id(horse) for horse in replay_baseline_ranked[:3]}
+    replay_top3_set_agreement = visible_top3 == replay_baseline_top3
+    evidence_issue = (
+        None
+        if replay_top3_set_agreement
+        else 'visible_replay_baseline_top3_set_mismatch'
+    )
+    for horse in analyzed_horses:
+        horse['h15TrainingCandidateReplayTop3SetAgreement'] = (
+            replay_top3_set_agreement
+        )
+        horse['h15TrainingCandidateEvidenceIssue'] = evidence_issue
+        horse['h15TrainingCandidateRaceEvidenceEligible'] = bool(
+            actionable_count > 0
+        )
+
+    race_hash_payload = {
+        'definitionSha256': definition_sha256,
+        'createdTs': created_ts,
+        'replayTop3SetAgreement': replay_top3_set_agreement,
+        'evidenceIssue': evidence_issue,
+        'horses': sorted(
+            [
+                {
+                    'horseName': str(horse.get('name') or '').strip(),
+                    'baselineScore': horse.get('h15TrainingCandidateBaselineScore'),
+                    'baselineRank': horse.get('h15TrainingCandidateBaselineRank'),
+                    'replayBaselineScore': horse.get(
+                        'h15TrainingCandidateReplayBaselineScore'
+                    ),
+                    'replayBaselineRank': horse.get(
+                        'h15TrainingCandidateReplayBaselineRank'
+                    ),
+                    'candidateScore': horse.get('h15TrainingCandidateScore'),
+                    'candidateRank': horse.get('h15TrainingCandidateRank'),
+                    'featureVectorSha256': horse.get(
+                        'h15TrainingCandidateFeatureVectorSha256'
+                    ),
+                }
+                for horse in analyzed_horses
+            ],
+            key=lambda item: item['horseName'].casefold(),
+        ),
+    }
+    race_sha256 = _h15_canonical_sha256(race_hash_payload)
+    for horse in analyzed_horses:
+        horse['h15TrainingCandidateRaceSnapshotSha256'] = race_sha256
+
+    print(
+        f"[H15 TRAINING SHADOW] version={_H15_TRAINING_SHADOW_VERSION} "
+        f"profile={first_visible_profile.get('selectedKey')} runners={runner_count} "
+        f"raw_add={_H15_TRAINING_SHADOW_RAW_ADD_POINTS:.1f} source="
+        f"{source_count}/{runner_count} actionable={actionable_count}/{runner_count}"
+    )
+    return analyzed_horses
+
+
+def h15_training_candidate_log_fields(horse):
+    """Return the complete immutable export contract for one H15 runner."""
+    return {
+        'h15_training_candidate_version': horse.get('h15TrainingCandidateVersion'),
+        'h15_training_candidate_mode': horse.get('h15TrainingCandidateMode'),
+        'h15_training_candidate_observation_start': horse.get('h15TrainingCandidateObservationStart'),
+        'h15_training_candidate_created_ts': horse.get('h15TrainingCandidateCreatedTs'),
+        'h15_training_candidate_baseline_version': horse.get('h15TrainingCandidateBaselineVersion'),
+        'h15_training_candidate_baseline_score': horse.get('h15TrainingCandidateBaselineScore'),
+        'h15_training_candidate_baseline_rank': horse.get('h15TrainingCandidateBaselineRank'),
+        'h15_training_candidate_baseline_weighted_numerator': horse.get('h15TrainingCandidateBaselineWeightedNumerator'),
+        'h15_training_candidate_baseline_available_weight_total': horse.get('h15TrainingCandidateBaselineAvailableWeightTotal'),
+        'h15_training_candidate_replay_baseline_base_score': horse.get('h15TrainingCandidateReplayBaselineBaseScore'),
+        'h15_training_candidate_replay_baseline_score': horse.get('h15TrainingCandidateReplayBaselineScore'),
+        'h15_training_candidate_replay_baseline_rank': horse.get('h15TrainingCandidateReplayBaselineRank'),
+        'h15_training_candidate_added_metric_value': horse.get('h15TrainingCandidateAddedMetricValue'),
+        'h15_training_candidate_weighted_numerator': horse.get('h15TrainingCandidateWeightedNumerator'),
+        'h15_training_candidate_available_weight_total': horse.get('h15TrainingCandidateAvailableWeightTotal'),
+        'h15_training_candidate_base_score': horse.get('h15TrainingCandidateBaseScore'),
+        'h15_training_candidate_penalty_total': horse.get('h15TrainingCandidatePenaltyTotal'),
+        'h15_training_candidate_score': horse.get('h15TrainingCandidateScore'),
+        'h15_training_candidate_rank': horse.get('h15TrainingCandidateRank'),
+        'h15_training_candidate_used_for_ranking': horse.get('h15TrainingCandidateUsedForRanking', False),
+        'h15_training_candidate_telegram_visible': horse.get('h15TrainingCandidateTelegramVisible', False),
+        'h15_training_candidate_rollout_eligible': horse.get('h15TrainingCandidateRolloutEligible', False),
+        'h15_training_candidate_formal_replay_only': horse.get('h15TrainingCandidateFormalReplayOnly', True),
+        'h15_training_candidate_profile': horse.get('h15TrainingCandidateProfile', {}),
+        'h15_training_candidate_metric': horse.get('h15TrainingCandidateMetric'),
+        'h15_training_candidate_raw_weight_add_points': horse.get('h15TrainingCandidateRawWeightAddPoints'),
+        'h15_training_candidate_baseline_weights': horse.get('h15TrainingCandidateBaselineWeights', {}),
+        'h15_training_candidate_baseline_raw_total': horse.get('h15TrainingCandidateBaselineRawTotal'),
+        'h15_training_candidate_raw_weights': horse.get('h15TrainingCandidateRawWeights', {}),
+        'h15_training_candidate_raw_total': horse.get('h15TrainingCandidateRawTotal'),
+        'h15_training_candidate_weights': horse.get('h15TrainingCandidateWeights', {}),
+        'h15_training_candidate_weight_delta_pct': horse.get('h15TrainingCandidateWeightDeltaPct', {}),
+        'h15_training_candidate_definition_sha256': horse.get('h15TrainingCandidateDefinitionSha256'),
+        'h15_training_candidate_calibration_contract': horse.get('h15TrainingCandidateCalibrationContract', {}),
+        'h15_training_candidate_feature_snapshot': horse.get('h15TrainingCandidateFeatureSnapshot', {}),
+        'h15_training_candidate_source_guard_snapshot': horse.get('h15TrainingCandidateSourceGuardSnapshot', {}),
+        'h15_training_candidate_score_components': horse.get('h15TrainingCandidateScoreComponents', {}),
+        'h15_training_candidate_feature_vector_sha256': horse.get('h15TrainingCandidateFeatureVectorSha256'),
+        'h15_training_candidate_race_snapshot_sha256': horse.get('h15TrainingCandidateRaceSnapshotSha256'),
+        'h15_training_candidate_source': horse.get('h15TrainingCandidateSource', {}),
+        'h15_training_candidate_replay_top3_set_agreement': horse.get('h15TrainingCandidateReplayTop3SetAgreement'),
+        'h15_training_candidate_evidence_issue': horse.get('h15TrainingCandidateEvidenceIssue'),
+        'h15_training_candidate_race_evidence_eligible': horse.get('h15TrainingCandidateRaceEvidenceEligible', False),
+        'h15_training_candidate_reason': horse.get('h15TrainingCandidateReason'),
+    }
 
 
 def attach_sart1_shadow_candidate(analyzed_horses, race_type='', distance='', track=''):
@@ -10441,12 +11074,13 @@ def analyze_race():
                 }
 
         try:
-            attach_handicap_trainer_ablation_candidate(
-                analyzed_horses,
-                race_type=race_type,
-                distance=target_distance,
-                track=target_track,
-            )
+            if not _HANDICAP_TRAINER_SHADOW_RETIRED:
+                attach_handicap_trainer_ablation_candidate(
+                    analyzed_horses,
+                    race_type=race_type,
+                    distance=target_distance,
+                    track=target_track,
+                )
         except Exception as _handicap_trainer_shadow_err:
             _handicap_profile = extract_v4_race_profile(
                 race_type=race_type,
@@ -10468,6 +11102,40 @@ def analyze_race():
                     _h['handicapTrainerCandidateRolloutEligible'] = False
                     _h['handicapTrainerCandidateReason'] = str(
                         _handicap_trainer_shadow_err
+                    )
+
+        try:
+            attach_h15_training_degree_candidate(
+                analyzed_horses,
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+                race_date=race_date,
+                race_time=race_time,
+            )
+        except Exception as _h15_training_shadow_err:
+            _h15_profile = extract_v4_race_profile(
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+                field_size=len(analyzed_horses),
+            )
+            if _h15_profile.get('subtype') == 'HANDIKAP15':
+                print(
+                    '[H15 TRAINING SHADOW] Hesaplama hatasi; gorunur v4 '
+                    f'siralamasi korundu: {_h15_training_shadow_err}'
+                )
+                for _h in analyzed_horses:
+                    _h['h15TrainingCandidateVersion'] = (
+                        _H15_TRAINING_SHADOW_VERSION
+                    )
+                    _h['h15TrainingCandidateMode'] = 'unavailable'
+                    _h['h15TrainingCandidateUsedForRanking'] = False
+                    _h['h15TrainingCandidateTelegramVisible'] = False
+                    _h['h15TrainingCandidateRolloutEligible'] = False
+                    _h['h15TrainingCandidateFormalReplayOnly'] = True
+                    _h['h15TrainingCandidateReason'] = str(
+                        _h15_training_shadow_err
                     )
 
         try:
@@ -10654,6 +11322,7 @@ def analyze_race():
                     'handicap_trainer_candidate_feature_snapshot': _h.get('handicapTrainerCandidateFeatureSnapshot', {}),
                     'handicap_trainer_candidate_score_components': _h.get('handicapTrainerCandidateScoreComponents', {}),
                     'handicap_trainer_candidate_reason': _h.get('handicapTrainerCandidateReason'),
+                    **h15_training_candidate_log_fields(_h),
                     'sart1_candidate_version': _h.get('sart1CandidateVersion'),
                     'sart1_candidate_mode': _h.get('sart1CandidateMode'),
                     'sart1_candidate_observation_start': _h.get('sart1CandidateObservationStart'),
@@ -10768,6 +11437,7 @@ def analyze_race():
                     _preserve_sart1_candidate_snapshot(_entry, _prev)
                     _preserve_maiden_candidate_snapshot(_entry, _prev)
                     _preserve_handicap_trainer_candidate_snapshot(_entry, _prev)
+                    _preserve_h15_training_candidate_snapshot(_entry, _prev)
                     _preserve_future_signal_ledger_snapshot(_entry, _prev)
 
                 _new_entries.append(_json.dumps(_entry, ensure_ascii=False))
