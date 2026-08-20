@@ -270,6 +270,28 @@ class LateMarketAgfShadowTests(unittest.TestCase):
                 collected_at=datetime(2026, 8, 14, 10, 0, tzinfo=ISTANBUL),
             )
 
+    def test_subsecond_collection_uses_one_frozen_instant(self):
+        collected_at = datetime(
+            2026, 8, 14, 10, 0, 0, 730000, tzinfo=ISTANBUL
+        )
+        snapshot, reason = build_snapshot(
+            day=DAY,
+            manifest=analysis_manifest()["cities"][0]["races"][0],
+            baseline_rows=prediction_rows(),
+            live_race=live_race(),
+            city_id="3",
+            city_name="Bursa",
+            source_url=SOURCE_URL,
+            collected_at=collected_at,
+        )
+
+        self.assertEqual(reason, "accepted")
+        self.assertIsNotNone(snapshot)
+        calculated = (
+            snapshot["identity"]["raceStartTs"] - snapshot["collectedTs"]
+        ) / 60.0
+        self.assertAlmostEqual(snapshot["leadMinutes"], round(calculated, 3), places=6)
+
     def test_non_runner_and_pool_raw_mismatch_fail_closed(self):
         changed = live_race()
         changed["horses"][0]["isNonRunner"] = True

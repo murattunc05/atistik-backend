@@ -531,6 +531,11 @@ def build_snapshot(
     if collected_at.date() != day:
         raise IntegrityError("collection_date_mismatch")
     collected_ts = int(collected_at.timestamp())
+    # Freeze every persisted time field to the same whole-second instant.  The
+    # monitor reconstructs lead time from ``collectedTs``; retaining sub-second
+    # precision here while serializing ``collectedAt`` with ``timespec=seconds``
+    # made otherwise valid immutable snapshots disagree by up to one second.
+    collected_at = datetime.fromtimestamp(collected_ts, ISTANBUL)
     prediction_timestamps = [safe_int(row.get("ts"), 0) for row in baseline_rows]
     if any(value <= 0 for value in prediction_timestamps):
         raise IntegrityError("baseline_prediction_ts_invalid")

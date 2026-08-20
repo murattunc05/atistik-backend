@@ -51,6 +51,33 @@ def race(index, labeled=True):
 
 
 class LateMarketAgfShadowMonitorTests(unittest.TestCase):
+    def test_legacy_subsecond_lead_rounding_is_accepted_but_larger_drift_is_not(self):
+        snapshot, rows = race(0)
+        calculated = (
+            snapshot["identity"]["raceStartTs"] - snapshot["collectedTs"]
+        ) / 60.0
+
+        legacy = copy.deepcopy(snapshot)
+        legacy["leadMinutes"] = round(calculated - 0.7 / 60.0, 3)
+        unhashed = dict(legacy)
+        unhashed.pop("snapshotSha256", None)
+        legacy["snapshotSha256"] = sha256_payload(unhashed)
+        accepted = build_report([legacy], rows, "2026-08-14")
+        self.assertEqual(accepted["coverage"]["fullyLabeledRaces"], 1)
+        self.assertEqual(accepted["coverage"]["integrityInvalidRaces"], 0)
+
+        drifted = copy.deepcopy(snapshot)
+        drifted["leadMinutes"] = round(calculated - 1.2 / 60.0, 3)
+        unhashed = dict(drifted)
+        unhashed.pop("snapshotSha256", None)
+        drifted["snapshotSha256"] = sha256_payload(unhashed)
+        rejected = build_report([drifted], rows, "2026-08-14")
+        self.assertEqual(rejected["coverage"]["fullyLabeledRaces"], 0)
+        self.assertEqual(
+            rejected["coverage"]["integrityInvalidReasons"],
+            {"causality": 1},
+        )
+
     def test_unlabeled_is_kept_out_of_performance(self):
         snapshot, rows = race(0, labeled=False)
         report = build_report([snapshot], rows, "2026-08-14")

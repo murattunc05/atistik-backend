@@ -65,6 +65,7 @@ except ModuleNotFoundError as exc:
 CHECKPOINTS = (5, 10, 15)
 TERMINAL_FINISH_POSITIONS = {99}
 ISTANBUL = ZoneInfo("Europe/Istanbul")
+LEGACY_LEAD_TOLERANCE_SECONDS = 1.05
 
 
 def _prediction_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -209,7 +210,14 @@ def validate_snapshot(
         or datetime.fromtimestamp(prediction_ts_max, ISTANBUL).date() != race_day
         or collected_ts >= race_start_ts
         or calculated_lead + 1e-9 < MIN_LEAD_MINUTES
-        or abs((finite(snapshot.get("leadMinutes")) or -999.0) - round(calculated_lead, 3)) > 1e-6
+        # Snapshots written before the collector normalized its clock to whole
+        # seconds can differ by less than one second here.  Keep those signed,
+        # immutable observations usable without weakening any date, ordering or
+        # minimum-lead guard; larger discrepancies still fail closed.
+        or abs(
+            ((finite(snapshot.get("leadMinutes")) or -999.0) - round(calculated_lead, 3))
+            * 60.0
+        ) > LEGACY_LEAD_TOLERANCE_SECONDS
     ):
         return False, "causality"
     try:
