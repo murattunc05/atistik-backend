@@ -14,6 +14,12 @@ class RaspberryPredictionBackupTest(unittest.TestCase):
     def test_pi_disables_per_request_async_backup(self):
         self.assertIn('ATISTIK_GITHUB_AUTO_BACKUP: "false"', self.compose)
 
+    def test_restore_uses_dedicated_file_and_public_hash_not_github_pat(self):
+        self.assertIn('ATISTIK_RESTORE_TOKEN_SHA256:', self.compose)
+        self.assertIn('RESTORE_TOKEN_FILE=', self.run_script)
+        self.assertIn('.restore-token', self.run_script)
+        self.assertNotIn('hmac.new(os.environ["GITHUB_TOKEN"]', self.run_script)
+
     def test_api_writes_directly_to_configured_state_path(self):
         api_server = (ROOT / "api_server.py").read_text(encoding="utf-8")
         self.assertIn("_os.environ.get('ATISTIK_PREDICTIONS_PATH', '').strip()", api_server)

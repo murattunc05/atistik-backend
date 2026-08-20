@@ -7,5 +7,7 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
+      - key: ATISTIK_RESTORE_TOKEN_SHA256
+        value: a74dbe069f765fda3e15b635291507b6aacedd9ac2610630768910d6c6a652da
     plan: free
     healthCheckPath: /health

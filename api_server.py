@@ -651,17 +651,17 @@ def _prediction_file_stats(path=None):
 def _restore_request_authorized():
     """Authenticate remote restore triggers without placing secrets in URLs."""
     expected = _os.environ.get('ATISTIK_RESTORE_TOKEN', '').strip()
-    if not expected and _GITHUB_TOKEN.strip():
-        # Domain-separated credential: the GitHub PAT itself is never sent.
-        expected = _hmac.new(
-            _GITHUB_TOKEN.strip().encode('utf-8'),
-            b'atistik-restore-v1',
-            hashlib.sha256,
-        ).hexdigest()
-    if not expected:
-        return True
+    expected_sha256 = _os.environ.get('ATISTIK_RESTORE_TOKEN_SHA256', '').strip().lower()
     provided = request.headers.get('X-Atistik-Restore-Token', '')
-    return bool(provided) and _hmac.compare_digest(provided, expected)
+    if expected:
+        return bool(provided) and _hmac.compare_digest(provided, expected)
+    if re.fullmatch(r'[0-9a-f]{64}', expected_sha256):
+        provided_sha256 = hashlib.sha256(provided.encode('utf-8')).hexdigest()
+        return bool(provided) and _hmac.compare_digest(provided_sha256, expected_sha256)
+    if not _GITHUB_TOKEN and not _GITHUB_ML_REPO:
+        # Tests/local development without a configured private backup.
+        return True
+    return False
 
 
 def _gh_headers():

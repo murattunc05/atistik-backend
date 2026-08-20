@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import stat
 import tempfile
@@ -16,7 +17,9 @@ class MlRestoreAsyncTests(unittest.TestCase):
             "started_at": "2026-08-20T18:00:00Z",
             "finished_at": None,
         }
-        with patch.object(api, "schedule_github_restore", return_value=(True, job)):
+        with patch.object(api, "schedule_github_restore", return_value=(True, job)), patch.object(
+            api, "_restore_request_authorized", return_value=True
+        ):
             response = api.app.test_client().post("/api/ml-restore?force=true&async=true")
 
         self.assertEqual(response.status_code, 202)
@@ -217,11 +220,39 @@ class MlRestoreAsyncTests(unittest.TestCase):
             self.assertTrue(api._prediction_writes_blocked())
 
     def test_restore_route_requires_header_when_secret_configured(self):
-        with patch.object(api, "_GITHUB_TOKEN", "restore-secret"):
+        with patch.dict(
+            api._os.environ,
+            {"ATISTIK_RESTORE_TOKEN": "restore-secret"},
+            clear=False,
+        ):
             response = api.app.test_client().post(
                 "/api/ml-restore?force=true&async=true"
             )
         self.assertEqual(response.status_code, 403)
+
+    def test_restore_route_accepts_only_token_matching_configured_hash(self):
+        secret = "dedicated-restore-secret"
+        expected_hash = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+        job = {"status": "running", "restored": False}
+        with patch.dict(
+            api._os.environ,
+            {
+                "ATISTIK_RESTORE_TOKEN": "",
+                "ATISTIK_RESTORE_TOKEN_SHA256": expected_hash,
+            },
+            clear=False,
+        ), patch.object(api, "schedule_github_restore", return_value=(True, job)):
+            accepted = api.app.test_client().post(
+                "/api/ml-restore?force=true&async=true",
+                headers={"X-Atistik-Restore-Token": secret},
+            )
+            rejected = api.app.test_client().post(
+                "/api/ml-restore?force=true&async=true",
+                headers={"X-Atistik-Restore-Token": "wrong"},
+            )
+
+        self.assertEqual(accepted.status_code, 202)
+        self.assertEqual(rejected.status_code, 403)
 
     def test_large_restore_path_streams_bytes_without_response_text(self):
         class StreamingResponse:

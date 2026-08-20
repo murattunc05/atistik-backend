@@ -12,6 +12,7 @@ services:
       PORT: "5000"
       ATISTIK_PREDICTIONS_PATH: /state/predictions.jsonl
       ATISTIK_GITHUB_AUTO_BACKUP: "false"
+      ATISTIK_RESTORE_TOKEN_SHA256: "a74dbe069f765fda3e15b635291507b6aacedd9ac2610630768910d6c6a652da"
     ports:
       - "127.0.0.1:5000:5000"
     volumes:

@@ -34,12 +34,12 @@ if [[ -z "${ML_DATA_REPO:-}" || -z "${ML_DATA_TOKEN:-}" ]]; then
 fi
 
 RESTORE_TOKEN="${ATISTIK_RESTORE_TOKEN:-}"
-if [[ -z "$RESTORE_TOKEN" && -n "${GITHUB_TOKEN:-}" ]]; then
-  RESTORE_TOKEN="$(python3 -c 'import hashlib, hmac, os
-print(hmac.new(os.environ["GITHUB_TOKEN"].strip().encode(), b"atistik-restore-v1", hashlib.sha256).hexdigest())')"
+RESTORE_TOKEN_FILE="${ATISTIK_RESTORE_TOKEN_FILE:-${ROOT_DIR}/.restore-token}"
+if [[ -z "$RESTORE_TOKEN" && -f "$RESTORE_TOKEN_FILE" ]]; then
+  RESTORE_TOKEN="$(tr -d '\r\n' < "$RESTORE_TOKEN_FILE")"
 fi
 if [[ -z "$RESTORE_TOKEN" ]]; then
-  echo "ATISTIK_RESTORE_TOKEN veya GITHUB_TOKEN restore dogrulamasi icin tanimli olmali." >&2
+  echo "ATISTIK_RESTORE_TOKEN veya ${RESTORE_TOKEN_FILE} restore dogrulamasi icin mevcut olmali." >&2
   exit 2
 fi
 
