@@ -236,6 +236,7 @@ class FetchResultIdentityTests(unittest.TestCase):
                     "race_date": "13.08.2026",
                     "race_no": "9",
                     "horse_name": "UĞURLU NİLGÜN",
+                    "rank_pred": 1,
                     "finish_pos": 99,
                     "is_winner": 0,
                 }, ensure_ascii=False) + "\n",
