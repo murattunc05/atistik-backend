@@ -19,6 +19,7 @@ import threading
 from functools import wraps
 from datetime import datetime, timezone
 from automation.future_signal_ledger import build_race_signal_ledger
+from result_submission import parse_official_degree_seconds
 
 app = Flask(__name__)
 CORS(app)  # Flutter'dan gelen isteklere izin ver
@@ -1489,6 +1490,14 @@ _TJK_DAILY_RESULTS_CITY_URL = (
     "https://www.tjk.org/TR/YarisSever/Info/Sehir/GunlukYarisSonuclari"
 )
 _RESULT_TERMINAL_POSITION = 99
+_RESULT_PERSISTED_METADATA_FIELDS = (
+    'result_status',
+    'terminal_reason',
+    'result_source',
+    'official_degree_raw',
+    'official_degree_seconds',
+    'official_degree_source',
+)
 
 
 def _clean_result_horse_name(value):
@@ -1608,12 +1617,20 @@ def _parse_official_result_race(html, race_id):
         row_text = row.get_text(' ', strip=True)
 
         if raw_position.isdigit() and int(raw_position) > 0:
-            parsed.append({
+            finished = {
                 'horse_name': horse_name,
                 'finish_pos': int(raw_position),
                 'result_status': 'finished',
                 'result_source': 'tjk_official_results',
-            })
+            }
+            official_degree_seconds = parse_official_degree_seconds(raw_degree)
+            if official_degree_seconds is not None:
+                finished.update({
+                    'official_degree_raw': raw_degree,
+                    'official_degree_seconds': official_degree_seconds,
+                    'official_degree_source': 'tjk_official_results',
+                })
+            parsed.append(finished)
             continue
 
         terminal = _official_terminal_result(raw_position, raw_degree, row_text)
@@ -11596,14 +11613,20 @@ def analyze_race():
         # future feature work.  This ledger is diagnostic only and cannot alter
         # either the visible v4 scores or their ordering.
         try:
+            _future_signal_created_ts = int(time.time())
             _future_signal_ledger = build_race_signal_ledger(
                 analyzed_horses,
                 target_distance=target_distance,
                 target_track=target_track,
                 target_city=race_city,
                 profile=race_type,
+                race_id=race_id,
+                race_date=race_date,
+                race_no=race_no,
+                race_time=race_time,
+                city_id=race_city_id,
+                captured_ts=_future_signal_created_ts,
             )
-            _future_signal_created_ts = int(time.time())
             _future_signal_by_name = {
                 str(_row.get('horseName') or '').strip().casefold(): _row
                 for _row in _future_signal_ledger.get('horses', [])
@@ -11623,6 +11646,7 @@ def analyze_race():
                     'profile': _future_signal_ledger.get('profile'),
                     'context': _future_signal_ledger.get('context'),
                     'coverage': _future_signal_ledger.get('coverage'),
+                    'pointInTime': _future_signal_ledger.get('pointInTime'),
                     'telemetry': _row.get('telemetry'),
                     'fieldDiagnosticScores': _row.get('fieldDiagnosticScores'),
                     'promotionPolicy': _future_signal_ledger.get('promotionPolicy'),
@@ -12037,7 +12061,7 @@ def analyze_race():
                     if _prev.get('finish_pos') is not None:
                         _entry['finish_pos'] = _prev['finish_pos']
                         _entry['is_winner']  = _prev.get('is_winner')
-                        for _label_key in ('result_status', 'terminal_reason', 'result_source'):
+                        for _label_key in _RESULT_PERSISTED_METADATA_FIELDS:
                             if _prev.get(_label_key) not in (None, ''):
                                 _entry[_label_key] = _prev[_label_key]
                     _preserve_sart1_candidate_snapshot(_entry, _prev)
@@ -12236,7 +12260,7 @@ def ml_cleanup():
                             # Zaten etiketli → sadece feature'ları güncelle, label koru
                             entry['finish_pos'] = prev['finish_pos']
                             entry['is_winner'] = prev.get('is_winner')
-                            for label_key in ('result_status', 'terminal_reason', 'result_source'):
+                            for label_key in _RESULT_PERSISTED_METADATA_FIELDS:
                                 if prev.get(label_key) not in (None, ''):
                                     entry[label_key] = prev[label_key]
                         duplicates_removed += 1

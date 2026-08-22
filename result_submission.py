@@ -12,7 +12,75 @@ import re
 from typing import Any
 
 
-RESULT_METADATA_FIELDS = ("result_status", "terminal_reason", "result_source")
+RESULT_METADATA_FIELDS = (
+    "result_status",
+    "terminal_reason",
+    "result_source",
+    "official_degree_raw",
+    "official_degree_seconds",
+    "official_degree_source",
+)
+_BASE_RESULT_METADATA_FIELDS = ("result_status", "terminal_reason", "result_source")
+_OFFICIAL_DEGREE_FIELDS = (
+    "official_degree_raw",
+    "official_degree_seconds",
+    "official_degree_source",
+)
+
+
+def parse_official_degree_seconds(raw_degree: Any) -> float | None:
+    """Parse only TJK's official ``ss.cc`` / ``m.ss.cc`` result formats."""
+    text = str(raw_degree or "").strip()
+    if not re.fullmatch(r"(?:\d{1,2}\.)?\d{1,2}\.\d{2}", text):
+        return None
+    parts = text.split(".")
+    try:
+        if len(parts) == 3:
+            minutes, seconds, centiseconds = (int(part) for part in parts)
+        else:
+            minutes = 0
+            seconds, centiseconds = (int(part) for part in parts)
+    except (TypeError, ValueError):
+        return None
+    if seconds >= 60 or centiseconds >= 100:
+        return None
+    total = minutes * 60 + seconds + centiseconds / 100.0
+    return round(total, 2) if 20.0 <= total <= 600.0 else None
+
+
+def _validated_official_degree_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    """Return an all-or-nothing authoritative official-degree triad."""
+    supplied = [item.get(field) not in (None, "") for field in _OFFICIAL_DEGREE_FIELDS]
+    if not any(supplied):
+        return {}
+    if not all(supplied):
+        return {}
+    if (
+        item.get("result_status") != "finished"
+        or item.get("result_source") != "tjk_official_results"
+        or item.get("official_degree_source") != "tjk_official_results"
+        or item.get("terminal_reason") not in (None, "")
+    ):
+        return {}
+    recomputed = parse_official_degree_seconds(item.get("official_degree_raw"))
+    submitted = _safe_finite_float(item.get("official_degree_seconds"))
+    if recomputed is None or submitted is None or abs(recomputed - submitted) > 0.01:
+        return {}
+    return {
+        "official_degree_raw": str(item.get("official_degree_raw")).strip(),
+        "official_degree_seconds": recomputed,
+        "official_degree_source": "tjk_official_results",
+    }
+
+
+def _safe_finite_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def clean_result_name(value: Any) -> str:
@@ -125,13 +193,15 @@ def reconcile_result_submission(
             continue
         name_key = clean_result_name(item.get("horse_name", ""))
         if name_key and _positive_finish_position(item.get("finish_pos")):
+            metadata = {
+                field: item.get(field)
+                for field in _BASE_RESULT_METADATA_FIELDS
+                if item.get(field) not in (None, "")
+            }
+            metadata.update(_validated_official_degree_metadata(item))
             incoming[name_key] = {
                 "finish_pos": item.get("finish_pos"),
-                "metadata": {
-                    field: item.get(field)
-                    for field in RESULT_METADATA_FIELDS
-                    if item.get(field) not in (None, "")
-                },
+                "metadata": metadata,
             }
     incoming_names = set(incoming)
 
@@ -201,6 +271,12 @@ def reconcile_result_submission(
             for field, incoming_value in incoming_metadata.items():
                 existing_value = entry.get(field)
                 if existing_value in (None, ""):
+                    metadata_backfill[field] = incoming_value
+                elif (
+                    field == "result_source"
+                    and existing_value == "horse_history_fallback"
+                    and incoming_value == "tjk_official_results"
+                ):
                     metadata_backfill[field] = incoming_value
                 elif existing_value != incoming_value:
                     metadata_conflicts.append({

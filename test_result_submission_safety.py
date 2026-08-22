@@ -1,9 +1,166 @@
 import unittest
 
-from result_submission import clean_result_name, reconcile_result_submission
+from result_submission import (
+    clean_result_name,
+    parse_official_degree_seconds,
+    reconcile_result_submission,
+)
 
 
 class ResultSubmissionSafetyTests(unittest.TestCase):
+    def test_official_degree_parser_is_strict(self):
+        self.assertEqual(parse_official_degree_seconds("1.24.00"), 84.0)
+        self.assertEqual(parse_official_degree_seconds("59.75"), 59.75)
+        self.assertIsNone(parse_official_degree_seconds("Derecesiz"))
+        self.assertIsNone(parse_official_degree_seconds("1.60.00"))
+        self.assertIsNone(parse_official_degree_seconds("1:24:00"))
+
+    def test_untrusted_partial_or_inconsistent_degree_triad_is_dropped(self):
+        base_entry = {
+            "race_id": "R1",
+            "race_date": "22.08.2026",
+            "race_no": "1",
+            "horse_name": "A",
+            "finish_pos": None,
+        }
+        valid_degree = {
+            "official_degree_raw": "1.24.00",
+            "official_degree_seconds": 84.0,
+            "official_degree_source": "tjk_official_results",
+        }
+        cases = {
+            "forged_source": {
+                "result_status": "finished",
+                "result_source": "horse_history_fallback",
+                **valid_degree,
+            },
+            "mismatched_seconds": {
+                "result_status": "finished",
+                "result_source": "tjk_official_results",
+                **valid_degree,
+                "official_degree_seconds": 83.0,
+            },
+            "partial_triad": {
+                "result_status": "finished",
+                "result_source": "tjk_official_results",
+                "official_degree_raw": "1.24.00",
+            },
+            "terminal_result": {
+                "result_status": "non_runner",
+                "result_source": "tjk_official_results",
+                "terminal_reason": "Koşmaz",
+                **valid_degree,
+            },
+        }
+        for case, metadata in cases.items():
+            with self.subTest(case=case):
+                result = reconcile_result_submission(
+                    [base_entry],
+                    race_id="R1",
+                    race_date="22.08.2026",
+                    race_no="1",
+                    results=[{"horse_name": "A", "finish_pos": 99 if case == "terminal_result" else 1, **metadata}],
+                )
+                saved = result["entries"][0]
+                self.assertNotIn("official_degree_raw", saved)
+                self.assertNotIn("official_degree_seconds", saved)
+                self.assertNotIn("official_degree_source", saved)
+
+    def test_official_degree_metadata_is_persisted_and_immutable(self):
+        entries = [{
+            "race_id": "226100",
+            "race_date": "15.07.2026",
+            "race_no": "1",
+            "horse_name": "SUPER CHIRON",
+            "finish_pos": None,
+        }]
+        official = [{
+            "horse_name": "SUPER CHIRON",
+            "finish_pos": 1,
+            "result_status": "finished",
+            "result_source": "tjk_official_results",
+            "official_degree_raw": "1.24.00",
+            "official_degree_seconds": 84.0,
+            "official_degree_source": "tjk_official_results",
+        }]
+        first = reconcile_result_submission(
+            entries,
+            race_id="226100",
+            race_date="15.07.2026",
+            race_no="1",
+            results=official,
+        )
+        saved = first["entries"][0]
+        self.assertEqual(saved["official_degree_raw"], "1.24.00")
+        self.assertEqual(saved["official_degree_seconds"], 84.0)
+        self.assertEqual(saved["official_degree_source"], "tjk_official_results")
+
+        changed = [{**official[0], "official_degree_raw": "1.23.99", "official_degree_seconds": 83.99}]
+        conflict = reconcile_result_submission(
+            first["entries"],
+            race_id="226100",
+            race_date="15.07.2026",
+            race_no="1",
+            results=changed,
+        )
+        self.assertEqual(conflict["updated"], 0)
+        self.assertEqual(conflict["conflicts"][0]["conflict_type"], "result_metadata")
+        self.assertEqual(conflict["entries"][0]["official_degree_seconds"], 84.0)
+
+    def test_official_source_upgrade_does_not_block_other_runner_labels(self):
+        entries = [
+            {
+                "race_id": "R1",
+                "race_date": "22.08.2026",
+                "race_no": "1",
+                "horse_name": "A",
+                "finish_pos": 1,
+                "is_winner": 1,
+                "result_status": "finished",
+                "result_source": "horse_history_fallback",
+            },
+            {
+                "race_id": "R1",
+                "race_date": "22.08.2026",
+                "race_no": "1",
+                "horse_name": "B",
+                "finish_pos": None,
+            },
+        ]
+        official = [
+            {
+                "horse_name": "A",
+                "finish_pos": 1,
+                "result_status": "finished",
+                "result_source": "tjk_official_results",
+                "official_degree_raw": "1.24.00",
+                "official_degree_seconds": 84.0,
+                "official_degree_source": "tjk_official_results",
+            },
+            {
+                "horse_name": "B",
+                "finish_pos": 2,
+                "result_status": "finished",
+                "result_source": "tjk_official_results",
+                "official_degree_raw": "1.24.50",
+                "official_degree_seconds": 84.5,
+                "official_degree_source": "tjk_official_results",
+            },
+        ]
+        reconciled = reconcile_result_submission(
+            entries,
+            race_id="R1",
+            race_date="22.08.2026",
+            race_no="1",
+            results=official,
+        )
+
+        self.assertEqual(reconciled["conflicts"], [])
+        self.assertEqual(reconciled["updated"], 2)
+        self.assertTrue(all(row["result_source"] == "tjk_official_results" for row in reconciled["entries"]))
+        self.assertEqual(reconciled["entries"][0]["official_degree_seconds"], 84.0)
+        self.assertEqual(reconciled["entries"][1]["finish_pos"], 2)
+
     def test_exact_race_update_then_idempotent_replay(self):
         entries = [
             {"race_id": "226100", "race_date": "15.07.2026", "race_no": "1", "horse_name": "SUPER CHIRON", "finish_pos": None},

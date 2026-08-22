@@ -134,6 +134,10 @@ class FetchResultIdentityTests(unittest.TestCase):
         self.assertEqual(payload["result_source"], "tjk_official_results")
         self.assertEqual(payload["label_status"], "complete")
         self.assertEqual(payload["label_coverage"]["labeledCount"], 2)
+        winner = next(row for row in payload["results"] if row["horse_name"] == "SUPER CHIRON")
+        self.assertEqual(winner["official_degree_raw"], "1.24.00")
+        self.assertEqual(winner["official_degree_seconds"], 84.0)
+        self.assertEqual(winner["official_degree_source"], "tjk_official_results")
         non_runner = next(row for row in payload["results"] if row["horse_name"] == "AĞA SAÇAN")
         self.assertEqual(non_runner["finish_pos"], 99)
         self.assertEqual(non_runner["result_status"], "non_runner")
@@ -288,6 +292,16 @@ class FetchResultIdentityTests(unittest.TestCase):
         )
         self.assertEqual(parsed["unresolved"][0]["raw_position"], "0")
         self.assertEqual(parsed["explicitUnrankedTerminalCount"], 0)
+
+    def test_malformed_official_degree_is_not_exposed_as_telemetry(self):
+        malformed = OFFICIAL_RESULT_HTML.replace("1.24.00", "1.60.00")
+        parsed = api._parse_official_result_race(malformed, "226100")
+        winner = next(row for row in parsed["results"] if row["horse_name"] == "SUPER CHIRON")
+
+        self.assertEqual(winner["finish_pos"], 1)
+        self.assertNotIn("official_degree_raw", winner)
+        self.assertNotIn("official_degree_seconds", winner)
+        self.assertNotIn("official_degree_source", winner)
 
     def test_official_derecesiz_requires_exact_zero_and_exact_marker(self):
         unsafe_variants = (
