@@ -1,4 +1,4 @@
-"""Prospective checkpoints for the bounded MAIDEN v4 + 15% no-AGF ML overlay."""
+"""Live rollback checkpoints for the bounded MAIDEN v4 + 15% no-AGF ML overlay."""
 
 from __future__ import annotations
 
@@ -39,14 +39,15 @@ except ModuleNotFoundError as exc:
 CHECKPOINT_RACES = 5
 REVIEW_RACES = 15
 EXPECTED_ALPHA = 0.15
-EXPECTED_CANDIDATE_VERSION = "maiden-ml15-20260810-v1"
-EXPECTED_MODEL_VERSION = "maiden-shadow-20260810-v1"
-EXPECTED_MODEL_SHA256 = "85f1d7533c382b0f4a02d66c123a68a171e82196bdc8d0ad7fb3bbafc0f2684b"
+EXPECTED_CANDIDATE_VERSION = "maiden-ml15-20260823-v2"
+EXPECTED_MODEL_VERSION = "maiden-live-20260822-v2"
+EXPECTED_MODEL_SHA256 = "dc58166972df6b39fd7c01f7b5d173576915b8c1bf6fb5368053e8a8e7c1f29a"
 EXPECTED_FEATURE_SCHEMA_SHA256 = (
     "5267a4de81de7e97ce46556be96af9041816baec0770de180631bc87c52fbae0"
 )
-EXPECTED_TRAINING_CUTOFF = "25.07.2026"
+EXPECTED_TRAINING_CUTOFF = "10.08.2026"
 EXPECTED_BASELINE_VERSION = "4.25"
+EXPECTED_OBSERVATION_START = "23.08.2026"
 TERMINAL_FINISH_POSITIONS = {99}
 ISTANBUL_TZ = ZoneInfo("Europe/Istanbul")
 
@@ -179,9 +180,10 @@ def candidate_identity_valid(rows: list[dict[str, Any]]) -> bool:
             return False
 
     if any(
-        str(row.get("maiden_candidate_mode") or "") != "prospective_shadow_bounded"
+        str(row.get("maiden_candidate_mode") or "") != "controlled_live_bounded"
         or str(row.get("maiden_candidate_version") or "") != EXPECTED_CANDIDATE_VERSION
-        or str(row.get("maiden_candidate_observation_start") or "") != "10.08.2026"
+        or str(row.get("maiden_candidate_observation_start") or "")
+        != EXPECTED_OBSERVATION_START
         or str(row.get("maiden_candidate_model_version") or "") != EXPECTED_MODEL_VERSION
         or str(row.get("maiden_candidate_model_sha256") or "") != EXPECTED_MODEL_SHA256
         or str(row.get("maiden_candidate_feature_schema_hash") or "")
@@ -190,8 +192,9 @@ def candidate_identity_valid(rows: list[dict[str, Any]]) -> bool:
         != EXPECTED_TRAINING_CUTOFF
         or str(row.get("maiden_candidate_baseline_version") or "")
         != EXPECTED_BASELINE_VERSION
-        or bool(row.get("maiden_candidate_used_for_ranking"))
-        or bool(row.get("maiden_candidate_rollout_eligible"))
+        or not bool(row.get("maiden_candidate_used_for_ranking"))
+        or not bool(row.get("maiden_candidate_rollout_eligible"))
+        or not bool(row.get("maiden_candidate_telegram_visible"))
         or not bool(row.get("maiden_candidate_strict_no_agf_ml"))
         or not bool(row.get("maiden_candidate_v4_score_faithful"))
         or not expected_alpha(row)
@@ -336,7 +339,7 @@ def build_report(entries: list[dict[str, Any]], run_date: str) -> dict[str, Any]
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for entry in entries:
         version = str(entry.get("maiden_candidate_version") or "").strip()
-        if version:
+        if version == EXPECTED_CANDIDATE_VERSION:
             grouped[(
                 str(entry.get("race_date") or ""),
                 str(entry.get("race_id") or ""),
@@ -429,7 +432,7 @@ def build_report(entries: list[dict[str, Any]], run_date: str) -> dict[str, Any]
     last_three_pass = len(checkpoints) >= 3 and all(
         checkpoint["passed"] for checkpoint in checkpoints[-3:]
     )
-    formal_replay_supported = bool(
+    live_health_supported = bool(
         len(complete) >= REVIEW_RACES
         and last_three_pass
         and cumulative["winnerTop3Net"] >= 1
@@ -447,18 +450,18 @@ def build_report(entries: list[dict[str, Any]], run_date: str) -> dict[str, Any]
         )
     )
     if len(complete) < CHECKPOINT_RACES:
-        status = "COLLECTING"
+        status = "LIVE_COLLECTING"
     elif regression_signal:
-        status = "REGRESSION_SIGNAL"
+        status = "ROLLBACK_REVIEW"
     elif len(complete) < REVIEW_RACES:
-        status = "EARLY_SIGNAL"
-    elif formal_replay_supported:
-        status = "SUPPORTED_FOR_FORMAL_REPLAY"
+        status = "LIVE_EARLY_HEALTHY"
+    elif live_health_supported:
+        status = "LIVE_HEALTHY"
     else:
-        status = "REVIEW"
+        status = "LIVE_REVIEW"
     return {
         "runDate": run_date,
-        "mode": "prospective_shadow_only",
+        "mode": "controlled_live_rollback_monitor",
         "status": status,
         "candidateVersions": sorted(versions),
         "modelHashes": sorted(value for value in model_hashes if value),
@@ -467,11 +470,11 @@ def build_report(entries: list[dict[str, Any]], run_date: str) -> dict[str, Any]
         "cumulative": cumulative,
         "checkpoints": checkpoints,
         "regressionSignal": regression_signal,
-        "formalReplaySupported": formal_replay_supported,
-        "liveRolloutEligible": False,
+        "formalReplaySupported": live_health_supported,
+        "liveRolloutEligible": True,
         "liveRolloutReason": (
-            "MAIDEN candidate remains non-ranking; +5/+10/+15 prospective "
-            "checkpoints can only advance it to a new formal replay."
+            "MAIDEN v4.25 + 15% strict no-AGF ML is live; +5/+10/+15 "
+            "checkpoints are rollback guardrails."
         ),
         "nextCheckpointAt": ((len(complete) // CHECKPOINT_RACES) + 1) * CHECKPOINT_RACES,
         "races": complete,
@@ -484,14 +487,14 @@ def markdown(report: dict[str, Any]) -> str:
     visible = summary["visible"]
     candidate = summary["candidate"]
     lines = [
-        f"# MAIDEN Prospective Shadow - {report['runDate']}",
+        f"# MAIDEN Controlled Live Monitor - {report['runDate']}",
         "",
         f"- Status: **{report['status']}**",
         f"- Fully labeled prospective races: {coverage['fullyLabeledRaces']}",
         f"- Partial / unlabeled / invalid: {coverage['partialRaces']} / "
         f"{coverage['unlabeledRaces']} / {coverage['integrityInvalidRaces']}",
         f"- Next checkpoint: {report['nextCheckpointAt']}",
-        "- Live ranking and Telegram: unchanged",
+        "- Live ranking and Telegram: MAIDEN ML15 enabled",
         "",
         "| Ranking | Top1 | Winner Top3 | Winner Top5 | Avg winner rank |",
         "|---|---:|---:|---:|---:|",

@@ -91,9 +91,11 @@ _maiden_shadow_feature_stats = {}
 _maiden_shadow_metadata = {}
 _maiden_shadow_manifest = {}
 _maiden_shadow_load_error = None
-_MAIDEN_SHADOW_VERSION = "maiden-ml15-20260810-v1"
-_MAIDEN_SHADOW_OBSERVATION_START = "10.08.2026"
+_MAIDEN_SHADOW_VERSION = "maiden-ml15-20260823-v2"
+_MAIDEN_SHADOW_OBSERVATION_START = "23.08.2026"
 _MAIDEN_SHADOW_ALPHA = 0.15
+_MAIDEN_SHADOW_BASELINE_VERSION = "4.25"
+_MAIDEN_SHADOW_USED_FOR_RANKING = True
 _HANDICAP_TRAINER_SHADOW_VERSION = "handicap-trainer-ablation-20260814-v1"
 _HANDICAP_TRAINER_SHADOW_OBSERVATION_START = "14.08.2026"
 _HANDICAP_TRAINER_SHADOW_METRIC = "trainer_score"
@@ -272,7 +274,7 @@ def load_maiden_shadow_model():
             'profile': 'MAIDEN',
             'segment': 'GROUP:MAIDEN',
             'alpha': _MAIDEN_SHADOW_ALPHA,
-            'baselineVersion': 'v4.25',
+            'baselineVersion': f'v{_MAIDEN_SHADOW_BASELINE_VERSION}',
             'strictNoAgfMl': True,
             'gateDecision': 'SHADOW_CANDIDATE',
         }
@@ -287,7 +289,7 @@ def load_maiden_shadow_model():
             raise ValueError('MAIDEN metadata segment uyusmuyor')
         if metadata.get('alpha') != _MAIDEN_SHADOW_ALPHA:
             raise ValueError('MAIDEN metadata alpha uyusmuyor')
-        if metadata.get('baseline_version') != 'v4.25':
+        if metadata.get('baseline_version') != f'v{_MAIDEN_SHADOW_BASELINE_VERSION}':
             raise ValueError('MAIDEN metadata baseline version uyusmuyor')
         if metadata.get('gate_decision') != 'SHADOW_CANDIDATE':
             raise ValueError('MAIDEN metadata gate karari uyusmuyor')
@@ -345,13 +347,21 @@ def ml_status():
         and prediction_stats.get('prediction_lines') == prediction_stats.get('valid_json_lines')
         and not _prediction_writes_blocked()
     )
+    maiden_live_active = bool(
+        _MAIDEN_SHADOW_USED_FOR_RANKING
+        and _maiden_shadow_model is not None
+        and not _maiden_shadow_load_error
+    )
     return jsonify({
         'model_loaded': _ml_shadow_model is not None,
         'feature_count': len(_ml_shadow_feature_cols),
         'load_error': _ml_shadow_load_error,
         'mode': _ML_SHADOW_MODE if _ml_shadow_model else 'unavailable',
         'model_version': _ml_shadow_metadata.get('model_version'),
-        'ranking_version': f'v{globals().get("_V4_VERSION", "unknown")}',
+        'ranking_version': globals().get(
+            '_VISIBLE_RANKING_VERSION',
+            f'v{globals().get("_V4_VERSION", "unknown")}',
+        ),
         'data_ready': prediction_data_ready,
         'confidence_diagnostics': {
             'schema_version': globals().get('_V4_CONFIDENCE_SCHEMA'),
@@ -385,9 +395,16 @@ def ml_status():
         },
         'maiden_shadow': {
             'version': _MAIDEN_SHADOW_VERSION,
-            'mode': 'prospective_shadow_bounded',
+            'mode': (
+                'controlled_live_bounded'
+                if maiden_live_active
+                else ('unavailable' if _maiden_shadow_load_error else 'prospective_shadow_bounded')
+            ),
             'observation_start': _MAIDEN_SHADOW_OBSERVATION_START,
-            'used_for_ranking': False,
+            'baseline_version': _MAIDEN_SHADOW_BASELINE_VERSION,
+            'used_for_ranking': maiden_live_active,
+            'rollout_eligible': maiden_live_active,
+            'telegram_visible': maiden_live_active,
             'alpha': _MAIDEN_SHADOW_ALPHA,
             'strict_no_agf_ml': True,
             'model_loaded': _maiden_shadow_model is not None,
@@ -6855,6 +6872,7 @@ def calculate_master_score(metrics):
 # ============================================================================
 
 _V4_VERSION = "4.25"
+_VISIBLE_RANKING_VERSION = "v4.25+maiden-ml15-20260823-v2"
 _V4_CONFIDENCE_SCHEMA = "v4-confidence-breakdown-v1"
 _V422_CANDIDATE_VERSION = "4.22-handicap-candidate"
 _SART1_SHADOW_VERSION = "sart1-bounded-top3-20260804-v1"
@@ -10746,7 +10764,7 @@ def _minmax_components(values):
 
 
 def attach_maiden_shadow_candidate(analyzed_horses, race_type='', distance='', track=''):
-    """Attach a 15% no-AGF ML overlay to MAIDEN diagnostics only."""
+    """Apply the bounded 15% no-AGF ML overlay to MAIDEN when healthy."""
     profile = extract_v4_race_profile(
         race_type=race_type,
         distance=distance,
@@ -10801,6 +10819,7 @@ def attach_maiden_shadow_candidate(analyzed_horses, race_type='', distance='', t
             horse['maidenCandidateModelVersion'] = model_version
             horse['maidenCandidateUsedForRanking'] = False
             horse['maidenCandidateRolloutEligible'] = False
+            horse['maidenCandidateTelegramVisible'] = False
             horse['maidenCandidateReason'] = unavailable_reason
         return analyzed_horses
 
@@ -10839,6 +10858,7 @@ def attach_maiden_shadow_candidate(analyzed_horses, race_type='', distance='', t
             horse['maidenCandidateV4ScoreFaithful'] = False
             horse['maidenCandidateUsedForRanking'] = False
             horse['maidenCandidateRolloutEligible'] = False
+            horse['maidenCandidateTelegramVisible'] = False
             horse['maidenCandidateReason'] = (
                 'v4Score sirasi gorunur v4Rank ile uyusmuyor; prospective kanit disi.'
             )
@@ -10861,7 +10881,11 @@ def attach_maiden_shadow_candidate(analyzed_horses, race_type='', distance='', t
     created_ts = int(time.time())
     for idx, horse in enumerate(analyzed_horses):
         horse['maidenCandidateVersion'] = _MAIDEN_SHADOW_VERSION
-        horse['maidenCandidateMode'] = 'prospective_shadow_bounded'
+        horse['maidenCandidateMode'] = (
+            'controlled_live_bounded'
+            if _MAIDEN_SHADOW_USED_FOR_RANKING
+            else 'prospective_shadow_bounded'
+        )
         horse['maidenCandidateObservationStart'] = _MAIDEN_SHADOW_OBSERVATION_START
         horse['maidenCandidateCreatedTs'] = created_ts
         horse['maidenCandidateModelVersion'] = model_version
@@ -10871,7 +10895,7 @@ def attach_maiden_shadow_candidate(analyzed_horses, race_type='', distance='', t
         horse['maidenCandidateTrainingCutoff'] = _maiden_shadow_manifest.get('trainingCutoff')
         horse['maidenCandidateAlpha'] = _MAIDEN_SHADOW_ALPHA
         horse['maidenCandidateStrictNoAgfMl'] = True
-        horse['maidenCandidateBaselineVersion'] = horse.get('v4Version', _V4_VERSION)
+        horse['maidenCandidateBaselineVersion'] = _MAIDEN_SHADOW_BASELINE_VERSION
         horse['maidenCandidateBaselineScore'] = horse.get('v4Score')
         horse['maidenCandidateBaselineRank'] = horse.get('v4Rank')
         horse['maidenCandidateBaselineComponent'] = round(baseline_components[idx] * 100.0, 4)
@@ -10880,12 +10904,33 @@ def attach_maiden_shadow_candidate(analyzed_horses, race_type='', distance='', t
         horse['maidenCandidateScore'] = round(candidate_components[idx] * 100.0, 4)
         horse['maidenCandidateRank'] = candidate_rank_by_index[idx]
         horse['maidenCandidateV4ScoreFaithful'] = v4_score_faithful
-        horse['maidenCandidateUsedForRanking'] = False
-        horse['maidenCandidateRolloutEligible'] = False
-        horse['maidenCandidateReason'] = (
-            'Prospective MAIDEN v4 + 15% strict no-AGF ML shadow; visible v4 '
-            'ranking and Telegram output are unchanged.'
-        )
+        horse['maidenCandidateUsedForRanking'] = _MAIDEN_SHADOW_USED_FOR_RANKING
+        horse['maidenCandidateRolloutEligible'] = _MAIDEN_SHADOW_USED_FOR_RANKING
+        horse['maidenCandidateTelegramVisible'] = _MAIDEN_SHADOW_USED_FOR_RANKING
+        if _MAIDEN_SHADOW_USED_FOR_RANKING:
+            live_score = round(candidate_components[idx] * 100.0, 1)
+            horse['aiScore'] = live_score
+            horse['v4AppliedForRanking'] = False
+            horse['v4Mode'] = 'visible_base_with_maiden_ml_overlay'
+            horse['v4Reason'] = (
+                'MAIDEN controlled live ranking: 85% v4.25 base + 15% strict '
+                'no-AGF ML.'
+            )
+            metrics = horse.get('_mf', {}) or {}
+            if metrics:
+                horse['prediction'] = generate_prediction(live_score, metrics)
+                horse['insight'] = generate_insight(
+                    horse.get('name', ''), metrics, live_score
+                )
+            horse['maidenCandidateReason'] = (
+                'Controlled live MAIDEN ranking: 15% strict no-AGF ML overlay; '
+                'v4.25 score and rank are retained as the immutable baseline.'
+            )
+        else:
+            horse['maidenCandidateReason'] = (
+                'Prospective MAIDEN v4 + 15% strict no-AGF ML shadow; visible v4 '
+                'ranking and Telegram output are unchanged.'
+            )
     print(
         f"[MAIDEN SHADOW] version={_MAIDEN_SHADOW_VERSION} "
         f"model={model_version} runners={len(analyzed_horses)} "
@@ -12458,6 +12503,7 @@ def analyze_race():
                     'v4_penalty_total': _h.get('v4PenaltyTotal', 0),
                     'v4_rank':    _h.get('v4Rank', 0),
                     'v4_version': _h.get('v4Version', _V4_VERSION),
+                    'ranking_version': _VISIBLE_RANKING_VERSION,
                     'v4_mode':    _h.get('v4Mode', 'visible'),
                     'v4_decision_mode': _h.get('v4DecisionMode', 'default_visible'),
                     'v4_use_for_ranking': _h.get('v4UseForRanking', False),
@@ -12552,6 +12598,7 @@ def analyze_race():
                     'maiden_candidate_v4_score_faithful': _h.get('maidenCandidateV4ScoreFaithful', False),
                     'maiden_candidate_used_for_ranking': _h.get('maidenCandidateUsedForRanking', False),
                     'maiden_candidate_rollout_eligible': _h.get('maidenCandidateRolloutEligible', False),
+                    'maiden_candidate_telegram_visible': _h.get('maidenCandidateTelegramVisible', False),
                     'maiden_candidate_reason': _h.get('maidenCandidateReason'),
                     'days_since_last_race': _h.get('daysSinceLastRace'),
                     'last_race_distance': _h.get('lastRaceDistance'),

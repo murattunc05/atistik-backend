@@ -67,7 +67,7 @@ class MaidenShadowCandidateTests(unittest.TestCase):
         self.addCleanup(lambda: [context.stop() for context in reversed(contexts)])
         api.attach_maiden_shadow_candidate(values, race_type, "1200", "Kum")
 
-    def test_candidate_is_fifteen_percent_and_never_changes_visible_fields(self):
+    def test_candidate_is_fifteen_percent_and_changes_only_live_visible_fields(self):
         values = runners()
         before = copy.deepcopy([
             {key: horse[key] for key in ("aiScore", "rank", "v4Score", "v4Rank")}
@@ -76,14 +76,20 @@ class MaidenShadowCandidateTests(unittest.TestCase):
 
         self._attach(values)
 
-        after = [
-            {key: horse[key] for key in ("aiScore", "rank", "v4Score", "v4Rank")}
-            for horse in values
-        ]
-        self.assertEqual(after, before)
+        self.assertNotEqual([horse["aiScore"] for horse in values], [
+            horse["aiScore"] for horse in before
+        ])
+        self.assertEqual([horse["v4Score"] for horse in values], [
+            horse["v4Score"] for horse in before
+        ])
+        self.assertEqual([horse["v4Rank"] for horse in values], [
+            horse["v4Rank"] for horse in before
+        ])
         self.assertTrue(all(horse["maidenCandidateAlpha"] == 0.15 for horse in values))
         self.assertTrue(all(horse["maidenCandidateStrictNoAgfMl"] for horse in values))
-        self.assertTrue(all(not horse["maidenCandidateUsedForRanking"] for horse in values))
+        self.assertTrue(all(horse["maidenCandidateUsedForRanking"] for horse in values))
+        self.assertTrue(all(horse["maidenCandidateTelegramVisible"] for horse in values))
+        self.assertTrue(all(not horse["v4AppliedForRanking"] for horse in values))
         self.assertTrue(all(
             len(horse["maidenCandidateFeatureVectorSha256"]) == 64 for horse in values
         ))
@@ -147,9 +153,14 @@ class MaidenShadowCandidateTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()["maiden_shadow"]
         self.assertEqual(payload["version"], api._MAIDEN_SHADOW_VERSION)
-        self.assertEqual(payload["observation_start"], "10.08.2026")
+        self.assertEqual(payload["observation_start"], "23.08.2026")
         self.assertEqual(payload["alpha"], 0.15)
-        self.assertFalse(payload["used_for_ranking"])
+        self.assertTrue(payload["used_for_ranking"])
+        self.assertTrue(payload["telegram_visible"])
+        self.assertEqual(
+            response.get_json()["ranking_version"],
+            "v4.25+maiden-ml15-20260823-v2",
+        )
 
     def test_frozen_artifact_hashes_and_loader_are_valid(self):
         manifest = json.loads((ROOT / "maiden_shadow_manifest.json").read_text(encoding="utf-8"))

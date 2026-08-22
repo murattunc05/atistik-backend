@@ -25,7 +25,7 @@ ISTANBUL = ZoneInfo("Europe/Istanbul")
 
 
 def race_rows(index, visible_winner_rank=4, candidate_winner_rank=3, partial=False):
-    day = date(2026, 8, 10) + timedelta(days=index)
+    day = date(2026, 8, 23) + timedelta(days=index)
     race_start = datetime.combine(day, time(14, 0), tzinfo=ISTANBUL)
     created_ts = int(race_start.timestamp()) - 3600
     visible_other = [rank for rank in range(1, 5) if rank != visible_winner_rank]
@@ -57,14 +57,14 @@ def race_rows(index, visible_winner_rank=4, candidate_winner_rank=3, partial=Fal
             "horse_name": f"HORSE-{horse_index}",
             "finish_pos": None if partial and horse_index == 3 else horse_index + 1,
             "maiden_candidate_version": VERSION,
-            "maiden_candidate_mode": "prospective_shadow_bounded",
-            "maiden_candidate_observation_start": "10.08.2026",
+            "maiden_candidate_mode": "controlled_live_bounded",
+            "maiden_candidate_observation_start": "23.08.2026",
             "maiden_candidate_created_ts": created_ts,
-            "maiden_candidate_model_version": "maiden-shadow-20260810-v1",
+            "maiden_candidate_model_version": EXPECTED_MODEL_VERSION,
             "maiden_candidate_model_sha256": EXPECTED_MODEL_SHA256,
             "maiden_candidate_feature_schema_hash": EXPECTED_FEATURE_SCHEMA_SHA256,
             "maiden_candidate_feature_vector_sha256": f"{horse_index + 1:064x}",
-            "maiden_candidate_training_cutoff": "25.07.2026",
+            "maiden_candidate_training_cutoff": EXPECTED_TRAINING_CUTOFF,
             "maiden_candidate_alpha": 0.15,
             "maiden_candidate_strict_no_agf_ml": True,
             "maiden_candidate_baseline_version": "4.25",
@@ -78,8 +78,9 @@ def race_rows(index, visible_winner_rank=4, candidate_winner_rank=3, partial=Fal
             ),
             "maiden_candidate_rank": candidate_rank,
             "maiden_candidate_v4_score_faithful": True,
-            "maiden_candidate_used_for_ranking": False,
-            "maiden_candidate_rollout_eligible": False,
+            "maiden_candidate_used_for_ranking": True,
+            "maiden_candidate_rollout_eligible": True,
+            "maiden_candidate_telegram_visible": True,
         })
     return rows
 
@@ -145,7 +146,7 @@ class MaidenShadowMonitorTests(unittest.TestCase):
         self.assertEqual(f"v{EXPECTED_BASELINE_VERSION}", manifest["baselineVersion"])
         self.assertEqual(EXPECTED_ALPHA, manifest["alpha"])
 
-    def test_fifteen_clean_races_reach_formal_replay_only(self):
+    def test_fifteen_clean_races_report_live_healthy(self):
         entries = []
         for index in range(15):
             entries.extend(race_rows(
@@ -158,9 +159,9 @@ class MaidenShadowMonitorTests(unittest.TestCase):
 
         self.assertEqual(len(report["checkpoints"]), 3)
         self.assertTrue(all(item["passed"] for item in report["checkpoints"]))
-        self.assertEqual(report["status"], "SUPPORTED_FOR_FORMAL_REPLAY")
+        self.assertEqual(report["status"], "LIVE_HEALTHY")
         self.assertTrue(report["formalReplaySupported"])
-        self.assertFalse(report["liveRolloutEligible"])
+        self.assertTrue(report["liveRolloutEligible"])
 
     def test_monitor_is_nonblocking_between_persist_and_commit(self):
         script = (
