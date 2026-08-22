@@ -61,6 +61,19 @@ UNKNOWN_HISTORY_STATUS_HTML = RESULT_HTML.replace('<td>1</td><td>ok</td>', '<td>
 
 
 class FetchResultIdentityTests(unittest.TestCase):
+    def test_ml_status_exposes_nonranking_top3_point_in_time_telemetry(self):
+        status = api.app.test_client().get("/api/ml-status").get_json()[
+            "point_in_time_signal_telemetry"
+        ]
+
+        self.assertEqual(status["primary_objective"], "winner_top3")
+        self.assertEqual(status["observation_start"], "23.08.2026")
+        self.assertEqual(status["scopes"], ["ALL", "MAIDEN", "SART1", "SATIS", "BIG_FIELD"])
+        self.assertFalse(status["used_for_ranking"])
+        self.assertFalse(status["telegram_visible"])
+        self.assertTrue(status["requires_immutable_runner_signal_hash"])
+        self.assertTrue(status["requires_official_full_labels"])
+
     def _post(self, log_path: Path, race_id: str):
         response = Mock(status_code=200, text=RESULT_HTML)
         with patch.object(api, "_PREDICTIONS_PATH", str(log_path)), patch.object(
