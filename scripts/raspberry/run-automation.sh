@@ -369,6 +369,13 @@ if [[ "$MODE" == "results" ]]; then
     echo "[METRIC REPLAY] Guncel registry adaylari replay edilemedi; sonuc/backup akisi devam ediyor." >&2
   fi
 
+  if ! python3 automation/recent_top3_metric_audit.py \
+    --predictions "$DATA_DIR/predictions.jsonl" \
+    --data-dir "$DATA_DIR" \
+    --run-date "$MONITOR_DATE"; then
+    echo "[RECENT TOP3 METRIC] Rolling 7/14 gun auditi uretilemedi; sonuc/backup akisi devam ediyor." >&2
+  fi
+
   if ! python3 automation/six_leg_coupon_scorecard.py \
     --predictions "$DATA_DIR/predictions.jsonl" \
     --data-dir "$DATA_DIR" \
