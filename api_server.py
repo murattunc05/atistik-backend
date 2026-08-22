@@ -161,6 +161,22 @@ _MAIDEN_KUM_TRAINER_CALIBRATION_CONTRACT = {
     'sourceSnapshotSha256': _MAIDEN_KUM_TRAINER_SOURCE_SNAPSHOT_SHA256,
     'maidenMl15OverlapNonAdditive': True,
 }
+_HANDICAP_HP_SHADOW_VERSION = "handicap-hp-minus3-20260823-v1"
+_HANDICAP_HP_SHADOW_OBSERVATION_START = "23.08.2026"
+_HANDICAP_HP_SHADOW_BASELINE_VERSION = "4.25"
+_HANDICAP_HP_SHADOW_METRIC = "hp_score"
+_HANDICAP_HP_SHADOW_RAW_DELTA_POINTS = -3.0
+_HANDICAP_HP_SHADOW_MODE = "prospective_shadow_bounded"
+_HANDICAP_HP_SHADOW_ROBUST_TOP3_FLOOR = 0.4908
+_HANDICAP_HP_AUDIT_ARTIFACT = (
+    "automation/evidence/handicap_hp_minus3_audit_20260822.json"
+)
+_HANDICAP_HP_AUDIT_SHA256 = (
+    "28e7a0fd0cac6fe6d869b187bd3a139d18404e718385d56c7fe7338d1c579940"
+)
+_HANDICAP_HP_SOURCE_SNAPSHOT_SHA256 = (
+    "2b4686b6e141b6422a0355b83cf2908547792d0be9e03da9ee158237bf76005d"
+)
 _FUTURE_SIGNAL_OBSERVATION_START = "14.08.2026"
 
 def load_ml_model():
@@ -486,6 +502,48 @@ def ml_status():
                 'manifest_artifact_sha256': _MAIDEN_KUM_TRAINER_MANIFEST_SHA256,
                 'source_snapshot_sha256': _MAIDEN_KUM_TRAINER_SOURCE_SNAPSHOT_SHA256,
                 'maiden_ml15_overlap_non_additive': True,
+            },
+            'promotion_ceiling': 'formal_replay_only',
+        },
+        'handicap_hp_shadow': {
+            'version': _HANDICAP_HP_SHADOW_VERSION,
+            'mode': _HANDICAP_HP_SHADOW_MODE,
+            'status': 'collecting',
+            'observation_start': _HANDICAP_HP_SHADOW_OBSERVATION_START,
+            'baseline_version': _HANDICAP_HP_SHADOW_BASELINE_VERSION,
+            'used_for_ranking': False,
+            'rollout_eligible': False,
+            'telegram_visible': False,
+            'profile': 'HANDIKAP',
+            'metric': _HANDICAP_HP_SHADOW_METRIC,
+            'raw_weight_delta_points': _HANDICAP_HP_SHADOW_RAW_DELTA_POINTS,
+            'normalization': 'exported_v4_weights_minus_raw_points_floor_zero_then_normalize',
+            'source_gate': 'hasHp_and__has_hp_agree_fail_closed',
+            'replay_baseline_compatibility_gate': 'visible_top3_set_equals_replay_top3_set',
+            'checkpoints': [5, 10, 15],
+            'primary_objective': 'winner_top3',
+            'separation_gate': {
+                'definition': 'winner_score_minus_rank4_score',
+                'historical_scope_p25_floor': _HANDICAP_HP_SHADOW_ROBUST_TOP3_FLOOR,
+                'fragile_rescue_not_counted_as_robust': True,
+            },
+            'top1_policy': {
+                'early_checkpoint_veto': False,
+                'formal_catastrophic_loss_max': 1,
+            },
+            'historical_evidence': {
+                'snapshot_date': '22.08.2026',
+                'races': 45,
+                'winner_top3': {'baseline': 22, 'candidate': 24},
+                'rescues': 2,
+                'damages': 0,
+                'robust_rescues': 1,
+                'fragile_rescues': 1,
+                'previous7_net': 1,
+                'latest7_net': 1,
+                'audit_artifact': _HANDICAP_HP_AUDIT_ARTIFACT,
+                'audit_artifact_sha256': _HANDICAP_HP_AUDIT_SHA256,
+                'source_snapshot_sha256': _HANDICAP_HP_SOURCE_SNAPSHOT_SHA256,
             },
             'promotion_ceiling': 'formal_replay_only',
         },
@@ -9830,6 +9888,451 @@ def maiden_kum_trainer_candidate_log_fields(horse):
     return result
 
 
+def resolve_handicap_hp_candidate_weights(exported_v4_weights):
+    """Return the frozen HANDIKAP hp -3 formula from persisted v4 weights."""
+    if not isinstance(exported_v4_weights, dict) or not exported_v4_weights:
+        raise ValueError('HANDIKAP hp baseline v4Weights map is missing')
+    baseline = {}
+    for key, raw_value in exported_v4_weights.items():
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f'HANDIKAP hp baseline weight is not numeric: {key}')
+        if not str(key).strip() or not math.isfinite(value) or value < 0.0:
+            raise ValueError(f'HANDIKAP hp baseline weight is invalid: {key}')
+        if value > 0.0:
+            baseline[str(key)] = value
+    baseline_total = sum(baseline.values())
+    if not (99.5 <= baseline_total <= 100.5):
+        raise ValueError(
+            'HANDIKAP hp exported baseline weight total is not approximately '
+            f'100: {baseline_total}'
+        )
+    baseline_hp = baseline.get(_HANDICAP_HP_SHADOW_METRIC, 0.0)
+    if baseline_hp <= 0.0:
+        raise ValueError('HANDIKAP hp baseline has no positive hp_score weight')
+    raw_candidate = dict(baseline)
+    raw_candidate[_HANDICAP_HP_SHADOW_METRIC] = max(
+        0.0,
+        baseline_hp + _HANDICAP_HP_SHADOW_RAW_DELTA_POINTS,
+    )
+    raw_candidate = {
+        key: value for key, value in raw_candidate.items() if value > 0.0
+    }
+    raw_total = sum(raw_candidate.values())
+    if raw_total <= 0.0:
+        raise ValueError('HANDIKAP hp candidate weight total is not positive')
+    candidate_pct = {
+        key: round((value / raw_total) * 100.0, 10)
+        for key, value in raw_candidate.items()
+    }
+    delta_pct = {
+        key: round(candidate_pct.get(key, 0.0) - baseline.get(key, 0.0), 10)
+        for key in sorted(set(baseline) | set(candidate_pct))
+        if abs(candidate_pct.get(key, 0.0) - baseline.get(key, 0.0)) > 1e-12
+    }
+    return {
+        'baselineWeights': baseline,
+        'baselineRawTotal': round(baseline_total, 10),
+        'candidateRawWeights': raw_candidate,
+        'candidateRawTotal': round(raw_total, 10),
+        'candidateWeights': {
+            key: value / 100.0 for key, value in candidate_pct.items()
+        },
+        'candidateWeightsPct': candidate_pct,
+        'weightDeltaPct': delta_pct,
+        'actualHpRawDeltaPoints': round(
+            raw_candidate.get(_HANDICAP_HP_SHADOW_METRIC, 0.0) - baseline_hp,
+            10,
+        ),
+    }
+
+
+def attach_handicap_hp_candidate(
+    analyzed_horses,
+    race_type='',
+    distance='',
+    track='',
+    race_date='',
+    race_time='',
+):
+    """Attach an immutable HANDIKAP hp -3 challenger, never visible ranking."""
+    profile = extract_v4_race_profile(
+        race_type=race_type,
+        distance=distance,
+        track=track,
+        field_size=len(analyzed_horses),
+    )
+    if profile.get('category') != 'HANDIKAP' or not analyzed_horses:
+        return analyzed_horses
+    if any(
+        str(horse.get('v4Version') or '') != _HANDICAP_HP_SHADOW_BASELINE_VERSION
+        for horse in analyzed_horses
+    ):
+        return analyzed_horses
+    if any(horse.get('v4AppliedForRanking') is not True for horse in analyzed_horses):
+        return analyzed_horses
+
+    from zoneinfo import ZoneInfo
+    parsed_race_day = None
+    for pattern in ('%d.%m.%Y', '%Y-%m-%d'):
+        try:
+            parsed_race_day = datetime.strptime(str(race_date or '').strip(), pattern)
+            break
+        except ValueError:
+            continue
+    observation_day = datetime.strptime(
+        _HANDICAP_HP_SHADOW_OBSERVATION_START,
+        '%d.%m.%Y',
+    )
+    if parsed_race_day is None or parsed_race_day < observation_day:
+        return analyzed_horses
+    normalized_race_time = str(race_time or '').strip().replace('.', ':')
+    try:
+        race_hour, race_minute = (
+            int(part) for part in normalized_race_time.split(':', 1)
+        )
+        race_start = parsed_race_day.replace(
+            hour=race_hour,
+            minute=race_minute,
+            tzinfo=ZoneInfo('Europe/Istanbul'),
+        )
+    except (TypeError, ValueError):
+        return analyzed_horses
+    created_ts = int(time.time())
+    if created_ts >= int(race_start.timestamp()):
+        return analyzed_horses
+
+    visible_profiles = [horse.get('v4Profile') for horse in analyzed_horses]
+    if any(not isinstance(item, dict) for item in visible_profiles):
+        raise ValueError('HANDIKAP hp visible v4 profile snapshot is missing')
+    first_visible_profile = dict(visible_profiles[0])
+    if (
+        first_visible_profile.get('category') != 'HANDIKAP'
+        or not first_visible_profile.get('selectedKey')
+        or any(
+            _h15_canonical_sha256(item)
+            != _h15_canonical_sha256(first_visible_profile)
+            for item in visible_profiles[1:]
+        )
+    ):
+        raise ValueError('HANDIKAP hp visible profile snapshots disagree')
+
+    exported_maps = [horse.get('v4Weights') for horse in analyzed_horses]
+    formula = resolve_handicap_hp_candidate_weights(exported_maps[0])
+    baseline_weights = formula['baselineWeights']
+    if any(
+        _h15_canonical_sha256(
+            resolve_handicap_hp_candidate_weights(value)['baselineWeights']
+        ) != _h15_canonical_sha256(baseline_weights)
+        for value in exported_maps[1:]
+    ):
+        raise ValueError('HANDIKAP hp exported v4Weights snapshots disagree')
+
+    source_rows = []
+    for horse in analyzed_horses:
+        metrics = horse.get('_mf') or {}
+        flags = horse.get('metricSourceFlags') or {}
+        flag_present = 'hasHp' in flags
+        mf_present = '_has_hp' in metrics
+        flag_value = flags.get('hasHp')
+        mf_value = metrics.get('_has_hp')
+        guards_agree = bool(
+            flag_present
+            and mf_present
+            and isinstance(flag_value, bool)
+            and isinstance(mf_value, bool)
+            and flag_value == mf_value
+        )
+        if not guards_agree:
+            raise ValueError('HANDIKAP hp hasHp and _mf._has_hp disagree')
+        try:
+            metric_value = float(metrics.get(_HANDICAP_HP_SHADOW_METRIC, 50.0))
+        except (TypeError, ValueError):
+            metric_value = float('nan')
+        if bool(flag_value) and not math.isfinite(metric_value):
+            raise ValueError('HANDIKAP sourced hp_score is not finite')
+        if not math.isfinite(metric_value):
+            metric_value = 50.0
+        has_source = bool(flag_value and mf_value)
+        neutral = bool(has_source and abs(metric_value - 50.0) < 1.0)
+        source_rows.append({
+            'metric': _HANDICAP_HP_SHADOW_METRIC,
+            'metricSourceFlag': 'hasHp',
+            'metricSourceFlagPresent': flag_present,
+            'metricSourceFlagValue': flag_value,
+            'mfGuard': '_has_hp',
+            'mfGuardPresent': mf_present,
+            'mfGuardValue': mf_value,
+            'guardsAgree': guards_agree,
+            'hasSource': has_source,
+            'metricValue': metric_value,
+            'neutral': neutral,
+            'actionable': bool(has_source and not neutral),
+        })
+
+    runner_count = len(analyzed_horses)
+    source_count = sum(bool(row['hasSource']) for row in source_rows)
+    actionable_count = sum(bool(row['actionable']) for row in source_rows)
+    neutral_count = sum(bool(row['neutral']) for row in source_rows)
+    candidate_weights_pct = formula['candidateWeightsPct']
+    definition_payload = {
+        'schemaVersion': 'handicap-hp-shadow-v1',
+        'candidateVersion': _HANDICAP_HP_SHADOW_VERSION,
+        'observationStart': _HANDICAP_HP_SHADOW_OBSERVATION_START,
+        'baselineVersion': _HANDICAP_HP_SHADOW_BASELINE_VERSION,
+        'profile': first_visible_profile,
+        'metric': _HANDICAP_HP_SHADOW_METRIC,
+        'requestedRawWeightDeltaPoints': _HANDICAP_HP_SHADOW_RAW_DELTA_POINTS,
+        'actualHpRawDeltaPoints': formula['actualHpRawDeltaPoints'],
+        'baselineWeights': baseline_weights,
+        'baselineRawTotal': formula['baselineRawTotal'],
+        'candidateRawWeights': formula['candidateRawWeights'],
+        'candidateRawTotal': formula['candidateRawTotal'],
+        'candidateWeights': candidate_weights_pct,
+        'weightDeltaPct': formula['weightDeltaPct'],
+        'normalization': 'exported_v4_weights_minus_raw_points_floor_zero_then_normalize',
+        'robustTop3Floor': _HANDICAP_HP_SHADOW_ROBUST_TOP3_FLOOR,
+        'auditArtifact': _HANDICAP_HP_AUDIT_ARTIFACT,
+        'auditArtifactSha256': _HANDICAP_HP_AUDIT_SHA256,
+        'sourceSnapshotSha256': _HANDICAP_HP_SOURCE_SNAPSHOT_SHA256,
+    }
+    definition_sha256 = _h15_canonical_sha256(definition_payload)
+
+    for horse, source in zip(analyzed_horses, source_rows):
+        metrics = dict(horse.get('_mf') or {})
+        source_guard_snapshot = {}
+        score_components = {}
+        feature_snapshot = {}
+        baseline_numerator = baseline_denominator = 0.0
+        candidate_numerator = candidate_denominator = 0.0
+        for metric in sorted(set(baseline_weights) | set(candidate_weights_pct)):
+            guard = _V4_SOURCE_GUARDS.get(metric)
+            guard_present = bool(guard and guard in metrics)
+            guard_value = bool(metrics.get(guard)) if guard_present else None
+            if guard:
+                source_guard_snapshot[guard] = {
+                    'present': guard_present,
+                    'value': guard_value,
+                }
+            included = not (guard_present and not bool(guard_value))
+            try:
+                value = float(metrics.get(metric, 50.0))
+            except (TypeError, ValueError):
+                value = 50.0
+            if not math.isfinite(value):
+                value = 50.0
+            feature_snapshot[metric] = value
+            baseline_raw_weight = baseline_weights.get(metric, 0.0)
+            candidate_raw_weight = formula['candidateRawWeights'].get(metric, 0.0)
+            score_components[metric] = {
+                'value': value,
+                'baselineRawWeightPoints': baseline_raw_weight,
+                'candidateRawWeightPoints': candidate_raw_weight,
+                'candidateWeightPct': candidate_weights_pct.get(metric, 0.0),
+                'guard': guard,
+                'included': included,
+            }
+            if included and baseline_raw_weight > 0.0:
+                baseline_numerator += value * baseline_raw_weight
+                baseline_denominator += baseline_raw_weight
+            if included and candidate_raw_weight > 0.0:
+                candidate_numerator += value * candidate_raw_weight
+                candidate_denominator += candidate_raw_weight
+        try:
+            penalty_total = max(0.0, float(horse.get('v4PenaltyTotal', 0.0) or 0.0))
+        except (TypeError, ValueError):
+            penalty_total = 0.0
+        replay_baseline_base = (
+            baseline_numerator / baseline_denominator
+            if baseline_denominator > 0.0 else 50.0
+        )
+        candidate_base = (
+            candidate_numerator / candidate_denominator
+            if candidate_denominator > 0.0 else 50.0
+        )
+        replay_baseline_score = max(
+            0.0, min(100.0, replay_baseline_base - penalty_total)
+        )
+        candidate_score = max(0.0, min(100.0, candidate_base - penalty_total))
+        feature_hash_payload = {
+            'horseName': str(horse.get('name') or '').strip(),
+            'features': feature_snapshot,
+            'sourceGuards': source_guard_snapshot,
+            'hpSource': source,
+        }
+        prefix = 'handicapHpCandidate'
+        horse[prefix + 'Version'] = _HANDICAP_HP_SHADOW_VERSION
+        horse[prefix + 'Mode'] = _HANDICAP_HP_SHADOW_MODE
+        horse[prefix + 'ObservationStart'] = _HANDICAP_HP_SHADOW_OBSERVATION_START
+        horse[prefix + 'CreatedTs'] = created_ts
+        horse[prefix + 'BaselineVersion'] = _HANDICAP_HP_SHADOW_BASELINE_VERSION
+        horse[prefix + 'BaselineScore'] = horse.get('v4Score')
+        horse[prefix + 'BaselineRank'] = horse.get('v4Rank')
+        horse[prefix + 'ReplayBaselineScore'] = replay_baseline_score
+        horse[prefix + 'ReplayBaselineRank'] = None
+        horse[prefix + 'Score'] = candidate_score
+        horse[prefix + 'Rank'] = None
+        horse[prefix + 'UsedForRanking'] = False
+        horse[prefix + 'TelegramVisible'] = False
+        horse[prefix + 'RolloutEligible'] = False
+        horse[prefix + 'FormalReplayOnly'] = True
+        horse[prefix + 'Profile'] = first_visible_profile
+        horse[prefix + 'Metric'] = _HANDICAP_HP_SHADOW_METRIC
+        horse[prefix + 'RequestedRawWeightDeltaPoints'] = _HANDICAP_HP_SHADOW_RAW_DELTA_POINTS
+        horse[prefix + 'ActualHpRawDeltaPoints'] = formula['actualHpRawDeltaPoints']
+        horse[prefix + 'BaselineWeights'] = baseline_weights
+        horse[prefix + 'CandidateRawWeights'] = formula['candidateRawWeights']
+        horse[prefix + 'CandidateWeights'] = candidate_weights_pct
+        horse[prefix + 'WeightDeltaPct'] = formula['weightDeltaPct']
+        horse[prefix + 'DefinitionSha256'] = definition_sha256
+        horse[prefix + 'FeatureSnapshot'] = feature_snapshot
+        horse[prefix + 'SourceGuardSnapshot'] = source_guard_snapshot
+        horse[prefix + 'ScoreComponents'] = score_components
+        horse[prefix + 'FeatureVectorSha256'] = _h15_canonical_sha256(feature_hash_payload)
+        horse[prefix + 'Source'] = {
+            **source,
+            'sourceCount': source_count,
+            'actionableCount': actionable_count,
+            'neutralCount': neutral_count,
+            'unavailableCount': runner_count - source_count,
+            'runnerCount': runner_count,
+            'coverage': round(source_count / runner_count, 6),
+            'actionableCoverage': round(actionable_count / runner_count, 6),
+        }
+        horse[prefix + 'ReplayTop3SetAgreement'] = None
+        horse[prefix + 'EvidenceIssue'] = None
+        horse[prefix + 'RaceEvidenceEligible'] = False
+        horse[prefix + 'RobustTop3Floor'] = _HANDICAP_HP_SHADOW_ROBUST_TOP3_FLOOR
+        horse[prefix + 'AuditArtifactSha256'] = _HANDICAP_HP_AUDIT_SHA256
+        horse[prefix + 'SourceSnapshotSha256'] = _HANDICAP_HP_SOURCE_SNAPSHOT_SHA256
+        horse[prefix + 'Reason'] = (
+            'Exact HANDIKAP v4.25 prospective challenger: reduce sourced '
+            'hp_score by up to 3.0 raw weight points, floor at zero, then '
+            'normalize. Visible ranking and Telegram are unchanged.'
+        )
+
+    replay_ranked = sorted(
+        analyzed_horses,
+        key=lambda horse: (
+            -float(horse.get('handicapHpCandidateReplayBaselineScore', 0.0) or 0.0),
+            int(horse.get('v4Rank', 999) or 999),
+            str(horse.get('name') or ''),
+        ),
+    )
+    candidate_ranked = sorted(
+        analyzed_horses,
+        key=lambda horse: (
+            -float(horse.get('handicapHpCandidateScore', 0.0) or 0.0),
+            int(horse.get('v4Rank', 999) or 999),
+            str(horse.get('name') or ''),
+        ),
+    )
+    for index, horse in enumerate(replay_ranked, start=1):
+        horse['handicapHpCandidateReplayBaselineRank'] = index
+    for index, horse in enumerate(candidate_ranked, start=1):
+        horse['handicapHpCandidateRank'] = index
+    visible_top3 = {
+        id(horse) for horse in sorted(
+            analyzed_horses,
+            key=lambda horse: int(horse.get('v4Rank', 999) or 999),
+        )[:3]
+    }
+    replay_top3 = {id(horse) for horse in replay_ranked[:3]}
+    agreement = visible_top3 == replay_top3
+    issue = None
+    if not agreement:
+        issue = 'visible_replay_baseline_top3_set_mismatch'
+    elif source_count != runner_count:
+        issue = 'hp_source_not_complete_for_all_runners'
+    for horse in analyzed_horses:
+        horse['handicapHpCandidateReplayTop3SetAgreement'] = agreement
+        horse['handicapHpCandidateEvidenceIssue'] = issue
+        horse['handicapHpCandidateRaceEvidenceEligible'] = bool(issue is None)
+    candidate_boundary_margin = None
+    if len(candidate_ranked) >= 4:
+        candidate_boundary_margin = (
+            float(candidate_ranked[2].get('handicapHpCandidateScore', 0.0) or 0.0)
+            - float(candidate_ranked[3].get('handicapHpCandidateScore', 0.0) or 0.0)
+        )
+    for horse in analyzed_horses:
+        horse['handicapHpCandidateTop3BoundaryMargin'] = candidate_boundary_margin
+    race_hash_payload = {
+        'definitionSha256': definition_sha256,
+        'createdTs': created_ts,
+        'replayTop3SetAgreement': agreement,
+        'evidenceIssue': issue,
+        'candidateTop3BoundaryMargin': candidate_boundary_margin,
+        'horses': sorted([
+            {
+                'horseName': str(horse.get('name') or '').strip(),
+                'baselineScore': horse.get('handicapHpCandidateBaselineScore'),
+                'baselineRank': horse.get('handicapHpCandidateBaselineRank'),
+                'replayBaselineScore': horse.get('handicapHpCandidateReplayBaselineScore'),
+                'replayBaselineRank': horse.get('handicapHpCandidateReplayBaselineRank'),
+                'candidateScore': horse.get('handicapHpCandidateScore'),
+                'candidateRank': horse.get('handicapHpCandidateRank'),
+                'featureVectorSha256': horse.get('handicapHpCandidateFeatureVectorSha256'),
+            }
+            for horse in analyzed_horses
+        ], key=lambda item: item['horseName'].casefold()),
+    }
+    race_sha256 = _h15_canonical_sha256(race_hash_payload)
+    for horse in analyzed_horses:
+        horse['handicapHpCandidateRaceSnapshotSha256'] = race_sha256
+    print(
+        f'[HANDIKAP HP SHADOW] version={_HANDICAP_HP_SHADOW_VERSION} '
+        f'profile={first_visible_profile.get("selectedKey")} runners={runner_count} '
+        f'raw_delta={formula["actualHpRawDeltaPoints"]:.1f} '
+        f'source={source_count}/{runner_count} actionable={actionable_count}/{runner_count}'
+    )
+    return analyzed_horses
+
+
+def handicap_hp_candidate_log_fields(horse):
+    """Return the immutable HANDIKAP hp shadow prediction-log contract."""
+    camel = 'handicapHpCandidate'
+    snake = 'handicap_hp_candidate_'
+    if not horse.get(camel + 'Version'):
+        return {}
+    field_map = {
+        'version': 'Version', 'mode': 'Mode',
+        'observation_start': 'ObservationStart', 'created_ts': 'CreatedTs',
+        'baseline_version': 'BaselineVersion', 'baseline_score': 'BaselineScore',
+        'baseline_rank': 'BaselineRank', 'replay_baseline_score': 'ReplayBaselineScore',
+        'replay_baseline_rank': 'ReplayBaselineRank', 'score': 'Score', 'rank': 'Rank',
+        'used_for_ranking': 'UsedForRanking', 'telegram_visible': 'TelegramVisible',
+        'rollout_eligible': 'RolloutEligible', 'formal_replay_only': 'FormalReplayOnly',
+        'profile': 'Profile', 'metric': 'Metric',
+        'requested_raw_weight_delta_points': 'RequestedRawWeightDeltaPoints',
+        'actual_hp_raw_delta_points': 'ActualHpRawDeltaPoints',
+        'baseline_weights': 'BaselineWeights',
+        'candidate_raw_weights': 'CandidateRawWeights',
+        'candidate_weights': 'CandidateWeights', 'weight_delta_pct': 'WeightDeltaPct',
+        'definition_sha256': 'DefinitionSha256', 'feature_snapshot': 'FeatureSnapshot',
+        'source_guard_snapshot': 'SourceGuardSnapshot',
+        'score_components': 'ScoreComponents',
+        'feature_vector_sha256': 'FeatureVectorSha256',
+        'race_snapshot_sha256': 'RaceSnapshotSha256', 'source': 'Source',
+        'replay_top3_set_agreement': 'ReplayTop3SetAgreement',
+        'evidence_issue': 'EvidenceIssue',
+        'race_evidence_eligible': 'RaceEvidenceEligible',
+        'robust_top3_floor': 'RobustTop3Floor',
+        'top3_boundary_margin': 'Top3BoundaryMargin',
+        'audit_artifact_sha256': 'AuditArtifactSha256',
+        'source_snapshot_sha256': 'SourceSnapshotSha256', 'reason': 'Reason',
+    }
+    defaults_false = {
+        'used_for_ranking', 'telegram_visible', 'rollout_eligible',
+        'race_evidence_eligible',
+    }
+    result = {}
+    for key, suffix in field_map.items():
+        default = False if key in defaults_false else True if key == 'formal_replay_only' else None
+        result[snake + key] = horse.get(camel + suffix, default)
+    return result
+
+
 def attach_sart1_shadow_candidate(analyzed_horses, race_type='', distance='', track=''):
     """Attach the frozen SART1 candidate without touching visible v4 output."""
     profile = extract_v4_race_profile(
@@ -11785,6 +12288,37 @@ def analyze_race():
                     )
 
         try:
+            attach_handicap_hp_candidate(
+                analyzed_horses,
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+                race_date=race_date,
+                race_time=race_time,
+            )
+        except Exception as _handicap_hp_shadow_err:
+            _handicap_hp_profile = extract_v4_race_profile(
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+                field_size=len(analyzed_horses),
+            )
+            if _handicap_hp_profile.get('category') == 'HANDIKAP':
+                print(
+                    '[HANDIKAP HP SHADOW] Hesaplama hatasi; gorunur v4 '
+                    f'siralamasi korundu: {_handicap_hp_shadow_err}'
+                )
+                for _h in analyzed_horses:
+                    _h['handicapHpCandidateVersion'] = _HANDICAP_HP_SHADOW_VERSION
+                    _h['handicapHpCandidateMode'] = 'unavailable'
+                    _h['handicapHpCandidateUsedForRanking'] = False
+                    _h['handicapHpCandidateTelegramVisible'] = False
+                    _h['handicapHpCandidateRolloutEligible'] = False
+                    _h['handicapHpCandidateFormalReplayOnly'] = True
+                    _h['handicapHpCandidateRaceEvidenceEligible'] = False
+                    _h['handicapHpCandidateReason'] = str(_handicap_hp_shadow_err)
+
+        try:
             attach_sart1_shadow_candidate(
                 analyzed_horses,
                 race_type=race_type,
@@ -11970,6 +12504,7 @@ def analyze_race():
                     'handicap_trainer_candidate_reason': _h.get('handicapTrainerCandidateReason'),
                     **h15_training_candidate_log_fields(_h),
                     **maiden_kum_trainer_candidate_log_fields(_h),
+                    **handicap_hp_candidate_log_fields(_h),
                     'sart1_candidate_version': _h.get('sart1CandidateVersion'),
                     'sart1_candidate_mode': _h.get('sart1CandidateMode'),
                     'sart1_candidate_observation_start': _h.get('sart1CandidateObservationStart'),

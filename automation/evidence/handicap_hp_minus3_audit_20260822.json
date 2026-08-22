@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "handicap-hp-minus3-audit-v1",
+  "candidateVersion": "handicap-hp-minus3-20260823-v1",
+  "generatedAt": "2026-08-22T15:34:38Z",
+  "sourceSnapshot": {
+    "path": "predictions.jsonl",
+    "sha256": "2b4686b6e141b6422a0355b83cf2908547792d0be9e03da9ee158237bf76005d",
+    "validRows": 14179,
+    "latestOfficialDate": "2026-08-21",
+    "latestRankingVersion": "4.25"
+  },
+  "scope": {
+    "type": "GROUP",
+    "key": "HANDIKAP",
+    "metric": "hp_score",
+    "rawWeightDeltaPoints": -3.0,
+    "marketDerived": false,
+    "agfUsed": false
+  },
+  "eligibility": {
+    "officialFullLabelsRequired": true,
+    "visibleReplayTop3SetAgreementRequired": true,
+    "sourceFlag": "hasHp",
+    "sourceCoverage": 1.0,
+    "rankingImpact": false,
+    "telegramVisible": false,
+    "promotionCeiling": "frozen_prospective_shadow_only"
+  },
+  "last14": {
+    "calendarWindow": "2026-08-08/2026-08-21",
+    "races": 45,
+    "previous7Races": 23,
+    "latest7Races": 22,
+    "baselineWinnerTop3": 22,
+    "candidateWinnerTop3": 24,
+    "rescues": 2,
+    "damages": 0,
+    "previous7Net": 1,
+    "latest7Net": 1,
+    "top1Delta": 1,
+    "top5Delta": 1,
+    "averageWinnerRankDelta": -0.1333,
+    "baselineAverageTop3BoundaryMargin": 1.8071,
+    "candidateAverageTop3BoundaryMargin": 1.9775,
+    "robustTop3BoundaryFloor": 0.4908,
+    "robustTop3Rescues": 1,
+    "fragileTop3Rescues": 1,
+    "robustHitDamages": 0
+  },
+  "rescues": [
+    {
+      "raceDate": "2026-08-13",
+      "raceId": "226753",
+      "winner": "VICTOR THE BRAVE",
+      "baselineRank": 4,
+      "candidateRank": 3,
+      "candidateWinnerTop3Margin": 0.0866,
+      "robust": false
+    },
+    {
+      "raceDate": "2026-08-20",
+      "raceId": "226882",
+      "winner": "YÜCEOĞUL",
+      "baselineRank": 4,
+      "candidateRank": 2,
+      "candidateWinnerTop3Margin": 1.9546,
+      "robust": true
+    }
+  ]
+}
