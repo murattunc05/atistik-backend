@@ -1,0 +1,79 @@
+{
+  "schemaVersion": "maiden-kum-trainer-audit-v1",
+  "candidateVersion": "maiden-kum-trainer-plus2-20260823-v1",
+  "generatedAt": "2026-08-22",
+  "live": false,
+  "usedForRanking": false,
+  "telegramVisible": false,
+  "decision": "GO_PROSPECTIVE_SHADOW_ONLY",
+  "scope": {
+    "category": "MAIDEN",
+    "track": "Kum",
+    "baselineVersion": "4.25",
+    "metric": "trainer_score",
+    "rawWeightAddPoints": 2.0,
+    "observationStart": "23.08.2026"
+  },
+  "source": {
+    "kind": "pi_predictions_snapshot",
+    "sha256": "2b4686b6e141b6422a0355b83cf2908547792d0be9e03da9ee158237bf76005d",
+    "validDateOnly": true,
+    "dateRange": ["30.06.2026", "20.08.2026"],
+    "invalidDateExcluded": {"races": 1, "rows": 7, "candidateScopeRaces": 0}
+  },
+  "chronology": {
+    "build": {"races": 19, "dateRange": ["30.06.2026", "13.08.2026"]},
+    "inner": {"races": 6, "dateRange": ["15.08.2026", "17.08.2026"]},
+    "outer": {"races": 7, "dateRange": ["18.08.2026", "20.08.2026"], "untouched": false},
+    "outerRaceIds": ["226840", "226839", "226842", "226841", "226871", "226873", "226872"]
+  },
+  "ranking": {
+    "full": {"races": 32, "top1": [7, 8], "winnerTop3": [16, 18], "winnerTop5": [23, 23], "rescues": 2, "damages": 0},
+    "inner": {"races": 6, "winnerTop3": [3, 4], "rescues": 1, "damages": 0},
+    "outer": {"races": 7, "top1": [1, 1], "winnerTop3": [2, 3], "winnerTop5": [5, 5], "rescues": 1, "damages": 0}
+  },
+  "transitions": [
+    {"split": "inner", "raceId": "226820", "date": "17.08.2026", "winner": "ERAFŞAR", "baselineRank": 4, "candidateRank": 3},
+    {"split": "outer", "raceId": "226842", "date": "18.08.2026", "winner": "CROWN JEWEL", "baselineRank": 4, "candidateRank": 3}
+  ],
+  "separation": {
+    "full": {"top3BoundaryGap": [0.871, 0.735], "redRaceRate": [0.5312, 0.4375]},
+    "inner": {"top3BoundaryGap": [0.451, 0.510]},
+    "outer": {"top3BoundaryGap": [1.385, 1.454], "tightBoundaryRaces": [3, 3], "redRaceRate": [0.5714, 0.4286]}
+  },
+  "calibration": {
+    "temperature": 14.0,
+    "fitScope": "build_only",
+    "full": {"brier": [0.17683, 0.17651], "logLoss": [0.53370, 0.53286], "ece": [0.04614, 0.03948]},
+    "inner": {"brier": [0.15463, 0.15473], "logLoss": [0.47734, 0.47747], "ece": [0.1223, 0.1091]},
+    "outer": {"brier": [0.17596, 0.17543], "logLoss": [0.53513, 0.53395], "ece": [0.08096, 0.07989]}
+  },
+  "sourceCoverage": {
+    "rows": 351,
+    "hasTrainer": 275,
+    "hasTrainerRate": 0.7835,
+    "actionableTrainer": 249,
+    "actionableTrainerRate": 0.7094,
+    "racesWithAnySource": 32,
+    "racesAllSource": 2,
+    "build": {"sourceRows": 164, "rows": 206},
+    "inner": {"sourceRows": 47, "rows": 62},
+    "outer": {"sourceRows": 64, "rows": 83}
+  },
+  "maidenMl15Overlap": {
+    "overlapRaces": 21,
+    "fullRaces": 32,
+    "inner": [6, 6],
+    "outer": [7, 7],
+    "winnerTop3": {"baseline": 11, "trainerCandidate": 13, "ml15": 12},
+    "duplicatedRescueRaceIds": ["226842"],
+    "trainerUniqueRescueRaceIds": ["226820"],
+    "nonAdditive": true,
+    "note": "Trainer and ML15 gains overlap; rescue counts must never be added. This challenger is evaluated independently."
+  },
+  "limitations": [
+    "Historical outer split is chronological but not untouched because candidate discovery used the registry corpus.",
+    "Historical replay is promotion context only; immutable prospective evidence starts at zero on 23.08.2026.",
+    "A trainer source flag is required per horse and the race must contain at least one actionable sourced value."
+  ]
+}

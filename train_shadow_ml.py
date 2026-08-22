@@ -384,12 +384,130 @@ def race_key(entry):
     return f"{raw_date}|{city}|{entry.get('race_no') or 'unknown-race'}"
 
 
+def _strict_race_date(value):
+    """Return canonical dd.mm.YYYY or a missing/malformed reason."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None, "missing"
+    try:
+        parsed = datetime.strptime(raw, "%d.%m.%Y")
+    except ValueError:
+        return None, "malformed"
+    canonical = parsed.strftime("%d.%m.%Y")
+    if canonical != raw:
+        return None, "malformed"
+    return canonical, None
+
+
+def cross_date_race_identity(entry):
+    """Return a date-free identity used only by the integrity quarantine.
+
+    A real race_id is the strongest available identity.  The fallback is
+    intentionally conservative: city, race number, scheduled time, distance,
+    track and race type must all match before a bad-date row can quarantine a
+    valid-date cohort.  This avoids grouping every daily city race number.
+    """
+    race_id = str(entry.get("race_id") or "").strip()
+    if race_id:
+        return ("race_id", race_id)
+    city = str(
+        entry.get("city")
+        or entry.get("hippodrome")
+        or entry.get("city_id")
+        or "unknown-city"
+    ).strip()
+    race_no = str(entry.get("race_no") or "unknown-race").strip()
+    race_time = str(entry.get("race_time") or "unknown-time").strip().replace(".", ":")
+    distance = "".join(
+        character
+        for character in str(entry.get("distance") or "unknown-distance")
+        if character.isdigit()
+    ) or "unknown-distance"
+    return (
+        "fallback",
+        fold_text(city),
+        race_no,
+        race_time,
+        distance,
+        track_bucket(entry.get("track")),
+        fold_text(entry.get("race_type") or "unknown-type"),
+    )
+
+
+def quarantine_invalid_date_identities(entries):
+    """Quarantine date-invalid rows before date-qualified race grouping.
+
+    If any row under a date-free identity has a missing/malformed date, every
+    row under that identity is quarantined.  This closes the valid-subset leak.
+
+    Upstream race ids may legitimately be reused on distinct *valid* dates.
+    With no invalid row, those collisions remain separated by ``race_key`` and
+    are reported as reuse telemetry.  Once an invalid row exists it cannot be
+    assigned safely to one reuse occurrence, so every occurrence fails closed.
+    """
+    identities = defaultdict(list)
+    for entry in entries:
+        identities[cross_date_race_identity(entry)].append(entry)
+
+    survivors = []
+    quarantined = []
+    reuse = []
+    for identity, rows in identities.items():
+        valid_dates = set()
+        missing_rows = 0
+        malformed_rows = 0
+        for row in rows:
+            normalized, reason = _strict_race_date(row.get("race_date"))
+            if normalized:
+                valid_dates.add(normalized)
+            elif reason == "missing":
+                missing_rows += 1
+            else:
+                malformed_rows += 1
+        invalid_rows = missing_rows + malformed_rows
+        record = {
+            "identity": identity,
+            "rows": rows,
+            "valid_dates": sorted(valid_dates),
+            "missing_rows": missing_rows,
+            "malformed_rows": malformed_rows,
+        }
+        if invalid_rows:
+            quarantined.append(record)
+            continue
+        if len(valid_dates) > 1:
+            reuse.append(record)
+        survivors.extend(rows)
+    return survivors, quarantined, reuse
+
+
 def valid_finish_position(value):
     try:
         finish = float(value)
     except (TypeError, ValueError):
         return False
     return math.isfinite(finish) and finish > 0
+
+
+def race_date_integrity(rows):
+    """Require one strict calendar date for every row in a race.
+
+    Chronological evaluation cannot safely assign missing/malformed dates to
+    the oldest training block.  Treat the complete race as invalid before any
+    label, feature, or split logic sees it.
+    """
+    raw_dates = [row.get("race_date") for row in rows]
+    parsed_dates = [_strict_race_date(value) for value in raw_dates]
+    missing = sum(reason == "missing" for _, reason in parsed_dates)
+    malformed = sum(reason == "malformed" for _, reason in parsed_dates)
+    normalized = [value for value, _ in parsed_dates if value]
+    inconsistent = len(set(normalized)) > 1
+    return {
+        "valid": not missing and not malformed and not inconsistent,
+        "missing_rows": missing,
+        "malformed_rows": malformed,
+        "inconsistent": inconsistent,
+    }
 
 
 def finish_rank_integrity(rows):
@@ -448,14 +566,17 @@ def _read_local_entries(path):
 
 def filter_training_entries(entries, include_partial_races=False):
     """Select complete races by default so rank groups never contain partial fields."""
+    survivors, date_quarantine, cross_date_reuse = (
+        quarantine_invalid_date_identities(entries)
+    )
     races = defaultdict(list)
-    for entry in entries:
+    for entry in survivors:
         races[race_key(entry)].append(entry)
 
     clean = []
     summary = Counter()
     summary["raw_entries"] = len(entries)
-    summary["raw_races"] = len(races)
+    summary["raw_races"] = len(races) + len(date_quarantine)
     for key in [
         "integrity_clean_races",
         "integrity_invalid_races",
@@ -468,9 +589,61 @@ def filter_training_entries(entries, include_partial_races=False):
         "terminal_status_rows",
         "excluded_terminal_races",
         "excluded_terminal_rows",
+        "invalid_race_date_races",
+        "invalid_race_date_rows",
+        "missing_race_date_races",
+        "missing_race_date_rows",
+        "malformed_race_date_races",
+        "malformed_race_date_rows",
+        "inconsistent_race_date_races",
+        "inconsistent_race_date_rows",
+        "date_quarantine_identities",
+        "date_quarantine_valid_rows",
+        "cross_date_identity_reuse_identities",
+        "cross_date_identity_reuse_races",
+        "cross_date_identity_reuse_rows",
     ]:
         summary[key] = 0
+    for record in date_quarantine:
+        rows = record["rows"]
+        summary["date_quarantine_identities"] += 1
+        summary["date_quarantine_valid_rows"] += (
+            len(rows) - record["missing_rows"] - record["malformed_rows"]
+        )
+        summary["integrity_invalid_races"] += 1
+        summary["integrity_invalid_rows"] += len(rows)
+        summary["invalid_race_date_races"] += 1
+        summary["invalid_race_date_rows"] += len(rows)
+        if record["missing_rows"]:
+            summary["missing_race_date_races"] += 1
+            summary["missing_race_date_rows"] += record["missing_rows"]
+        if record["malformed_rows"]:
+            summary["malformed_race_date_races"] += 1
+            summary["malformed_race_date_rows"] += record["malformed_rows"]
+        if len(record["valid_dates"]) > 1:
+            summary["inconsistent_race_date_races"] += 1
+            summary["inconsistent_race_date_rows"] += len(rows)
+    for record in cross_date_reuse:
+        summary["cross_date_identity_reuse_identities"] += 1
+        summary["cross_date_identity_reuse_races"] += len(record["valid_dates"])
+        summary["cross_date_identity_reuse_rows"] += len(record["rows"])
     for rows in races.values():
+        date_integrity = race_date_integrity(rows)
+        if not date_integrity["valid"]:
+            summary["integrity_invalid_races"] += 1
+            summary["integrity_invalid_rows"] += len(rows)
+            summary["invalid_race_date_races"] += 1
+            summary["invalid_race_date_rows"] += len(rows)
+            if date_integrity["missing_rows"]:
+                summary["missing_race_date_races"] += 1
+                summary["missing_race_date_rows"] += date_integrity["missing_rows"]
+            if date_integrity["malformed_rows"]:
+                summary["malformed_race_date_races"] += 1
+                summary["malformed_race_date_rows"] += date_integrity["malformed_rows"]
+            if date_integrity["inconsistent"]:
+                summary["inconsistent_race_date_races"] += 1
+                summary["inconsistent_race_date_rows"] += len(rows)
+            continue
         labeled_rows = [row for row in rows if valid_finish_position(row.get("finish_pos"))]
         if not labeled_rows:
             summary["unlabeled_races"] += 1
@@ -540,8 +713,10 @@ def race_sort_key(race_entries):
     raw_date = str(entry.get("race_date") or "")
     try:
         date_key = datetime.strptime(raw_date, "%d.%m.%Y")
-    except ValueError:
-        date_key = datetime.min
+    except ValueError as exc:
+        raise ValueError(
+            f"Chronological split received invalid race_date={raw_date!r}"
+        ) from exc
     race_no = safe_float(entry.get("race_no"), 999.0)
     return (date_key, race_no, str(entry.get("race_id") or ""))
 

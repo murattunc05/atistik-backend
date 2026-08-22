@@ -342,6 +342,13 @@ if [[ "$MODE" == "results" ]]; then
     echo "[H15 TRAINING SHADOW] Monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
   fi
 
+  if ! python3 automation/maiden_kum_trainer_shadow_monitor.py \
+    --predictions "$DATA_DIR/predictions.jsonl" \
+    --data-dir "$DATA_DIR" \
+    --run-date "$MONITOR_DATE"; then
+    echo "[MAIDEN KUM TRAINER SHADOW] Monitor raporu uretilemedi; sonuc/backup akisi devam ediyor." >&2
+  fi
+
   if ! python3 automation/metric_signal_registry.py \
     --predictions "$DATA_DIR/predictions.jsonl" \
     --data-dir "$DATA_DIR" \

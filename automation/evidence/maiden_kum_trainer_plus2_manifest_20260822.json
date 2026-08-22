@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "maiden-kum-trainer-manifest-v1",
+  "candidateVersion": "maiden-kum-trainer-plus2-20260823-v1",
+  "live": false,
+  "usedForRanking": false,
+  "telegramVisible": false,
+  "promotionCeiling": "formal_replay_only",
+  "observationStart": "23.08.2026",
+  "baselineVersion": "4.25",
+  "scope": {"category": "MAIDEN", "track": "Kum"},
+  "metric": "trainer_score",
+  "sourceGate": {
+    "metricSourceFlag": "hasTrainer",
+    "mfGuard": "_has_trainer",
+    "agreementRequired": true,
+    "raceActionableSourceRequired": true,
+    "failClosed": true
+  },
+  "formula": {
+    "rawWeightAddPoints": 2.0,
+    "normalization": "exported_v4_weights_plus_raw_points_then_normalize",
+    "baselineTemperature": 14.0,
+    "candidateTemperature": 14.0,
+    "temperatureFitScope": "historical_build_only"
+  },
+  "auditEvidence": {
+    "artifact": "automation/evidence/maiden_kum_trainer_plus2_audit_20260822.json",
+    "artifactSha256": "0b67346f7ea903dbe3b25583d337884f4c413cdbfb9bbd4cda80f76f4827fd89",
+    "sourceSnapshotSha256": "2b4686b6e141b6422a0355b83cf2908547792d0be9e03da9ee158237bf76005d",
+    "strictValidDate": true,
+    "historicalOuterUntouched": false,
+    "prospectiveEvidenceStartsAtZero": true
+  },
+  "overlapPolicy": {
+    "otherCandidate": "maiden-ml15-20260810-v1",
+    "nonAdditive": true,
+    "note": "Trainer and ML15 rescue counts must not be added; each challenger is evaluated independently."
+  },
+  "checkpoints": [5, 10, 15],
+  "gates": {
+    "primaryObjective": "winner_top3",
+    "winnerTop3NetMinAtCheckpoint": 0,
+    "winnerTop3NetMinAtFormal": 1,
+    "damageMax": 0,
+    "nonCausalRescueMax": 0,
+    "top1EarlyCheckpointVeto": false,
+    "top1FormalLossMax": 1,
+    "top5NetMin": 0,
+    "objectiveDeltaMin": -0.002,
+    "maeDeltaMax": 0.05,
+    "rhoDeltaMin": -0.01,
+    "ndcg5DeltaMin": -0.002,
+    "sourceCoverageMin": 0.50,
+    "actionableCoverageMin": 0.25,
+    "scoreChangedRaceRatioMin": 0.60,
+    "brierDeltaMax": 0.005,
+    "candidateEceMax": 0.10,
+    "candidateEceStrongMax": 0.05,
+    "eceDeltaMaxOtherwise": 0.01,
+    "visibleReplayTop3AgreementRequired": true,
+    "noVisibleRankingMutation": true
+  }
+}

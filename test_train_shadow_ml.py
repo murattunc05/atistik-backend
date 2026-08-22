@@ -46,6 +46,115 @@ class TrainShadowMLInputTests(unittest.TestCase):
         self.assertEqual(summary["partial_races"], 1)
         self.assertEqual(len(legacy), 3)
 
+    def test_missing_or_malformed_race_date_excludes_whole_race(self):
+        valid = [
+            row("R1", "01.07.2026", 1),
+            row("R1", "01.07.2026", 2, 2),
+        ]
+        missing = [
+            row("R2", "", 1),
+            row("R2", "", 2, 2),
+        ]
+        malformed = [
+            row("R3", "2026-07-03", 1),
+            row("R3", "2026-07-03", 2, 2),
+        ]
+
+        selected, summary = training.filter_training_entries(
+            valid + missing + malformed,
+            include_partial_races=True,
+        )
+
+        self.assertEqual({item["race_id"] for item in selected}, {"R1"})
+        self.assertEqual(summary["invalid_race_date_races"], 2)
+        self.assertEqual(summary["invalid_race_date_rows"], 4)
+        self.assertEqual(summary["missing_race_date_races"], 1)
+        self.assertEqual(summary["missing_race_date_rows"], 2)
+        self.assertEqual(summary["malformed_race_date_races"], 1)
+        self.assertEqual(summary["malformed_race_date_rows"], 2)
+        self.assertEqual(summary["integrity_invalid_races"], 2)
+        self.assertEqual(summary["integrity_invalid_rows"], 4)
+
+    def test_valid_and_missing_rows_with_same_race_id_quarantine_all_rows(self):
+        entries = [
+            row("R1", "01.07.2026", 1),
+            row("R1", "01.07.2026", 2, 2),
+            row("R1", "", 1, 3),
+            row("R1", "", 2, 4),
+        ]
+
+        selected, summary = training.filter_training_entries(entries)
+
+        self.assertEqual(selected, [])
+        self.assertEqual(summary["date_quarantine_identities"], 1)
+        self.assertEqual(summary["date_quarantine_valid_rows"], 2)
+        self.assertEqual(summary["invalid_race_date_races"], 1)
+        self.assertEqual(summary["invalid_race_date_rows"], 4)
+        self.assertEqual(summary["missing_race_date_rows"], 2)
+        self.assertEqual(summary["integrity_invalid_races"], 1)
+        self.assertEqual(summary["integrity_invalid_rows"], 4)
+
+    def test_distinct_valid_dates_with_reused_id_remain_separate(self):
+        entries = [
+            row("R1", "01.07.2026", 1),
+            row("R1", "01.07.2026", 2, 2),
+            row("R1", "02.07.2026", 1),
+            row("R1", "02.07.2026", 2, 2),
+        ]
+
+        selected, summary = training.filter_training_entries(entries)
+
+        self.assertEqual(len(selected), 4)
+        self.assertEqual(summary["selected_races"], 2)
+        self.assertEqual(summary["cross_date_identity_reuse_identities"], 1)
+        self.assertEqual(summary["cross_date_identity_reuse_races"], 2)
+        self.assertEqual(summary["cross_date_identity_reuse_rows"], 4)
+        self.assertEqual(summary["invalid_race_date_races"], 0)
+
+    def test_reused_id_with_unassignable_bad_date_fails_closed(self):
+        entries = [
+            row("R1", "01.07.2026", 1),
+            row("R1", "01.07.2026", 2, 2),
+            row("R1", "02.07.2026", 1),
+            row("R1", "02.07.2026", 2, 2),
+            row("R1", "bad-date", 1, 3),
+        ]
+
+        selected, summary = training.filter_training_entries(entries)
+
+        self.assertEqual(selected, [])
+        self.assertEqual(summary["date_quarantine_identities"], 1)
+        self.assertEqual(summary["invalid_race_date_races"], 1)
+        self.assertEqual(summary["invalid_race_date_rows"], 5)
+        self.assertEqual(summary["malformed_race_date_rows"], 1)
+        self.assertEqual(summary["date_quarantine_valid_rows"], 4)
+        self.assertEqual(summary["inconsistent_race_date_races"], 1)
+
+    def test_missing_date_fallback_identity_quarantines_matching_valid_cohort(self):
+        entries = [
+            row("R1", "01.07.2026", 1),
+            row("R1", "01.07.2026", 2, 2),
+            row("R1", "", 1, 3),
+        ]
+        for item in entries:
+            item.update({
+                "race_id": "",
+                "city_id": "6",
+                "city": "Ankara",
+                "race_no": 3,
+                "race_time": "16:30",
+                "distance": "1400",
+                "track": "Kum",
+                "race_type": "Maiden",
+            })
+
+        selected, summary = training.filter_training_entries(entries)
+
+        self.assertEqual(selected, [])
+        self.assertEqual(summary["date_quarantine_identities"], 1)
+        self.assertEqual(summary["invalid_race_date_rows"], 3)
+        self.assertEqual(summary["date_quarantine_valid_rows"], 2)
+
     def test_integrity_guard_accepts_competition_ties_and_terminal_99(self):
         entries = [
             row("R1", "01.07.2026", 1),
@@ -134,6 +243,12 @@ class TrainShadowMLInputTests(unittest.TestCase):
 
 
 class TrainShadowMLSplitTests(unittest.TestCase):
+    def test_direct_split_rejects_invalid_date_instead_of_leaking_to_oldest_block(self):
+        entries = [row("R1", "", 1), row("R1", "", 2, 2)]
+
+        with self.assertRaisesRegex(ValueError, "invalid race_date"):
+            training.split_races(entries, validation_ratio=0.5)
+
     def test_chronological_split_keeps_dates_disjoint(self):
         entries = []
         for race_id, race_date in [

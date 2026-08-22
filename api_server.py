@@ -126,6 +126,40 @@ _H15_TRAINING_SHADOW_CALIBRATION_CONTRACT = {
     'evidenceArtifact': _H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_ARTIFACT,
     'evidenceArtifactSha256': _H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_SHA256,
 }
+_MAIDEN_KUM_TRAINER_SHADOW_VERSION = "maiden-kum-trainer-plus2-20260823-v1"
+_MAIDEN_KUM_TRAINER_SHADOW_OBSERVATION_START = "23.08.2026"
+_MAIDEN_KUM_TRAINER_SHADOW_BASELINE_VERSION = "4.25"
+_MAIDEN_KUM_TRAINER_SHADOW_METRIC = "trainer_score"
+_MAIDEN_KUM_TRAINER_SHADOW_RAW_ADD_POINTS = 2.0
+_MAIDEN_KUM_TRAINER_SHADOW_MODE = "prospective_shadow_bounded"
+_MAIDEN_KUM_TRAINER_SHADOW_TEMPERATURE = 14.0
+_MAIDEN_KUM_TRAINER_AUDIT_ARTIFACT = (
+    "automation/evidence/maiden_kum_trainer_plus2_audit_20260822.json"
+)
+_MAIDEN_KUM_TRAINER_AUDIT_SHA256 = (
+    "0b67346f7ea903dbe3b25583d337884f4c413cdbfb9bbd4cda80f76f4827fd89"
+)
+_MAIDEN_KUM_TRAINER_MANIFEST_ARTIFACT = (
+    "automation/evidence/maiden_kum_trainer_plus2_manifest_20260822.json"
+)
+_MAIDEN_KUM_TRAINER_MANIFEST_SHA256 = (
+    "f23f1a69dda772a018cf846614e93dd097df2e277507a4cbffcf4b3c6851d197"
+)
+_MAIDEN_KUM_TRAINER_SOURCE_SNAPSHOT_SHA256 = (
+    "2b4686b6e141b6422a0355b83cf2908547792d0be9e03da9ee158237bf76005d"
+)
+_MAIDEN_KUM_TRAINER_CALIBRATION_CONTRACT = {
+    'fitScope': 'historical_build_only',
+    'buildInnerOuter': [19, 6, 7],
+    'baselineTemperature': _MAIDEN_KUM_TRAINER_SHADOW_TEMPERATURE,
+    'candidateTemperature': _MAIDEN_KUM_TRAINER_SHADOW_TEMPERATURE,
+    'auditArtifact': _MAIDEN_KUM_TRAINER_AUDIT_ARTIFACT,
+    'auditArtifactSha256': _MAIDEN_KUM_TRAINER_AUDIT_SHA256,
+    'manifestArtifact': _MAIDEN_KUM_TRAINER_MANIFEST_ARTIFACT,
+    'manifestArtifactSha256': _MAIDEN_KUM_TRAINER_MANIFEST_SHA256,
+    'sourceSnapshotSha256': _MAIDEN_KUM_TRAINER_SOURCE_SNAPSHOT_SHA256,
+    'maidenMl15OverlapNonAdditive': True,
+}
 _FUTURE_SIGNAL_OBSERVATION_START = "14.08.2026"
 
 def load_ml_model():
@@ -383,6 +417,57 @@ def ml_status():
                 'source_report_sha256': _H15_TRAINING_SHADOW_REPLAY_SHA256,
                 'calibration_evidence_artifact': _H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_ARTIFACT,
                 'calibration_evidence_artifact_sha256': _H15_TRAINING_SHADOW_CALIBRATION_EVIDENCE_SHA256,
+            },
+            'promotion_ceiling': 'formal_replay_only',
+        },
+        'maiden_kum_trainer_shadow': {
+            'version': _MAIDEN_KUM_TRAINER_SHADOW_VERSION,
+            'mode': _MAIDEN_KUM_TRAINER_SHADOW_MODE,
+            'status': 'collecting',
+            'observation_start': _MAIDEN_KUM_TRAINER_SHADOW_OBSERVATION_START,
+            'baseline_version': _MAIDEN_KUM_TRAINER_SHADOW_BASELINE_VERSION,
+            'used_for_ranking': False,
+            'rollout_eligible': False,
+            'telegram_visible': False,
+            'profile': 'MAIDEN|Kum',
+            'metric': _MAIDEN_KUM_TRAINER_SHADOW_METRIC,
+            'raw_weight_add_points': _MAIDEN_KUM_TRAINER_SHADOW_RAW_ADD_POINTS,
+            'normalization': 'exported_v4_weights_plus_raw_points_then_normalize',
+            'source_gate': 'hasTrainer_and__has_trainer_agree_fail_closed',
+            'replay_baseline_compatibility_gate': 'visible_top3_set_equals_replay_top3_set',
+            'checkpoints': [5, 10, 15],
+            'primary_objective': 'winner_top3',
+            'primary_gate': {
+                'winner_top3_net_min_at_checkpoint': 0,
+                'winner_top3_net_min_at_formal': 1,
+                'damage_max': 0,
+                'non_causal_rescue_max': 0,
+            },
+            'top1_policy': {
+                'early_checkpoint_veto': False,
+                'formal_catastrophic_loss_max': 1,
+            },
+            'calibration_gate': {
+                'fit_scope': 'historical_build_only',
+                'brier_delta_max': 0.005,
+                'candidate_ece_max': 0.10,
+                'candidate_ece_strong_max': 0.05,
+                'ece_delta_max_otherwise': 0.01,
+            },
+            'historical_evidence': {
+                'snapshot_date': '22.08.2026',
+                'strict_valid_date_races': 32,
+                'winner_top3': {'baseline': 16, 'candidate': 18},
+                'rescues': 2,
+                'damages': 0,
+                'build_inner_outer': [19, 6, 7],
+                'outer_untouched': False,
+                'audit_artifact': _MAIDEN_KUM_TRAINER_AUDIT_ARTIFACT,
+                'audit_artifact_sha256': _MAIDEN_KUM_TRAINER_AUDIT_SHA256,
+                'manifest_artifact': _MAIDEN_KUM_TRAINER_MANIFEST_ARTIFACT,
+                'manifest_artifact_sha256': _MAIDEN_KUM_TRAINER_MANIFEST_SHA256,
+                'source_snapshot_sha256': _MAIDEN_KUM_TRAINER_SOURCE_SNAPSHOT_SHA256,
+                'maiden_ml15_overlap_non_additive': True,
             },
             'promotion_ceiling': 'formal_replay_only',
         },
@@ -7685,6 +7770,20 @@ def _preserve_h15_training_candidate_snapshot(entry, previous):
     return entry
 
 
+def _preserve_maiden_kum_trainer_candidate_snapshot(entry, previous):
+    """Keep the first pre-race MAIDEN|Kum trainer snapshot immutable."""
+    current_version = entry.get('maiden_kum_trainer_candidate_version')
+    previous_version = previous.get('maiden_kum_trainer_candidate_version')
+    if not previous_version:
+        return entry
+    if current_version and current_version != previous_version:
+        return entry
+    for key, value in previous.items():
+        if key.startswith('maiden_kum_trainer_candidate_'):
+            entry[key] = value
+    return entry
+
+
 def _preserve_future_signal_ledger_snapshot(entry, previous):
     """Keep the first pre-race research telemetry across analysis retries."""
     previous_snapshot = previous.get('future_signal_ledger')
@@ -9227,6 +9326,474 @@ def h15_training_candidate_log_fields(horse):
         'h15_training_candidate_race_evidence_eligible': horse.get('h15TrainingCandidateRaceEvidenceEligible', False),
         'h15_training_candidate_reason': horse.get('h15TrainingCandidateReason'),
     }
+
+
+def resolve_maiden_kum_trainer_candidate_weights(exported_v4_weights):
+    """Return the frozen trainer +2/102 formula from persisted v4 weights."""
+    if not isinstance(exported_v4_weights, dict) or not exported_v4_weights:
+        raise ValueError('MAIDEN|Kum trainer baseline v4Weights map is missing')
+    baseline = {}
+    for key, raw_value in exported_v4_weights.items():
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f'MAIDEN|Kum trainer baseline weight is not numeric: {key}'
+            )
+        if not str(key).strip() or not math.isfinite(value) or value < 0.0:
+            raise ValueError(f'MAIDEN|Kum trainer baseline weight is invalid: {key}')
+        if value > 0.0:
+            baseline[str(key)] = value
+    baseline_total = sum(baseline.values())
+    if not (99.5 <= baseline_total <= 100.5):
+        raise ValueError(
+            'MAIDEN|Kum trainer exported baseline weight total is not '
+            f'approximately 100: {baseline_total}'
+        )
+    raw_candidate = dict(baseline)
+    raw_candidate[_MAIDEN_KUM_TRAINER_SHADOW_METRIC] = (
+        raw_candidate.get(_MAIDEN_KUM_TRAINER_SHADOW_METRIC, 0.0)
+        + _MAIDEN_KUM_TRAINER_SHADOW_RAW_ADD_POINTS
+    )
+    raw_total = sum(raw_candidate.values())
+    candidate_pct = {
+        key: round((value / raw_total) * 100.0, 10)
+        for key, value in raw_candidate.items()
+        if value > 0.0
+    }
+    delta_pct = {
+        key: round(candidate_pct.get(key, 0.0) - baseline.get(key, 0.0), 10)
+        for key in sorted(set(baseline) | set(candidate_pct))
+        if abs(candidate_pct.get(key, 0.0) - baseline.get(key, 0.0)) > 1e-12
+    }
+    return {
+        'baselineWeights': baseline,
+        'baselineRawTotal': round(baseline_total, 10),
+        'candidateRawWeights': raw_candidate,
+        'candidateRawTotal': round(raw_total, 10),
+        'candidateWeights': {key: value / 100.0 for key, value in candidate_pct.items()},
+        'candidateWeightsPct': candidate_pct,
+        'weightDeltaPct': delta_pct,
+    }
+
+
+def calculate_maiden_kum_trainer_score_from_replay_totals(
+    baseline_weighted_numerator,
+    baseline_available_weight_total,
+    trainer_value,
+    penalty_total=0.0,
+):
+    """Mirror the audited raw trainer +2 formula without score rounding."""
+    numerator = float(baseline_weighted_numerator)
+    denominator = float(baseline_available_weight_total)
+    if not math.isfinite(numerator) or not math.isfinite(denominator):
+        raise ValueError('MAIDEN|Kum trainer replay totals must be finite')
+    if denominator < 0.0:
+        raise ValueError('MAIDEN|Kum trainer replay denominator cannot be negative')
+    if trainer_value is not None:
+        metric_value = float(trainer_value)
+        if not math.isfinite(metric_value):
+            raise ValueError('MAIDEN|Kum sourced trainer_score must be finite')
+        numerator += metric_value * _MAIDEN_KUM_TRAINER_SHADOW_RAW_ADD_POINTS
+        denominator += _MAIDEN_KUM_TRAINER_SHADOW_RAW_ADD_POINTS
+    base_score = numerator / denominator if denominator > 0.0 else 50.0
+    penalty = max(0.0, float(penalty_total or 0.0))
+    return {
+        'baseScore': base_score,
+        'score': max(0.0, min(100.0, base_score - penalty)),
+        'candidateWeightedNumerator': numerator,
+        'candidateAvailableWeightTotal': denominator,
+    }
+
+
+def attach_maiden_kum_trainer_candidate(
+    analyzed_horses,
+    race_type='',
+    distance='',
+    track='',
+    race_date='',
+    race_time='',
+):
+    """Attach an immutable MAIDEN|Kum trainer +2 challenger, never ranking."""
+    profile = extract_v4_race_profile(
+        race_type=race_type,
+        distance=distance,
+        track=track,
+        field_size=len(analyzed_horses),
+    )
+    if (
+        profile.get('category') != 'MAIDEN'
+        or str(profile.get('track') or '').casefold() != 'kum'
+        or not analyzed_horses
+    ):
+        return analyzed_horses
+    if any(
+        str(horse.get('v4Version') or '')
+        != _MAIDEN_KUM_TRAINER_SHADOW_BASELINE_VERSION
+        for horse in analyzed_horses
+    ):
+        return analyzed_horses
+    if any(horse.get('v4AppliedForRanking') is not True for horse in analyzed_horses):
+        return analyzed_horses
+
+    from zoneinfo import ZoneInfo
+    parsed_race_day = None
+    for pattern in ('%d.%m.%Y', '%Y-%m-%d'):
+        try:
+            parsed_race_day = datetime.strptime(str(race_date or '').strip(), pattern)
+            break
+        except ValueError:
+            continue
+    observation_day = datetime.strptime(
+        _MAIDEN_KUM_TRAINER_SHADOW_OBSERVATION_START,
+        '%d.%m.%Y',
+    )
+    if parsed_race_day is None or parsed_race_day < observation_day:
+        return analyzed_horses
+    normalized_race_time = str(race_time or '').strip().replace('.', ':')
+    try:
+        race_hour, race_minute = (
+            int(part) for part in normalized_race_time.split(':', 1)
+        )
+        race_start = parsed_race_day.replace(
+            hour=race_hour,
+            minute=race_minute,
+            tzinfo=ZoneInfo('Europe/Istanbul'),
+        )
+    except (TypeError, ValueError):
+        return analyzed_horses
+    created_ts = int(time.time())
+    if created_ts >= int(race_start.timestamp()):
+        return analyzed_horses
+
+    visible_profiles = [horse.get('v4Profile') for horse in analyzed_horses]
+    if any(not isinstance(item, dict) for item in visible_profiles):
+        raise ValueError('MAIDEN|Kum visible v4 profile snapshot is missing')
+    first_visible_profile = dict(visible_profiles[0])
+    if (
+        first_visible_profile.get('category') != 'MAIDEN'
+        or str(first_visible_profile.get('track') or '').casefold() != 'kum'
+        or not first_visible_profile.get('selectedKey')
+        or any(
+            _h15_canonical_sha256(item)
+            != _h15_canonical_sha256(first_visible_profile)
+            for item in visible_profiles[1:]
+        )
+    ):
+        raise ValueError('MAIDEN|Kum visible profile snapshots disagree')
+
+    exported_maps = [horse.get('v4Weights') for horse in analyzed_horses]
+    formula = resolve_maiden_kum_trainer_candidate_weights(exported_maps[0])
+    baseline_weights = formula['baselineWeights']
+    if any(
+        _h15_canonical_sha256(
+            resolve_maiden_kum_trainer_candidate_weights(value)['baselineWeights']
+        ) != _h15_canonical_sha256(baseline_weights)
+        for value in exported_maps[1:]
+    ):
+        raise ValueError('MAIDEN|Kum exported v4Weights snapshots disagree')
+
+    source_rows = []
+    for horse in analyzed_horses:
+        metrics = horse.get('_mf') or {}
+        flags = horse.get('metricSourceFlags') or {}
+        flag_present = 'hasTrainer' in flags
+        mf_present = '_has_trainer' in metrics
+        flag_value = flags.get('hasTrainer')
+        mf_value = metrics.get('_has_trainer')
+        guards_agree = bool(
+            flag_present
+            and mf_present
+            and isinstance(flag_value, bool)
+            and isinstance(mf_value, bool)
+            and flag_value == mf_value
+        )
+        if not guards_agree:
+            raise ValueError('MAIDEN|Kum hasTrainer and _mf._has_trainer disagree')
+        try:
+            metric_value = float(metrics.get(_MAIDEN_KUM_TRAINER_SHADOW_METRIC, 50.0))
+        except (TypeError, ValueError):
+            metric_value = float('nan')
+        if bool(flag_value) and not math.isfinite(metric_value):
+            raise ValueError('MAIDEN|Kum sourced trainer_score is not finite')
+        if not math.isfinite(metric_value):
+            metric_value = 50.0
+        has_source = bool(flag_value and mf_value)
+        neutral = bool(has_source and abs(metric_value - 50.0) < 1.0)
+        source_rows.append({
+            'metric': _MAIDEN_KUM_TRAINER_SHADOW_METRIC,
+            'metricSourceFlag': 'hasTrainer',
+            'metricSourceFlagPresent': flag_present,
+            'metricSourceFlagValue': flag_value,
+            'mfGuard': '_has_trainer',
+            'mfGuardPresent': mf_present,
+            'mfGuardValue': mf_value,
+            'guardsAgree': guards_agree,
+            'hasSource': has_source,
+            'metricValue': metric_value,
+            'neutral': neutral,
+            'actionable': bool(has_source and not neutral),
+        })
+
+    runner_count = len(analyzed_horses)
+    source_count = sum(bool(row['hasSource']) for row in source_rows)
+    actionable_count = sum(bool(row['actionable']) for row in source_rows)
+    neutral_count = sum(bool(row['neutral']) for row in source_rows)
+    candidate_weights = formula['candidateWeights']
+    candidate_weights_pct = formula['candidateWeightsPct']
+    definition_payload = {
+        'schemaVersion': 'maiden-kum-trainer-shadow-v1',
+        'candidateVersion': _MAIDEN_KUM_TRAINER_SHADOW_VERSION,
+        'observationStart': _MAIDEN_KUM_TRAINER_SHADOW_OBSERVATION_START,
+        'baselineVersion': _MAIDEN_KUM_TRAINER_SHADOW_BASELINE_VERSION,
+        'profile': first_visible_profile,
+        'metric': _MAIDEN_KUM_TRAINER_SHADOW_METRIC,
+        'rawWeightAddPoints': _MAIDEN_KUM_TRAINER_SHADOW_RAW_ADD_POINTS,
+        'baselineWeights': baseline_weights,
+        'baselineRawTotal': formula['baselineRawTotal'],
+        'candidateRawWeights': formula['candidateRawWeights'],
+        'candidateRawTotal': formula['candidateRawTotal'],
+        'candidateWeights': candidate_weights_pct,
+        'weightDeltaPct': formula['weightDeltaPct'],
+        'normalization': 'exported_v4_weights_plus_raw_points_then_normalize',
+        'calibrationContract': _MAIDEN_KUM_TRAINER_CALIBRATION_CONTRACT,
+    }
+    definition_sha256 = _h15_canonical_sha256(definition_payload)
+
+    for horse, source in zip(analyzed_horses, source_rows):
+        metrics = dict(horse.get('_mf') or {})
+        source_guard_snapshot = {}
+        score_components = {}
+        feature_snapshot = {}
+        baseline_numerator = 0.0
+        baseline_denominator = 0.0
+        for metric in candidate_weights:
+            guard = _V4_SOURCE_GUARDS.get(metric)
+            guard_present = bool(guard and guard in metrics)
+            guard_value = bool(metrics.get(guard)) if guard_present else None
+            if guard:
+                source_guard_snapshot[guard] = {
+                    'present': guard_present,
+                    'value': guard_value,
+                }
+            included = not (guard_present and not bool(guard_value))
+            try:
+                value = float(metrics.get(metric, 50.0))
+            except (TypeError, ValueError):
+                value = 50.0
+            if not math.isfinite(value):
+                value = 50.0
+            feature_snapshot[metric] = value
+            baseline_raw_weight = baseline_weights.get(metric, 0.0)
+            score_components[metric] = {
+                'value': value,
+                'weightPct': candidate_weights_pct[metric],
+                'baselineRawWeightPoints': baseline_raw_weight,
+                'candidateRawWeightPoints': formula['candidateRawWeights'].get(metric, 0.0),
+                'guard': guard,
+                'included': included,
+            }
+            if included and baseline_raw_weight > 0.0:
+                baseline_numerator += value * baseline_raw_weight
+                baseline_denominator += baseline_raw_weight
+        try:
+            penalty_total = max(0.0, float(horse.get('v4PenaltyTotal', 0.0) or 0.0))
+        except (TypeError, ValueError):
+            penalty_total = 0.0
+        replay_score = calculate_maiden_kum_trainer_score_from_replay_totals(
+            baseline_numerator,
+            baseline_denominator,
+            source['metricValue'] if source['hasSource'] else None,
+            penalty_total,
+        )
+        replay_baseline_base_score = (
+            baseline_numerator / baseline_denominator
+            if baseline_denominator > 0.0 else 50.0
+        )
+        replay_baseline_score = max(
+            0.0,
+            min(100.0, replay_baseline_base_score - penalty_total),
+        )
+        feature_hash_payload = {
+            'horseName': str(horse.get('name') or '').strip(),
+            'features': feature_snapshot,
+            'sourceGuards': source_guard_snapshot,
+            'trainerSource': source,
+        }
+        prefix = 'maidenKumTrainerCandidate'
+        horse[prefix + 'Version'] = _MAIDEN_KUM_TRAINER_SHADOW_VERSION
+        horse[prefix + 'Mode'] = _MAIDEN_KUM_TRAINER_SHADOW_MODE
+        horse[prefix + 'ObservationStart'] = _MAIDEN_KUM_TRAINER_SHADOW_OBSERVATION_START
+        horse[prefix + 'CreatedTs'] = created_ts
+        horse[prefix + 'BaselineVersion'] = _MAIDEN_KUM_TRAINER_SHADOW_BASELINE_VERSION
+        horse[prefix + 'BaselineScore'] = horse.get('v4Score')
+        horse[prefix + 'BaselineRank'] = horse.get('v4Rank')
+        horse[prefix + 'BaselineWeightedNumerator'] = baseline_numerator
+        horse[prefix + 'BaselineAvailableWeightTotal'] = baseline_denominator
+        horse[prefix + 'ReplayBaselineBaseScore'] = replay_baseline_base_score
+        horse[prefix + 'ReplayBaselineScore'] = replay_baseline_score
+        horse[prefix + 'ReplayBaselineRank'] = None
+        horse[prefix + 'AddedMetricValue'] = source['metricValue'] if source['hasSource'] else None
+        horse[prefix + 'WeightedNumerator'] = replay_score['candidateWeightedNumerator']
+        horse[prefix + 'AvailableWeightTotal'] = replay_score['candidateAvailableWeightTotal']
+        horse[prefix + 'BaseScore'] = replay_score['baseScore']
+        horse[prefix + 'PenaltyTotal'] = penalty_total
+        horse[prefix + 'Score'] = replay_score['score']
+        horse[prefix + 'Rank'] = None
+        horse[prefix + 'UsedForRanking'] = False
+        horse[prefix + 'TelegramVisible'] = False
+        horse[prefix + 'RolloutEligible'] = False
+        horse[prefix + 'FormalReplayOnly'] = True
+        horse[prefix + 'Profile'] = first_visible_profile
+        horse[prefix + 'Metric'] = _MAIDEN_KUM_TRAINER_SHADOW_METRIC
+        horse[prefix + 'RawWeightAddPoints'] = _MAIDEN_KUM_TRAINER_SHADOW_RAW_ADD_POINTS
+        horse[prefix + 'BaselineWeights'] = baseline_weights
+        horse[prefix + 'BaselineRawTotal'] = formula['baselineRawTotal']
+        horse[prefix + 'RawWeights'] = formula['candidateRawWeights']
+        horse[prefix + 'RawTotal'] = formula['candidateRawTotal']
+        horse[prefix + 'Weights'] = candidate_weights_pct
+        horse[prefix + 'WeightDeltaPct'] = formula['weightDeltaPct']
+        horse[prefix + 'DefinitionSha256'] = definition_sha256
+        horse[prefix + 'CalibrationContract'] = dict(_MAIDEN_KUM_TRAINER_CALIBRATION_CONTRACT)
+        horse[prefix + 'FeatureSnapshot'] = feature_snapshot
+        horse[prefix + 'SourceGuardSnapshot'] = source_guard_snapshot
+        horse[prefix + 'ScoreComponents'] = score_components
+        horse[prefix + 'FeatureVectorSha256'] = _h15_canonical_sha256(feature_hash_payload)
+        horse[prefix + 'Source'] = {
+            **source,
+            'sourceCount': source_count,
+            'actionableCount': actionable_count,
+            'neutralCount': neutral_count,
+            'unavailableCount': runner_count - source_count,
+            'runnerCount': runner_count,
+            'coverage': round(source_count / runner_count, 6),
+            'actionableCoverage': round(actionable_count / runner_count, 6),
+        }
+        horse[prefix + 'ReplayTop3SetAgreement'] = None
+        horse[prefix + 'EvidenceIssue'] = None
+        horse[prefix + 'RaceEvidenceEligible'] = False
+        horse[prefix + 'AuditArtifactSha256'] = _MAIDEN_KUM_TRAINER_AUDIT_SHA256
+        horse[prefix + 'ManifestArtifactSha256'] = _MAIDEN_KUM_TRAINER_MANIFEST_SHA256
+        horse[prefix + 'SourceSnapshotSha256'] = _MAIDEN_KUM_TRAINER_SOURCE_SNAPSHOT_SHA256
+        horse[prefix + 'Ml15OverlapNonAdditive'] = True
+        horse[prefix + 'Reason'] = (
+            'Exact MAIDEN|Kum v4.25 prospective challenger: add 2.0 raw '
+            'points to sourced trainer_score. Visible ranking and Telegram '
+            'are unchanged; ML15 evidence is non-additive.'
+        )
+
+    replay_ranked = sorted(
+        analyzed_horses,
+        key=lambda horse: (
+            -float(horse.get('maidenKumTrainerCandidateReplayBaselineScore', 0.0) or 0.0),
+            int(horse.get('v4Rank', 999) or 999),
+            str(horse.get('name') or ''),
+        ),
+    )
+    candidate_ranked = sorted(
+        analyzed_horses,
+        key=lambda horse: (
+            -float(horse.get('maidenKumTrainerCandidateScore', 0.0) or 0.0),
+            int(horse.get('v4Rank', 999) or 999),
+            str(horse.get('name') or ''),
+        ),
+    )
+    for index, horse in enumerate(replay_ranked, start=1):
+        horse['maidenKumTrainerCandidateReplayBaselineRank'] = index
+    for index, horse in enumerate(candidate_ranked, start=1):
+        horse['maidenKumTrainerCandidateRank'] = index
+    visible_top3 = {
+        id(horse) for horse in sorted(
+            analyzed_horses,
+            key=lambda horse: int(horse.get('v4Rank', 999) or 999),
+        )[:3]
+    }
+    replay_top3 = {id(horse) for horse in replay_ranked[:3]}
+    agreement = visible_top3 == replay_top3
+    issue = None if agreement else 'visible_replay_baseline_top3_set_mismatch'
+    for horse in analyzed_horses:
+        horse['maidenKumTrainerCandidateReplayTop3SetAgreement'] = agreement
+        horse['maidenKumTrainerCandidateEvidenceIssue'] = issue
+        horse['maidenKumTrainerCandidateRaceEvidenceEligible'] = bool(
+            agreement and actionable_count > 0
+        )
+    race_hash_payload = {
+        'definitionSha256': definition_sha256,
+        'createdTs': created_ts,
+        'replayTop3SetAgreement': agreement,
+        'evidenceIssue': issue,
+        'horses': sorted([
+            {
+                'horseName': str(horse.get('name') or '').strip(),
+                'baselineScore': horse.get('maidenKumTrainerCandidateBaselineScore'),
+                'baselineRank': horse.get('maidenKumTrainerCandidateBaselineRank'),
+                'replayBaselineScore': horse.get('maidenKumTrainerCandidateReplayBaselineScore'),
+                'replayBaselineRank': horse.get('maidenKumTrainerCandidateReplayBaselineRank'),
+                'candidateScore': horse.get('maidenKumTrainerCandidateScore'),
+                'candidateRank': horse.get('maidenKumTrainerCandidateRank'),
+                'featureVectorSha256': horse.get('maidenKumTrainerCandidateFeatureVectorSha256'),
+            }
+            for horse in analyzed_horses
+        ], key=lambda item: item['horseName'].casefold()),
+    }
+    race_sha256 = _h15_canonical_sha256(race_hash_payload)
+    for horse in analyzed_horses:
+        horse['maidenKumTrainerCandidateRaceSnapshotSha256'] = race_sha256
+    print(
+        f'[MAIDEN KUM TRAINER SHADOW] version={_MAIDEN_KUM_TRAINER_SHADOW_VERSION} '
+        f'runners={runner_count} raw_add={_MAIDEN_KUM_TRAINER_SHADOW_RAW_ADD_POINTS:.1f} '
+        f'source={source_count}/{runner_count} actionable={actionable_count}/{runner_count}'
+    )
+    return analyzed_horses
+
+
+def maiden_kum_trainer_candidate_log_fields(horse):
+    """Return the immutable snake_case prediction-log contract."""
+    camel = 'maidenKumTrainerCandidate'
+    snake = 'maiden_kum_trainer_candidate_'
+    if not horse.get(camel + 'Version'):
+        return {}
+    field_map = {
+        'version': 'Version', 'mode': 'Mode', 'observation_start': 'ObservationStart',
+        'created_ts': 'CreatedTs', 'baseline_version': 'BaselineVersion',
+        'baseline_score': 'BaselineScore', 'baseline_rank': 'BaselineRank',
+        'baseline_weighted_numerator': 'BaselineWeightedNumerator',
+        'baseline_available_weight_total': 'BaselineAvailableWeightTotal',
+        'replay_baseline_base_score': 'ReplayBaselineBaseScore',
+        'replay_baseline_score': 'ReplayBaselineScore',
+        'replay_baseline_rank': 'ReplayBaselineRank',
+        'added_metric_value': 'AddedMetricValue', 'weighted_numerator': 'WeightedNumerator',
+        'available_weight_total': 'AvailableWeightTotal', 'base_score': 'BaseScore',
+        'penalty_total': 'PenaltyTotal', 'score': 'Score', 'rank': 'Rank',
+        'used_for_ranking': 'UsedForRanking', 'telegram_visible': 'TelegramVisible',
+        'rollout_eligible': 'RolloutEligible', 'formal_replay_only': 'FormalReplayOnly',
+        'profile': 'Profile', 'metric': 'Metric',
+        'raw_weight_add_points': 'RawWeightAddPoints',
+        'baseline_weights': 'BaselineWeights', 'baseline_raw_total': 'BaselineRawTotal',
+        'raw_weights': 'RawWeights', 'raw_total': 'RawTotal', 'weights': 'Weights',
+        'weight_delta_pct': 'WeightDeltaPct', 'definition_sha256': 'DefinitionSha256',
+        'calibration_contract': 'CalibrationContract', 'feature_snapshot': 'FeatureSnapshot',
+        'source_guard_snapshot': 'SourceGuardSnapshot', 'score_components': 'ScoreComponents',
+        'feature_vector_sha256': 'FeatureVectorSha256',
+        'race_snapshot_sha256': 'RaceSnapshotSha256', 'source': 'Source',
+        'replay_top3_set_agreement': 'ReplayTop3SetAgreement',
+        'evidence_issue': 'EvidenceIssue',
+        'race_evidence_eligible': 'RaceEvidenceEligible',
+        'audit_artifact_sha256': 'AuditArtifactSha256',
+        'manifest_artifact_sha256': 'ManifestArtifactSha256',
+        'source_snapshot_sha256': 'SourceSnapshotSha256',
+        'ml15_overlap_non_additive': 'Ml15OverlapNonAdditive', 'reason': 'Reason',
+    }
+    defaults_false = {
+        'used_for_ranking', 'telegram_visible', 'rollout_eligible',
+        'race_evidence_eligible',
+    }
+    defaults_true = {'formal_replay_only', 'ml15_overlap_non_additive'}
+    result = {}
+    for key, suffix in field_map.items():
+        default = False if key in defaults_false else True if key in defaults_true else None
+        result[snake + key] = horse.get(camel + suffix, default)
+    return result
 
 
 def attach_sart1_shadow_candidate(analyzed_horses, race_type='', distance='', track=''):
@@ -11139,6 +11706,44 @@ def analyze_race():
                     )
 
         try:
+            attach_maiden_kum_trainer_candidate(
+                analyzed_horses,
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+                race_date=race_date,
+                race_time=race_time,
+            )
+        except Exception as _maiden_kum_trainer_shadow_err:
+            _maiden_trainer_profile = extract_v4_race_profile(
+                race_type=race_type,
+                distance=target_distance,
+                track=target_track,
+                field_size=len(analyzed_horses),
+            )
+            if (
+                _maiden_trainer_profile.get('category') == 'MAIDEN'
+                and str(_maiden_trainer_profile.get('track') or '').casefold() == 'kum'
+            ):
+                print(
+                    '[MAIDEN KUM TRAINER SHADOW] Hesaplama hatasi; gorunur '
+                    f'v4 siralamasi korundu: {_maiden_kum_trainer_shadow_err}'
+                )
+                for _h in analyzed_horses:
+                    _h['maidenKumTrainerCandidateVersion'] = (
+                        _MAIDEN_KUM_TRAINER_SHADOW_VERSION
+                    )
+                    _h['maidenKumTrainerCandidateMode'] = 'unavailable'
+                    _h['maidenKumTrainerCandidateUsedForRanking'] = False
+                    _h['maidenKumTrainerCandidateTelegramVisible'] = False
+                    _h['maidenKumTrainerCandidateRolloutEligible'] = False
+                    _h['maidenKumTrainerCandidateFormalReplayOnly'] = True
+                    _h['maidenKumTrainerCandidateRaceEvidenceEligible'] = False
+                    _h['maidenKumTrainerCandidateReason'] = str(
+                        _maiden_kum_trainer_shadow_err
+                    )
+
+        try:
             attach_sart1_shadow_candidate(
                 analyzed_horses,
                 race_type=race_type,
@@ -11323,6 +11928,7 @@ def analyze_race():
                     'handicap_trainer_candidate_score_components': _h.get('handicapTrainerCandidateScoreComponents', {}),
                     'handicap_trainer_candidate_reason': _h.get('handicapTrainerCandidateReason'),
                     **h15_training_candidate_log_fields(_h),
+                    **maiden_kum_trainer_candidate_log_fields(_h),
                     'sart1_candidate_version': _h.get('sart1CandidateVersion'),
                     'sart1_candidate_mode': _h.get('sart1CandidateMode'),
                     'sart1_candidate_observation_start': _h.get('sart1CandidateObservationStart'),
@@ -11438,6 +12044,7 @@ def analyze_race():
                     _preserve_maiden_candidate_snapshot(_entry, _prev)
                     _preserve_handicap_trainer_candidate_snapshot(_entry, _prev)
                     _preserve_h15_training_candidate_snapshot(_entry, _prev)
+                    _preserve_maiden_kum_trainer_candidate_snapshot(_entry, _prev)
                     _preserve_future_signal_ledger_snapshot(_entry, _prev)
 
                 _new_entries.append(_json.dumps(_entry, ensure_ascii=False))
